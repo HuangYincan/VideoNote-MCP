@@ -27,7 +27,7 @@ VideoNote-Mcp packages the whole "video link → multi-format notes" pipeline in
 
 Repository: [HuangYincan/VideoNote-MCP](https://github.com/HuangYincan/VideoNote-MCP).
 
-This project **works end-to-end (one link → one note)** and is **also decoupled**: every pipeline stage (download / transcribe / frames / comments / summarize / export / enhance / cleanup) is an independent MCP tool, so you can use just one step or assemble your own material and summarize it in any combination. No backend required.
+This project **works end-to-end (one link → one note)** and is **also decoupled**: every pipeline stage (download / transcribe / frames / comments / summarize / export / enhance / cleanup) is an independent MCP tool, so whether you just want to use one step or simply get a sense of the video's content, either need is covered. No backend required.
 
 <p align="center">
   <a href="https://github.com/HuangYincan/VideoNote-MCP"><img src="https://img.shields.io/github/stars/HuangYincan/VideoNote-MCP?logo=github" alt="GitHub stars"></a>
@@ -48,7 +48,7 @@ claude plugin marketplace add HuangYincan/VideoNote-MCP
 claude plugin install videonote@videonote
 
 # 2) Configure LLM key + transcription engine (keys never enter the conversation)
-videonote setup
+# videonote setup (optional, if you need other multimodal models as a fallback)
 
 # 3) Restart your session, tell the agent "make notes for this video" + link
 ```

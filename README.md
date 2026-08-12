@@ -28,7 +28,7 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
 
 仓库：[HuangYincan/VideoNote-MCP](https://github.com/HuangYincan/VideoNote-MCP)。
 
-本项目**既可端到端使用（一条链接 → 一篇笔记）**，**也可解耦**：流水线每一阶段（下载 / 转写 / 抽帧 / 评论 / 总结 / 导出 / 增强 / 清理）都是独立 MCP 工具，想只用某一步、或自己拼素材再总结，都能任意组合。无需启动任何后端服务。
+本项目**既可端到端使用（一条链接 → 一篇笔记）**，**也可解耦**：流水线每一阶段（下载 / 转写 / 抽帧 / 评论 / 总结 / 导出 / 增强 / 清理）都是独立 MCP 工具，想只用某一步、或只想了解视频内容，都能满足。无需启动任何后端服务。
 
 <p align="center">
   <a href="https://github.com/HuangYincan/VideoNote-MCP"><img src="https://img.shields.io/github/stars/HuangYincan/VideoNote-MCP?logo=github" alt="GitHub stars"></a>
@@ -49,7 +49,7 @@ claude plugin marketplace add HuangYincan/VideoNote-MCP
 claude plugin install videonote@videonote
 
 # 2) 配置 LLM key + 语音转写引擎（key 不进对话）
-videonote setup
+# videonote setup (可选，如需其它多模态模型兜底)
 
 # 3) 重启会话，对 agent 说「帮我给这个视频做笔记」+ 链接
 ```
