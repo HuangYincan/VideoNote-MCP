@@ -16,25 +16,25 @@
     "default_screenshot": {
       "type": "boolean",
       "title": "笔记默认插图",
-      "description": "点开关切换。true=生成笔记时默认插入视频截图",
+      "description": "输入 true 或 false。true=生成笔记时默认插入视频截图",
       "default": false
     },
     "video_understanding": {
       "type": "boolean",
       "title": "视频理解默认",
-      "description": "点开关切换。true=默认把画面抽帧发给多模态 LLM（需多模态模型）",
+      "description": "输入 true 或 false。true=默认把画面抽帧发给多模态 LLM（需多模态模型）",
       "default": false
     },
     "include_comments": {
       "type": "boolean",
       "title": "弹幕+评论整合默认",
-      "description": "点开关切换。true=默认把 B 站弹幕+热门评论整合进笔记（需 SESSDATA）",
+      "description": "输入 true 或 false。true=默认把 B 站弹幕+热门评论整合进笔记（需 SESSDATA）",
       "default": false
     },
     "notes_dir": {
       "type": "directory",
       "title": "笔记默认位置",
-      "description": "输入绝对路径，或点右侧图标浏览选择。留空=默认 note_results/{task_id}/",
+      "description": "输入笔记输出目录的绝对路径。留空=默认 note_results/{task_id}/",
       "default": ""
     },
     "transcriber_type": {

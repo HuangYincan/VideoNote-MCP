@@ -64,9 +64,9 @@ claude plugin install videonote@videonote
 
 > [!NOTE] How to fill in the plugin defaults (`/plugin configure` page)
 > The default-value fields shown during `/plugin install` and on the `/plugin configure`
-> page are **typed input** (not dropdowns):
-> - **Boolean fields** (Default screenshots / Video understanding / Comments): **toggle** them `true`/`false`;
-> - **Directory field** (Default notes location): type an absolute path or browse;
+> page are **all typed input** (no dropdowns or toggles):
+> - **Boolean fields** (Default screenshots / Video understanding / Comments): type `true` or `false`;
+> - **Directory field** (Default notes location): type an **absolute path**; leave empty for the default `note_results/{task_id}/`;
 > - **String fields** (Style / Transcriber / Model size): **type the English key directly** —
 >   style: `detailed` / `minimal` / `academic` / `tutorial` / `xiaohongshu` / `life_journal` / `task_oriented` / `business` / `meeting_minutes`;
 >   transcriber: `fast-whisper` (local, recommended) / `groq` / `bcut` / `kuaishou` / `mlx-whisper`;
