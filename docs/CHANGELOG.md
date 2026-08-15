@@ -12,6 +12,7 @@
 - **`server.py` 默认值读取点加 env 兜底**：`generate_note` / `prepare_note_material` / `summarize_note` / `export_transcript` / 自动导出的 style / screenshot / video_understanding / video_interval / include_comments / comments_limit / default_export_formats 全部按「配置文件优先、env 兜底」读取（与 transcriber 现有模式一致）。
 - **新插件命令 `/videonote-setup`**（`commands/videonote-setup.md`）：装完配置的显式入口 —— 体检 → 引导填 key → 转写模型下载 → 展示默认值 → B站扫码 → 数据管理。
 - **SKILL / reference/tools.md / README（中英）/ docs/04 同步**：凭证命令改为「本会话 `!` 前缀」引导（`! videonote providers set` 隐藏输入、值不过对话；`! videonote login bilibili` 二维码渲染进会话终端）；全自动模式默认来源补 userConfig。
+- **install.sh 修混合安装冲突**：旧版同时做用户级 `claude mcp add videonote`（env 为空）和 marketplace 插件安装，前者会遮蔽插件自带 MCP server 的 env —— 改为 marketplace 优先、仅失败时回退用户级 `claude mcp add` + 本地 Skill 链接；docs/04 加「混合安装注意」警示。
 
 ## 维护（2026-08-06 · 发布 v0.1.4）
 
