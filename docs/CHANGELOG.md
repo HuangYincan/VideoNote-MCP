@@ -14,6 +14,7 @@
 - **SKILL / reference/tools.md / README（中英）/ docs/04 同步**：凭证命令改为「本会话 `!` 前缀」引导（`! videonote providers set` 隐藏输入、值不过对话；`! videonote login bilibili` 二维码渲染进会话终端）；全自动模式默认来源补 userConfig。
 - **install.sh 修混合安装冲突**：旧版同时做用户级 `claude mcp add videonote`（env 为空）和 marketplace 插件安装，前者会遮蔽插件自带 MCP server 的 env —— 改为 marketplace 优先、仅失败时回退用户级 `claude mcp add` + 本地 Skill 链接；docs/04 加「混合安装注意」警示。
 - **userConfig 说明补全**：`/plugin configure` 页**全部为键盘输入**（无下拉/开关，schema 无 enum）——布尔项输入 `true`/`false`、目录项输入绝对路径、字符串项直接输入英文 key；`plugin.json` 的 description 逐项写明可填值，README（中英）/ docs/04 补「插件默认值怎么填」说明。
+- **防「装完没重启就配置」**：`/videonote-setup` 命令加**第 0 步「确认 MCP 工具已挂载」**——未挂载（`mcp__videonote__*` 不存在，通常是插件装完没重启会话）→ 立即停止并引导重启 / `/mcp` 排查 / `MCP_TIMEOUT` 重试，禁止 agent 用 CLI/读文件/猜数据目录代替 MCP 工具；SKILL 工作流第 1 步同步；docs/04 明确「重启前不要跑 /videonote-setup」。
 
 ## 维护（2026-08-06 · 发布 v0.1.4）
 

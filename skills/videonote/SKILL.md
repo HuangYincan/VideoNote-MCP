@@ -48,7 +48,7 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 
 ## 工作流
 
-1. **`health_check`** —— ffmpeg/db 就绪；缺失先让用户装 FFmpeg。
+1. **`health_check`** —— ffmpeg/db 就绪；缺失先让用户装 FFmpeg。**若本会话没有 videonote 的 MCP 工具（`mcp__videonote__*`）**：说明插件 MCP server 未加载，先引导用户**重启会话**（或 `/reload-plugins`），不要用 CLI/读文件代替 MCP 工具。
 2. **`validate_url(url)`** —— 平台识别；B 站优先用平台字幕（AI 字幕需 SESSDATA）。
 3. **`list_providers`** —— 有 key=已填的供应商；没有则让用户在终端配（AGENT 直接生成分支不需要 LLM，但仍需确认已配好）。
 4. **问模式 + 确认参数**（见「强制规则 0/2」，问完再继续）。

@@ -7,6 +7,20 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 
 按顺序执行配置检查与引导。**已就绪的步骤直接跳过**，不要重复提问；每步做完汇报结果。
 
+## 0. 前置：确认 MCP 工具已挂载（最重要，不满足则停下）
+
+**本命令的一切配置操作都依赖 videonote 的 MCP 工具**（`mcp__videonote__*`：`health_check` / `list_providers` / `get_transcriber_config` 等）。
+先确认本会话里是否挂载了它们。**不要用 CLI / 读配置文件代替 MCP 工具**，也不要自行判断「哪份配置权威」——server 返回的 `data_dir` 才是权威（不要像 diff 数据目录那样去猜）。
+
+- **已挂载** → 继续第 1 步。
+- **未挂载** → **立即停止并引导**，不要继续后面的步骤、不要替代性跑 CLI/读文件：
+  1. 最可能原因：插件装好后**没重启会话**，插件的 MCP server 尚未加载。请用户**重启 Claude Code 会话**（或 `/reload-plugins`），再重跑本命令。
+  2. 若重启后仍没有：让用户在会话里跑 **`/mcp`**，看 `videonote` 是否 Connected、报什么错。
+  3. 常见报错：uvx 首次从 git 拉包超时（默认 30s）。用 `MCP_TIMEOUT=120000 claude` 重启会话再试。
+  4. 可选 CLI 自检（只验证 CLI 可用，**不等同 MCP 工具挂载**）——让用户在终端跑：
+     `uvx --from git+https://github.com/HuangYincan/VideoNote-MCP videonote providers list`
+- 唯一允许的只读检查：FFmpeg 是否可用（`ffmpeg -version`，`health_check` 也会查，仅作提前确认）。其余一律等 MCP 工具。
+
 ## 1. 状态体检
 
 调用 **`health_check`**，看 FFmpeg / 数据库 / 转写引擎 / whisper 模型就绪状态。
