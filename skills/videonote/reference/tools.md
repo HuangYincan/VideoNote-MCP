@@ -174,12 +174,13 @@
 
 | 场景 | 操作 |
 |------|------|
-| 给内置供应商填 key | 用户在终端 `videonote providers set <id> --api-key 'sk-...'`（agent 不碰 key） |
+| 配置入口（首次使用） | 用户在 Claude Code 跑 `/videonote-setup`（体检 → 填 key → 转写 → 默认值 → B站扫码 → 数据管理） |
+| 给内置供应商填 key | 用户在本会话 `! videonote providers set <id> --api-key 'sk-...'`（隐藏输入、agent 不碰 key） |
 | 自建/新增供应商 | `add_provider(name, api_key, base_url, type)` |
 | 查看供应商 / 模型 | `list_providers()`（掩码）/ `list_models(provider_id)` |
 | 切本地转写 | `set_transcriber("fast-whisper", "small")` + `download_transcriber_model("small")` |
 | 切云端转写 | `set_transcriber("groq")`（groq key 用 CLI 填） |
-| B 站登录/AI 字幕/评论 | 用户在终端 `videonote login bilibili` 扫码（存 SESSDATA）；或 `set_downloader_cookie(platform="bilibili", cookie="SESSDATA=...")` |
+| B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA）；或 `set_downloader_cookie(platform="bilibili", cookie="SESSDATA=...")` |
 | 本地文件 | `generate_note(video_url="/绝对/路径/x.mp4", platform="local", ...)` |
 | 视频理解默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `video_understanding`/`video_interval` 即套用（默认关/6s） |
 | 评论/弹幕整合默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `include_comments`/`comments_limit` 即套用（默认关/20 条） |

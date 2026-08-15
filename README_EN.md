@@ -47,10 +47,17 @@ This project **works end-to-end (one link → one note)** and is **also decouple
 claude plugin marketplace add HuangYincan/VideoNote-MCP
 claude plugin install videonote@videonote
 
-# 2) Configure LLM key + transcription engine (keys never enter the conversation)
-# videonote setup (optional, if you need other multimodal models as a fallback)
+# 2) Claude Code prompts for defaults during install (style / transcriber /
+#    video-understanding / comments etc.); then run the guided config command:
+/videonote-setup
 
-# 3) Restart your session, tell the agent "make notes for this video" + link
+# 3) Fill in your LLM key (hidden input, never enters the conversation) — type
+#    in this session:
+#    ! videonote providers set <provider_id> --api-key 'sk-...'
+#    (Bilibili QR login: ! videonote login bilibili; full wizard:
+#    ! videonote setup — better in a separate terminal)
+
+# 4) Restart your session, tell the agent "make notes for this video" + link
 ```
 
 > All four install methods, configuration details, updating and security are in [docs/04-使用手册.md](docs/04-使用手册.md).

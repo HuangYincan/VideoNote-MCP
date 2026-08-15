@@ -17,6 +17,37 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _IS_SOURCE_CHECKOUT = (_REPO_ROOT / "pyproject.toml").exists()
 
+# Claude Code 插件 userConfig → MCP env 映射的全集。Claude Code 对用户跳过未填的
+# userConfig 项会透传字面 `${user_config.x}`，这些值绝不能当真实配置，由
+# _purge_placeholder_env() 统一剔除，让下游走默认值。
+_USER_CONFIG_MAPPED_ENV = (
+    "TRANSCRIBER_TYPE",
+    "WHISPER_MODEL_SIZE",
+    "VIDEONOTE_ENABLE_PREPROCESS",
+    "VIDEONOTE_DIARIZATION",
+    "VIDEONOTE_NOTES_DIR",
+    "VIDEONOTE_DEFAULT_STYLE",
+    "VIDEONOTE_DEFAULT_SCREENSHOT",
+    "VIDEONOTE_VIDEO_UNDERSTANDING",
+    "VIDEONOTE_VIDEO_INTERVAL",
+    "VIDEONOTE_INCLUDE_COMMENTS",
+    "VIDEONOTE_COMMENTS_LIMIT",
+    "VIDEONOTE_DEFAULT_EXPORT_FORMATS",
+)
+
+
+def _purge_placeholder_env() -> None:
+    """剔除形如 `${...}` 的字面 env 值（Claude Code 对未填 userConfig 的透传）。
+
+    必须在 setup_environment() 里 setdefault 默认值**之前**调用：把字面占位符
+    pop 掉后，setdefault 会重新填上正常默认值（如 TRANSCRIBER_TYPE=fast-whisper），
+    否则一个坏字符串会一路当真实配置用（转写引擎直接挂）。
+    """
+    for name in _USER_CONFIG_MAPPED_ENV:
+        v = os.environ.get(name)
+        if v and v.startswith("${") and v.endswith("}"):
+            os.environ.pop(name, None)
+
 
 def _default_data_dir() -> Path:
     if _IS_SOURCE_CHECKOUT:
@@ -28,8 +59,53 @@ def _default_data_dir() -> Path:
     return base / "videonote-mcp"
 
 
+def env_or(name: str) -> "str | None":
+    """读取 env 字符串；未设置或空串 → None。
+
+    供「配置文件优先、env 兜底」的读取点用（Claude Code 插件 userConfig 注入）。
+    """
+    v = os.environ.get(name)
+    if v is None or not v.strip():
+        return None
+    return v
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    """解析 env 布尔（'1'/'true'/'yes'/'on'，大小写不敏感）；未设置回 default。"""
+    v = env_or(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def env_int(name: str, default: int) -> int:
+    """解析 env 整数；未设置或解析失败回 default。"""
+    v = env_or(name)
+    if v is None:
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        return default
+
+
+def env_json_list(name: str, default):
+    """解析 env JSON 数组（如 '["srt","vtt"]'）；未设置/非法回 default。"""
+    v = env_or(name)
+    if v is None:
+        return default
+    try:
+        import json
+
+        parsed = json.loads(v)
+        return parsed if isinstance(parsed, list) else default
+    except Exception:
+        return default
+
+
 def setup_environment() -> Path:
     """解析数据目录并设置环境变量（仅在没有显式设置时填充默认值）。返回数据根目录 Path。"""
+    _purge_placeholder_env()
     data_dir = Path(os.environ.get("VIDEONOTE_DATA_DIR") or _default_data_dir()).expanduser().resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
 

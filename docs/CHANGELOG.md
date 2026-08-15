@@ -2,6 +2,17 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## 维护（2026-08-16 · setup 整合进 Claude Code /plugin）
+
+把 `videonote setup` 的**默认值类配置**整合进 Claude Code 插件安装体验（凭证类仍走终端，红线不变）：
+
+- **`plugin.json` 加 `userConfig`**：`/plugin install` 时 Claude Code 逐项提示收非敏感默认值（笔记风格 / 截图 / 视频理解 / 评论弹幕 / 转写引擎 / 模型尺寸 / 笔记位置），**API key 不进 userConfig**（K1 决策，key 仍走 `! videonote providers set`）。
+- **`marketplace.json` mcpServers 加 `env`**：`${user_config.*}` → `VIDEONOTE_*` / `TRANSCRIBER_TYPE` / `WHISPER_MODEL_SIZE` 注入 MCP server，作为「配置文件缺项时的兜底默认」。
+- **`config.py` 新增占位符剔除 + env 解析助手**：`_purge_placeholder_env()` 在 `setup_environment()` 最前剔除 Claude Code 对「用户跳过未填项」透传的字面 `${user_config.x}`（防坏字符串当真实配置）；`env_or` / `env_bool` / `env_int` / `env_json_list` 供「配置文件优先、env 兜底」读取点解析。
+- **`server.py` 默认值读取点加 env 兜底**：`generate_note` / `prepare_note_material` / `summarize_note` / `export_transcript` / 自动导出的 style / screenshot / video_understanding / video_interval / include_comments / comments_limit / default_export_formats 全部按「配置文件优先、env 兜底」读取（与 transcriber 现有模式一致）。
+- **新插件命令 `/videonote-setup`**（`commands/videonote-setup.md`）：装完配置的显式入口 —— 体检 → 引导填 key → 转写模型下载 → 展示默认值 → B站扫码 → 数据管理。
+- **SKILL / reference/tools.md / README（中英）/ docs/04 同步**：凭证命令改为「本会话 `!` 前缀」引导（`! videonote providers set` 隐藏输入、值不过对话；`! videonote login bilibili` 二维码渲染进会话终端）；全自动模式默认来源补 userConfig。
+
 ## 维护（2026-08-06 · 发布 v0.1.4）
 
 v0.1.3 → v0.1.4 的主要变更（稳定安装：`uvx --from git+https://github.com/HuangYincan/VideoNote-MCP@v0.1.4 videonote`）：

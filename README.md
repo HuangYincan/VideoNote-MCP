@@ -48,10 +48,15 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
 claude plugin marketplace add HuangYincan/VideoNote-MCP
 claude plugin install videonote@videonote
 
-# 2) 配置 LLM key + 语音转写引擎（key 不进对话）
-# videonote setup (可选，如需其它多模态模型兜底)
+# 2) 安装时 Claude Code 会逐项提示默认值（风格/转写引擎/视频理解/评论等）；
+#    装完在会话里跑配置向导收尾：
+/videonote-setup
 
-# 3) 重启会话，对 agent 说「帮我给这个视频做笔记」+ 链接
+# 3) 填 LLM key（隐藏输入，值不进对话）：在本会话输入
+#    ! videonote providers set <provider_id> --api-key 'sk-...'
+#    （B 站扫码：! videonote login bilibili；全屏向导：! videonote setup，独立终端更稳）
+
+# 4) 重启会话，对 agent 说「帮我给这个视频做笔记」+ 链接
 ```
 
 > [!TIP] 

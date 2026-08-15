@@ -22,7 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from videonote_mcp.config import get_app_config, setup_environment
+from videonote_mcp.config import env_bool, env_int, env_json_list, env_or, get_app_config, setup_environment
 
 DATA_DIR = setup_environment()
 
@@ -205,10 +205,10 @@ def _auto_export_transcript(task_id: str, transcript) -> None:
     不涉及 LLM/网络；导出文件自动记入 manifest（供 cleanup_note 清理）。
     """
     try:
-        from videonote_mcp.config import get_app_config
+        from videonote_mcp.config import env_json_list, get_app_config
         from videonote_mcp.export import export_transcript
 
-        default_formats = get_app_config().get("default_export_formats") or []
+        default_formats = get_app_config().get("default_export_formats") or env_json_list("VIDEONOTE_DEFAULT_EXPORT_FORMATS", [])
         if not default_formats or not transcript:
             return
         export_transcript(
@@ -464,21 +464,21 @@ def generate_note(
     # 视频理解默认：参数没传（None）时用 setup ③ 配置的默认（默认关 / 0→6s）；
     # 显式传 False/0/具体秒数仍是显式值，覆盖默认
     if video_understanding is None:
-        video_understanding = bool(get_app_config().get("video_understanding", False))
+        video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
     if video_interval is None:
-        video_interval = int(get_app_config().get("video_interval") or 0)
+        video_interval = int(get_app_config().get("video_interval") or env_int("VIDEONOTE_VIDEO_INTERVAL", 0))
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
-        include_comments = bool(get_app_config().get("include_comments", False))
+        include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
     if comments_limit is None:
-        comments_limit = int(get_app_config().get("comments_limit") or 20)
+        comments_limit = int(get_app_config().get("comments_limit") or env_int("VIDEONOTE_COMMENTS_LIMIT", 20))
 
     # 风格/截图默认：参数没传（None）时用 setup ③ 配置的默认（默认 detailed / 关）
     if style is None:
-        style = get_app_config().get("default_style") or "detailed"
+        style = get_app_config().get("default_style") or env_or("VIDEONOTE_DEFAULT_STYLE") or "detailed"
     if screenshot is None:
-        screenshot = bool(get_app_config().get("default_screenshot", False))
+        screenshot = bool(get_app_config().get("default_screenshot", env_bool("VIDEONOTE_DEFAULT_SCREENSHOT", False)))
 
     # 并发上限：最多 VIDEONOTE_MAX_WORKERS 个进行中任务（默认 3）—— subagent 并行提交多视频时
     # 按 pool 容量限制，超出则拒绝（避免无界排队）。stderr 管道死锁已修复，并行提交不再挂起。
@@ -558,15 +558,15 @@ def prepare_note_material(
     # 视频理解（抽帧）默认：参数没传（None）时用 setup ③ 配置的默认（默认关 / 0→6s）；
     # 显式传 False/0/具体秒数仍是显式值，覆盖默认
     if video_understanding is None:
-        video_understanding = bool(get_app_config().get("video_understanding", False))
+        video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
     if video_interval is None:
-        video_interval = int(get_app_config().get("video_interval") or 0)
+        video_interval = int(get_app_config().get("video_interval") or env_int("VIDEONOTE_VIDEO_INTERVAL", 0))
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
-        include_comments = bool(get_app_config().get("include_comments", False))
+        include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
     if comments_limit is None:
-        comments_limit = int(get_app_config().get("comments_limit") or 20)
+        comments_limit = int(get_app_config().get("comments_limit") or env_int("VIDEONOTE_COMMENTS_LIMIT", 20))
 
     # 并发上限：与 generate_note 一致，最多 VIDEONOTE_MAX_WORKERS 个进行中任务（默认 3）
     with _tasks_lock:
@@ -1046,7 +1046,7 @@ def summarize_note(
             f"供应商 {provider_id} 还没有可用模型：请先 list_models 查看，或 add_model 添加模型名"
         )
     if style is None:
-        style = get_app_config().get("default_style") or "detailed"
+        style = get_app_config().get("default_style") or env_or("VIDEONOTE_DEFAULT_STYLE") or "detailed"
     material = {
         "title": title,
         "transcript": _coerce_transcript(transcript),
@@ -1397,9 +1397,9 @@ def export_transcript(
         )
 
     if formats is None:
-        from videonote_mcp.config import get_app_config
+        from videonote_mcp.config import env_json_list, get_app_config
 
-        formats = get_app_config().get("default_export_formats") or ["srt", "vtt", "json"]
+        formats = get_app_config().get("default_export_formats") or env_json_list("VIDEONOTE_DEFAULT_EXPORT_FORMATS", ["srt", "vtt", "json"])
 
     out = out_dir or str(task_dir / "gen")
     written = _export(transcript, formats=formats, out_dir=out, task_id=task_id)

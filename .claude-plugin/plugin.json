@@ -4,5 +4,49 @@
   "author": {
     "name": "HuangYincan",
     "url": "https://github.com/HuangYincan"
+  },
+  "commands": ["./commands/"],
+  "userConfig": {
+    "default_style": {
+      "type": "string",
+      "title": "笔记风格默认",
+      "description": "minimal 精简 / detailed 详细 / academic 学术 / tutorial 教程 / xiaohongshu 小红书 / life_journal 生活向 / task_oriented 任务导向 / business 商业 / meeting_minutes 会议纪要",
+      "default": "detailed"
+    },
+    "default_screenshot": {
+      "type": "boolean",
+      "title": "笔记默认插图",
+      "description": "生成笔记时默认插入视频截图",
+      "default": false
+    },
+    "video_understanding": {
+      "type": "boolean",
+      "title": "视频理解默认",
+      "description": "默认把画面抽帧发给多模态 LLM（需多模态模型）",
+      "default": false
+    },
+    "include_comments": {
+      "type": "boolean",
+      "title": "弹幕+评论整合默认",
+      "description": "默认把 B 站弹幕+热门评论整合进笔记（需 SESSDATA）",
+      "default": false
+    },
+    "notes_dir": {
+      "type": "directory",
+      "title": "笔记默认位置",
+      "description": "便携笔记输出目录"
+    },
+    "transcriber_type": {
+      "type": "string",
+      "title": "语音转写引擎",
+      "description": "fast-whisper 本地 / groq / bcut / kuaishou / mlx-whisper",
+      "default": "fast-whisper"
+    },
+    "whisper_model_size": {
+      "type": "string",
+      "title": "Whisper 模型尺寸",
+      "description": "tiny / base / small / medium / large-v3 / large-v3-turbo",
+      "default": "tiny"
+    }
   }
 }
