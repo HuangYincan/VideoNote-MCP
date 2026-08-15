@@ -62,6 +62,19 @@ claude plugin install videonote@videonote
 
 > All four install methods, configuration details, updating and security are in [docs/04-使用手册.md](docs/04-使用手册.md).
 
+> [!NOTE] How to fill in the plugin defaults (`/plugin configure` page)
+> The default-value fields shown during `/plugin install` and on the `/plugin configure`
+> page are **typed input** (not dropdowns):
+> - **Boolean fields** (Default screenshots / Video understanding / Comments): **toggle** them `true`/`false`;
+> - **Directory field** (Default notes location): type an absolute path or browse;
+> - **String fields** (Style / Transcriber / Model size): **type the English key directly** —
+>   style: `detailed` / `minimal` / `academic` / `tutorial` / `xiaohongshu` / `life_journal` / `task_oriented` / `business` / `meeting_minutes`;
+>   transcriber: `fast-whisper` (local, recommended) / `groq` / `bcut` / `kuaishou` / `mlx-whisper`;
+>   model size: `tiny` / `base` / `small` / `medium` / `large-v3` / `large-v3-turbo`.
+> These only serve as **fallbacks when the config file lacks a value** — your local
+> `app_config.json` / `transcriber.json` (set via `videonote setup`) takes precedence.
+
+
 ## 📚 Docs
 
 Full installation / configuration / usage / env vars / updating / security docs now live in `docs/` (this README keeps just the overview):

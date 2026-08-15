@@ -63,6 +63,17 @@ claude plugin install videonote@videonote
 > 四种安装方式、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
 > 
 
+> [!NOTE] 插件默认值怎么填（`/plugin configure` 页）
+> `/plugin install` 时及 `/plugin configure` 页里的默认值项都是**键盘输入**（不是下拉选择）：
+> - **布尔项**（笔记默认插图 / 视频理解默认 / 弹幕+评论整合默认）：**点开关切换** `true`/`false`；
+> - **目录项**（笔记默认位置）：输入绝对路径，或点右侧图标浏览选择；
+> - **字符串项**（笔记风格 / 转写引擎 / 模型尺寸）：**直接输入英文 key** ——
+>   风格：`detailed` / `minimal` / `academic` / `tutorial` / `xiaohongshu` / `life_journal` / `task_oriented` / `business` / `meeting_minutes`；
+>   转写引擎：`fast-whisper`（本地，推荐）/ `groq` / `bcut` / `kuaishou` / `mlx-whisper`；
+>   模型尺寸：`tiny` / `base` / `small` / `medium` / `large-v3` / `large-v3-turbo`。
+> 这些只是「配置文件缺项时的兜底默认」——你本地用 `videonote setup` 配置的
+> `app_config.json` / `transcriber.json` 优先级更高，只有它们没设某项时才用这里的值。
+
 ## 📚 文档
 
 安装 / 配置 / 使用 / 环境变量 / 更新 / 安全等完整说明已归档到 `docs/`（README 只保留概览）：
