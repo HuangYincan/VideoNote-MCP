@@ -2,6 +2,12 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## 维护（2026-08-16 · README 快速开始精简）
+
+- **中文 README 快速开始精简**：步骤 3 收敛为一行 `! videonote setup`（LLM-Key / B 站扫码 / CLI 向导，配置细节交向导与 Configure 页）；删除「插件默认值怎么填」NOTE 块。
+- **README_EN 同步**：步骤 3 同口径精简，删除英文「How to fill in the plugin defaults」NOTE。
+- **docs/04 保留 Configure 填法说明**：修掉对已删 README NOTE 的失效引用（改为「Configure 页每个字段下方的说明也列出了可填值」），填法细节作为详细手册内容保留。
+
 ## 维护（2026-08-16 · setup 整合进 Claude Code /plugin）
 
 把 `videonote setup` 的**默认值类配置**整合进 Claude Code 插件安装体验（凭证类仍走终端，红线不变）：
