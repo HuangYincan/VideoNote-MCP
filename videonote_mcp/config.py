@@ -37,15 +37,18 @@ _USER_CONFIG_MAPPED_ENV = (
 
 
 def _purge_placeholder_env() -> None:
-    """剔除形如 `${...}` 的字面 env 值（Claude Code 对未填 userConfig 的透传）。
+    """剔除 Claude Code 插件 userConfig 注入 env 的「无效值」。
 
-    必须在 setup_environment() 里 setdefault 默认值**之前**调用：把字面占位符
-    pop 掉后，setdefault 会重新填上正常默认值（如 TRANSCRIBER_TYPE=fast-whisper），
-    否则一个坏字符串会一路当真实配置用（转写引擎直接挂）。
+    两种都会被剔除，让下游走默认值：
+      1. 字面 `${...}`（Claude Code 对用户跳过未填项的原样透传）；
+      2. 空字符串（部分版本对未填项传空串而非占位符）。
+    必须在 setup_environment() 里 setdefault 默认值**之前**调用：pop 掉后
+    setdefault 会重新填上正常默认值（如 TRANSCRIBER_TYPE=fast-whisper），
+    否则坏值会一路当真实配置用（转写引擎直接挂）。
     """
     for name in _USER_CONFIG_MAPPED_ENV:
         v = os.environ.get(name)
-        if v and v.startswith("${") and v.endswith("}"):
+        if not v or (v.startswith("${") and v.endswith("}")):
             os.environ.pop(name, None)
 
 

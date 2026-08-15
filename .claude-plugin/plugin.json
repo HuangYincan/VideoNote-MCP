@@ -6,6 +6,25 @@
     "url": "https://github.com/HuangYincan"
   },
   "commands": ["./commands/"],
+  "mcpServers": {
+    "videonote": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/HuangYincan/VideoNote-MCP",
+        "videonote"
+      ],
+      "env": {
+        "VIDEONOTE_DEFAULT_STYLE": "${user_config.default_style}",
+        "VIDEONOTE_DEFAULT_SCREENSHOT": "${user_config.default_screenshot}",
+        "VIDEONOTE_VIDEO_UNDERSTANDING": "${user_config.video_understanding}",
+        "VIDEONOTE_INCLUDE_COMMENTS": "${user_config.include_comments}",
+        "VIDEONOTE_NOTES_DIR": "${user_config.notes_dir}",
+        "TRANSCRIBER_TYPE": "${user_config.transcriber_type}",
+        "WHISPER_MODEL_SIZE": "${user_config.whisper_model_size}"
+      }
+    }
+  },
   "userConfig": {
     "default_style": {
       "type": "string",

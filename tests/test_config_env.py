@@ -37,6 +37,15 @@ def test_purge_keeps_real_values():
     del os.environ["VIDEONOTE_DEFAULT_STYLE"]
 
 
+def test_purge_removes_empty_values():
+    # 部分版本对未填 userConfig 传空串而非占位符，同样应剔除走默认
+    os.environ["TRANSCRIBER_TYPE"] = ""
+    os.environ["WHISPER_MODEL_SIZE"] = ""
+    _purge_placeholder_env()
+    assert "TRANSCRIBER_TYPE" not in os.environ
+    assert "WHISPER_MODEL_SIZE" not in os.environ
+
+
 def test_env_or():
     os.environ["VN_TEST"] = "abc"
     assert env_or("VN_TEST") == "abc"
