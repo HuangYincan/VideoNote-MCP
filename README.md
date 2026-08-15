@@ -48,15 +48,31 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
 claude plugin marketplace add HuangYincan/VideoNote-MCP
 claude plugin install videonote@videonote
 
-# 2) 配置 LLM key + 语音转写引擎（key 不进对话）
-# videonote setup (可选，如需其它多模态模型兜底)
+# 2) 安装时 Claude Code 会逐项提示默认值（风格/转写引擎/视频理解/评论等）；
+#    装完在会话里跑配置向导收尾：
+/videonote-setup
 
-# 3) 重启会话，对 agent 说「帮我给这个视频做笔记」+ 链接
+# 3) 填 LLM key（隐藏输入，值不进对话）：在本会话输入
+#    ! videonote providers set <provider_id> --api-key 'sk-...'
+#    （B 站扫码：! videonote login bilibili；全屏向导：! videonote setup，独立终端更稳）
+
+# 4) 重启会话，对 agent 说「帮我给这个视频做笔记」+ 链接
 ```
 
 > [!TIP] 
 > 四种安装方式、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
 > 
+
+> [!NOTE] 插件默认值怎么填（`/plugin configure` 页）
+> `/plugin install` 时及 `/plugin configure` 页里的默认值项**全部手动输入**（无下拉/开关）：
+> - **布尔项**（笔记默认插图 / 视频理解默认 / 弹幕+评论整合默认）：输入 `true` 或 `false`；
+> - **目录项**（笔记默认位置）：输入笔记输出目录的**绝对路径**，留空 = 默认 `note_results/{task_id}/`；
+> - **字符串项**（笔记风格 / 转写引擎 / 模型尺寸）：**直接输入英文 key** ——
+>   风格：`detailed` / `minimal` / `academic` / `tutorial` / `xiaohongshu` / `life_journal` / `task_oriented` / `business` / `meeting_minutes`；
+>   转写引擎：`fast-whisper`（本地，推荐）/ `groq` / `bcut` / `kuaishou` / `mlx-whisper`；
+>   模型尺寸：`tiny` / `base` / `small` / `medium` / `large-v3` / `large-v3-turbo`。
+> 这些只是「配置文件缺项时的兜底默认」——你本地用 `videonote setup` 配置的
+> `app_config.json` / `transcriber.json` 优先级更高，只有它们没设某项时才用这里的值。
 
 ## 📚 文档
 

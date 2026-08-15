@@ -10,15 +10,15 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 0. **任务开始必须先问「全自动」还是「手动」**：
    - **全自动**：用 setup 默认解析出本次任务的**完整参数清单**，**一次性列出给用户确认**（不逐个问；用户要改再以提问方式改）—— 见规则 2。`generate_note` / `prepare_note_material` 不传这些参数即套默认。
    - **手动**：逐个确认参数（见规则 2）后再调用 `generate_note`。
-1. **必须用 MCP 工具**（`generate_note` / `prepare_note_material` / `get_task_status` / `list_providers` / `cancel_note` 等），**不要用 Bash/curl 手工调后端**。唯一例外：让用户在独立终端跑 `videonote providers set`（填 key）、`videonote login bilibili`（B站扫码）—— 这些本就该在终端做。
+1. **必须用 MCP 工具**（`generate_note` / `prepare_note_material` / `get_task_status` / `list_providers` / `cancel_note` 等），**不要用 Bash/curl 手工调后端**。唯一例外：让用户在本会话终端输 **`! videonote providers set`**（填 key，隐藏输入、值不过对话）、**`! videonote login bilibili`**（B站扫码）—— 凭证本就该在终端做，`!` 前缀让命令在会话里跑、输出直接进对话。
 2. **确认参数依模式而定**：
    - **手动模式**：用户明确指定（或说「你定」）之前，禁止调用 `generate_note` / `prepare_note_material`。必须问：
      - **LLM 模型**：`list_models(provider_id)` 拿到列表 → 呈现给用户选一个；**或选「AGENT 直接生成」**（`agent_direct`：不用配置 LLM、AGENT 自己写笔记，见强制规则 4；用户要则走工作流分支 A）；
      - **笔记风格**：列出真实 9 种让用户选 —— `minimal` 精简 / `detailed` 详细 / `academic` 学术 / `tutorial` 教程 / `xiaohongshu` 小红书 / `life_journal` 生活向 / `task_oriented` 任务导向 / `business` 商业风格 / `meeting_minutes` 会议纪要，或自定义（描述经 `extras` 传入）；
      - **是否视频理解** + 帧间隔秒数（默认 6，需多模态模型）；
-     - **是否整合弹幕+评论区观点** + 评论条数（默认 20，需 B 站 SESSDATA，没配引导用户 `videonote login bilibili`）；
+     - **是否整合弹幕+评论区观点** + 评论条数（默认 20，需 B 站 SESSDATA，没配引导用户 `! videonote login bilibili`）；
      - **是否插图片** + 笔记保存位置（`notes_dir`）；
-   - **全自动模式**：不逐个问，但**先用 setup 默认解析出本次任务将用的完整参数清单，一次性列给用户确认**（每项带默认值）：
+   - **全自动模式**：不逐个问，但**先用 setup 默认解析出本次任务将用的完整参数清单，一次性列给用户确认**（每项带默认值。默认来源：`/plugin` 安装时的 userConfig 或 `videonote setup` 向导）：
      1. **生成方式 / LLM 模型**：默认用配置 LLM 的默认模型（`list_providers()` 有 key 的供应商默认模型）；**或改选「AGENT 直接生成」**（`agent_direct`，不走配置 LLM、AGENT 自己写笔记，见规则 4 / 分支 A）；
      2. **笔记风格**：`default_style`（默认 detailed，9 种或自定义）；
      3. **视频理解**：默认关（启用则帧间隔 6s，需多模态模型）；
@@ -40,9 +40,15 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 5. **生成后是否后续优化**：手动模式**生成后必须问**；全自动模式按参数清单已确认的选择执行（要 → 基于笔记（读 `note_dir` 的 note.md）+ 转写精修：`get_task_transcript(task_id)` 按需取转写、超长分段，从转写挖更多细节、展开讲透、补齐遗漏、修正不一致、增强结构；不要 → 跳过），不再重复问。
 6. **平台接手**：`validate_url` / `generate_note` / `prepare_note_material` 返回 `handoff: True` 时，说明该链接不在内置下载器范围（bilibili/youtube/douyin/tiktok/kuaishou/本地文件之外）。**不要重试、不要报错结束**——Agent 接手：用 WebFetch / 浏览器读取页面提取视频源，或用 yt-dlp 通用模式下载，再以本地文件路径调用 `generate_note(video_url="/绝对/路径/x.mp4", platform="local", ...)`。
 
+## 🔧 配置入口（首次使用前）
+
+- **`/videonote-setup`** —— 在 Claude Code 里跑配置向导：体检 → 填 key（`! videonote providers set`）→ 转写引擎/模型下载 → 展示默认值 → B站扫码 → 数据管理。
+- **默认值**：`/plugin` 安装时的 userConfig 已收风格/截图/视频理解/评论/转写引擎/笔记位置等默认；要改跑 `! videonote setup` 全屏向导（独立终端更稳）。
+- **API key 红线**：key 只经 `! videonote providers set` 输入（隐藏、值不过对话），绝不让用户把 key 贴进对话。
+
 ## 工作流
 
-1. **`health_check`** —— ffmpeg/db 就绪；缺失先让用户装 FFmpeg。
+1. **`health_check`** —— ffmpeg/db 就绪；缺失先让用户装 FFmpeg。**若本会话没有 videonote 的 MCP 工具（`mcp__videonote__*`）**：说明插件 MCP server 未加载，先引导用户**重启会话**（或 `/reload-plugins`），不要用 CLI/读文件代替 MCP 工具。
 2. **`validate_url(url)`** —— 平台识别；B 站优先用平台字幕（AI 字幕需 SESSDATA）。
 3. **`list_providers`** —— 有 key=已填的供应商；没有则让用户在终端配（AGENT 直接生成分支不需要 LLM，但仍需确认已配好）。
 4. **问模式 + 确认参数**（见「强制规则 0/2」，问完再继续）。

@@ -47,13 +47,33 @@ This project **works end-to-end (one link → one note)** and is **also decouple
 claude plugin marketplace add HuangYincan/VideoNote-MCP
 claude plugin install videonote@videonote
 
-# 2) Configure LLM key + transcription engine (keys never enter the conversation)
-# videonote setup (optional, if you need other multimodal models as a fallback)
+# 2) Claude Code prompts for defaults during install (style / transcriber /
+#    video-understanding / comments etc.); then run the guided config command:
+/videonote-setup
 
-# 3) Restart your session, tell the agent "make notes for this video" + link
+# 3) Fill in your LLM key (hidden input, never enters the conversation) — type
+#    in this session:
+#    ! videonote providers set <provider_id> --api-key 'sk-...'
+#    (Bilibili QR login: ! videonote login bilibili; full wizard:
+#    ! videonote setup — better in a separate terminal)
+
+# 4) Restart your session, tell the agent "make notes for this video" + link
 ```
 
 > All four install methods, configuration details, updating and security are in [docs/04-使用手册.md](docs/04-使用手册.md).
+
+> [!NOTE] How to fill in the plugin defaults (`/plugin configure` page)
+> The default-value fields shown during `/plugin install` and on the `/plugin configure`
+> page are **all typed input** (no dropdowns or toggles):
+> - **Boolean fields** (Default screenshots / Video understanding / Comments): type `true` or `false`;
+> - **Directory field** (Default notes location): type an **absolute path**; leave empty for the default `note_results/{task_id}/`;
+> - **String fields** (Style / Transcriber / Model size): **type the English key directly** —
+>   style: `detailed` / `minimal` / `academic` / `tutorial` / `xiaohongshu` / `life_journal` / `task_oriented` / `business` / `meeting_minutes`;
+>   transcriber: `fast-whisper` (local, recommended) / `groq` / `bcut` / `kuaishou` / `mlx-whisper`;
+>   model size: `tiny` / `base` / `small` / `medium` / `large-v3` / `large-v3-turbo`.
+> These only serve as **fallbacks when the config file lacks a value** — your local
+> `app_config.json` / `transcriber.json` (set via `videonote setup`) takes precedence.
+
 
 ## 📚 Docs
 

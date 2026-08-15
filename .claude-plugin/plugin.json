@@ -4,5 +4,69 @@
   "author": {
     "name": "HuangYincan",
     "url": "https://github.com/HuangYincan"
+  },
+  "commands": ["./commands/"],
+  "mcpServers": {
+    "videonote": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/HuangYincan/VideoNote-MCP",
+        "videonote"
+      ],
+      "env": {
+        "VIDEONOTE_DEFAULT_STYLE": "${user_config.default_style}",
+        "VIDEONOTE_DEFAULT_SCREENSHOT": "${user_config.default_screenshot}",
+        "VIDEONOTE_VIDEO_UNDERSTANDING": "${user_config.video_understanding}",
+        "VIDEONOTE_INCLUDE_COMMENTS": "${user_config.include_comments}",
+        "VIDEONOTE_NOTES_DIR": "${user_config.notes_dir}",
+        "TRANSCRIBER_TYPE": "${user_config.transcriber_type}",
+        "WHISPER_MODEL_SIZE": "${user_config.whisper_model_size}"
+      }
+    }
+  },
+  "userConfig": {
+    "default_style": {
+      "type": "string",
+      "title": "笔记风格默认",
+      "description": "直接输入英文 key，其一：detailed 详细 / minimal 精简 / academic 学术 / tutorial 教程 / xiaohongshu 小红书 / life_journal 生活向 / task_oriented 任务导向 / business 商业 / meeting_minutes 会议纪要",
+      "default": "detailed"
+    },
+    "default_screenshot": {
+      "type": "boolean",
+      "title": "笔记默认插图",
+      "description": "输入 true 或 false。true=生成笔记时默认插入视频截图",
+      "default": false
+    },
+    "video_understanding": {
+      "type": "boolean",
+      "title": "视频理解默认",
+      "description": "输入 true 或 false。true=默认把画面抽帧发给多模态 LLM（需多模态模型）",
+      "default": false
+    },
+    "include_comments": {
+      "type": "boolean",
+      "title": "弹幕+评论整合默认",
+      "description": "输入 true 或 false。true=默认把 B 站弹幕+热门评论整合进笔记（需 SESSDATA）",
+      "default": false
+    },
+    "notes_dir": {
+      "type": "directory",
+      "title": "笔记默认位置",
+      "description": "输入笔记输出目录的绝对路径。留空=默认 note_results/{task_id}/",
+      "default": ""
+    },
+    "transcriber_type": {
+      "type": "string",
+      "title": "语音转写引擎",
+      "description": "直接输入英文 key，其一：fast-whisper 本地（推荐，免费）/ groq 云端 / bcut 云端 / kuaishou 云端 / mlx-whisper 本地（macOS）",
+      "default": "fast-whisper"
+    },
+    "whisper_model_size": {
+      "type": "string",
+      "title": "Whisper 模型尺寸",
+      "description": "直接输入英文 key，其一：tiny / base / small / medium / large-v3 / large-v3-turbo（内存小用 tiny/base，追求精度用 medium+）",
+      "default": "tiny"
+    }
   }
 }

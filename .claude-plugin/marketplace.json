@@ -12,17 +12,7 @@
       "source": "./",
       "description": "生成视频笔记的 Skill 与 MCP server（下载→转写→LLM→Markdown）",
       "displayName": "VideoNote",
-      "skills": ["./skills/videonote"],
-      "mcpServers": {
-        "videonote": {
-          "command": "uvx",
-          "args": [
-            "--from",
-            "git+https://github.com/HuangYincan/VideoNote-MCP",
-            "videonote"
-          ]
-        }
-      }
+      "skills": ["./skills/videonote"]
     }
   ]
 }
