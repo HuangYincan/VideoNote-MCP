@@ -132,7 +132,7 @@ class DouyinDownloader(Downloader):
             try:
                 response = requests.head(video_url, allow_redirects=True)
                 url = response.url
-            except Exception as e:
+            except Exception:
                 return ""
         patterns = [
             r'video/(\d+)',

@@ -1,4 +1,4 @@
-from abc import ABC,abstractmethod
+from abc import ABC
 
 from app.models.gpt_model import GPTSource
 

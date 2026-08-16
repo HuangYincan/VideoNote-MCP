@@ -22,7 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from videonote_mcp.config import env_bool, env_int, env_json_list, env_or, get_app_config, setup_environment
+from videonote_mcp.config import env_bool, env_int, env_or, get_app_config, setup_environment
 from videonote_mcp import __version__ as _SERVER_VERSION
 
 DATA_DIR = setup_environment()
@@ -64,13 +64,12 @@ from app.db.provider_dao import seed_default_providers
 from app.enmus.note_enums import DownloadQuality
 from app.enmus.task_status_enums import TaskStatus
 from app.services import pipeline
-from app.services.cookie_manager import CookieConfigManager
 from app.services.note import NOTE_OUTPUT_DIR, NoteGenerator
 from app.services.provider import ProviderService
 from app.services.transcriber_config_manager import TranscriberConfigManager
 from app.transcriber import model_download_state as dl_state
 from app.utils.logger import get_logger
-from app.utils.model_status import check_whisper_model_exists, is_downloading
+from app.utils.model_status import check_whisper_model_exists
 from app.utils.path_helper import get_model_dir
 from app.utils.task_manifest import cleanup_all_files, cleanup_task_files, list_task_files, record_task_paths
 

@@ -14,7 +14,6 @@ from app.utils.path_helper import get_model_dir
 
 from events import transcription_finished
 from pathlib import Path
-import os
 import shutil
 import threading
 
@@ -102,7 +101,7 @@ class WhisperTranscriber(Transcriber):
     @staticmethod
     def is_torch_installed() -> bool:
         try:
-            import torch
+            import torch  # noqa: F401  —— 可用性探测，不需使用
             return True
         except ImportError:
             return False

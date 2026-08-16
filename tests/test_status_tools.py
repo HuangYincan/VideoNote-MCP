@@ -109,7 +109,7 @@ class StatusLightTest(unittest.TestCase):
 
     def test_material_default_light_but_frames_kept(self):
         mid = "material0001"
-        mdir = _make_success_task(mid, material=True)
+        _make_success_task(mid, material=True)
         try:
             resp = json.loads(server.get_task_status(mid))
             result = resp["result"]

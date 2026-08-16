@@ -6,7 +6,7 @@ def is_cuda_available() -> bool:
         return False
 def is_torch_installed() -> bool:
     try:
-        import torch
+        import torch  # noqa: F401  —— 可用性探测，不需使用
         return True
     except ImportError:
         return False

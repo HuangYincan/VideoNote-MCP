@@ -10,7 +10,6 @@ faster-whisper 内部已自带 Silero VAD + 16kHz 重采样，所以本模块主
 import logging
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -45,7 +44,7 @@ def normalize_to_wav(
     out = str(out_dir / f"{base}_16k.wav")
     _ffmpeg(
         ["-i", src, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", out],
-        f"转 16kHz mono wav",
+        "转 16kHz mono wav",
     )
     return out
 
@@ -85,7 +84,7 @@ def chunk_if_long(
             "-segment_time", str(int(max_seconds)),
             "-c", "copy", pattern,
         ],
-        f"超长音频分块",
+        "超长音频分块",
     )
     chunks = sorted(str(p) for p in Path(out_dir).glob(f"{Path(wav_path).stem}_part_*.wav"))
     return chunks or [wav_path]

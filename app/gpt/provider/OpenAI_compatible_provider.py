@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Union
 
 from app.utils.logger import get_logger
 from app.utils.openai_client import build_openai_client

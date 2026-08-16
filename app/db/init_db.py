@@ -1,6 +1,3 @@
-from app.db.models.models import Model
-from app.db.models.providers import Provider
-from app.db.models.video_tasks import VideoTask
 from app.db.engine import get_engine, Base
 
 # video_tasks 表在数据层重构中新增的列（SQLite ALTER 幂等迁移用）
@@ -18,7 +15,6 @@ def _migrate_video_tasks(engine):
     SQLite 的 ALTER TABLE ADD COLUMN 是幂等的；用 PRAGMA table_info 检查列，
     缺失才补，避免重复 ADD 报错。
     """
-    import sqlalchemy as sa
 
     with engine.connect() as conn:
         cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(video_tasks)")}

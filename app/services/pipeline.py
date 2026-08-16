@@ -199,7 +199,7 @@ def _preprocess_enabled() -> bool:
 def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> dict:
     """预处理后逐块转写并拼接 segments（时间偏移补偿）。"""
     from app.transcriber.audio_preprocess import chunk_if_long, normalize_to_wav
-    from app.models.transcriber_model import TranscriptResult, TranscriptSegment
+    from app.models.transcriber_model import TranscriptSegment
 
     # 归一化到 16kHz mono wav（工作目录 = 源文件同目录）
     wav = normalize_to_wav(audio_file)

@@ -280,8 +280,6 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
       - include_note=True：删整个 task_dir + manifest + 全局索引（video_tasks）记录。
     返回统计（deleted/missing/errors/note_kept）。
     """
-    note_dir = get_note_dir()
-    roots = [note_dir, get_data_dir()]
     notes = _note_paths(task_id)
     tdir = task_dir(task_id)
 

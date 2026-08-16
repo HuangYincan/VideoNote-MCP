@@ -13,10 +13,6 @@ from pydantic import HttpUrl
 from dotenv import load_dotenv
 
 from app.downloaders.base import Downloader
-from app.downloaders.bilibili_downloader import BilibiliDownloader
-from app.downloaders.douyin_downloader import DouyinDownloader
-from app.downloaders.local_downloader import LocalDownloader
-from app.downloaders.youtube_downloader import YoutubeDownloader
 from app.db.video_task_dao import delete_task_by_video, insert_video_task
 from app.enmus.exception import NoteErrorEnum, ProviderErrorEnum
 from app.enmus.task_status_enums import TaskStatus
@@ -27,7 +23,7 @@ from app.gpt.base import GPT
 from app.gpt.gpt_factory import GPTFactory
 from app.models.audio_model import AudioDownloadResult
 from app.models.model_config import ModelConfig
-from app.models.notes_model import AudioDownloadResult, NoteResult
+from app.models.notes_model import NoteResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services import note_cache
 from app.services import pipeline
@@ -37,7 +33,6 @@ from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import get_transcriber, _transcribers
 from app.utils.note_helper import replace_content_markers, prepend_source_link
 from app.utils.screenshot_marker import extract_screenshot_timestamps
-from app.utils.status_code import StatusCode
 from app.utils.task_manifest import record_task_paths
 from app.utils.video_helper import generate_screenshot
 from app.utils.video_reader import VideoReader
@@ -954,7 +949,7 @@ class NoteGenerator:
         if "screenshot" in formats and video_path:
             try:
                 markdown = self._insert_screenshots(markdown, video_path, assets_dir)
-            except Exception as exc:
+            except Exception:
                 logger.warning("截图插入失败，跳过该步骤")
 
         if "link" in formats:

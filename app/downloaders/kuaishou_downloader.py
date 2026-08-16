@@ -7,7 +7,6 @@ import requests
 
 from app.downloaders.base import Downloader
 from app.downloaders.kuaishou_helper.kuaishou import KuaiShou
-from app.enmus.note_enums import DownloadQuality
 from app.models.audio_model import AudioDownloadResult
 from app.utils.path_helper import get_data_dir
 

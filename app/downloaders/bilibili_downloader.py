@@ -7,7 +7,7 @@ from typing import Union, Optional, List
 
 import yt_dlp
 
-from app.downloaders.base import Downloader, DownloadQuality, QUALITY_MAP
+from app.downloaders.base import Downloader, DownloadQuality
 from app.downloaders.bilibili_dm_patch import apply_bilibili_dm_img_patch
 from app.downloaders.bilibili_subtitle import BilibiliSubtitleFetcher
 from app.models.notes_model import AudioDownloadResult

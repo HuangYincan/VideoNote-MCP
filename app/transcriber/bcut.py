@@ -1,7 +1,6 @@
 import json
-import logging
 import time
-from typing import Optional, List, Dict, Union
+from typing import Optional, List
 
 import requests
 

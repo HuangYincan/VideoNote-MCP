@@ -3,7 +3,7 @@ import os
 import sys
 from app.db.models.providers import Provider
 from app.utils.logger import get_logger
-from app.db.engine import get_engine, Base, get_db
+from app.db.engine import get_db
 
 logger = get_logger(__name__)
 
