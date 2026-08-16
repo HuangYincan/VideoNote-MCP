@@ -26,6 +26,7 @@ TikTok；本地文件用 sha256）。b23 短链解析失败、快手、generic �
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import shutil
@@ -68,6 +69,15 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _has_segments(path: Path) -> bool:
+    """转写文件是否含至少 1 段（0 段 = 静音/无语音，无信息量，不缓存也不命中）。"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return bool(data.get("segments"))
+    except (OSError, ValueError):
+        return False
 
 
 def derive_video_id(url: str, platform: str) -> Optional[str]:
@@ -146,6 +156,10 @@ def lookup_transcript(
         src = base / f"transcript_{key}.json"
         if not src.exists():
             continue
+        if not _has_segments(src):
+            # 历史遗留的空转写（静音视频）：当 miss 处理，继续找下一个分键
+            logger.info("跳过空转写缓存 %s", src)
+            continue
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dest)
@@ -170,6 +184,10 @@ def promote_transcript(
     （如本次转写来自 per-task 缓存）或 src 不存在时不动作。
     """
     if not engine or not src.exists():
+        return
+    if not _has_segments(src):
+        # 空转写不进缓存：静音/无语音视频的 0 段结果会被下次任务短路且无信息量
+        logger.info("转写为空（0 段），不写入跨任务缓存")
         return
     ident = identity_for(url, platform, audio_video_id)
     if not ident:

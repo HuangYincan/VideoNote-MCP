@@ -124,7 +124,8 @@ class CacheRoundTripTest(unittest.TestCase):
         self.assertFalse(dest.exists())
 
     def test_hit_copies_to_dest(self):
-        _cache_entry("youtube:abcDEF12345", "fast-whisper:small", '{"full_text": "hi", "segments": []}')
+        _cache_entry("youtube:abcDEF12345", "fast-whisper:small",
+                     '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
         dest = self._dest("t2")
         src = note_cache.lookup_transcript(
             "https://www.youtube.com/watch?v=abcDEF12345", "youtube", "fast-whisper", "small", dest
@@ -133,7 +134,8 @@ class CacheRoundTripTest(unittest.TestCase):
         self.assertEqual(json.loads(dest.read_text(encoding="utf-8"))["full_text"], "hi")
 
     def test_engine_change_misses_but_subtitle_is_bonus(self):
-        _cache_entry("youtube:abcDEF12345", "fast-whisper:small", "{}")
+        _cache_entry("youtube:abcDEF12345", "fast-whisper:small",
+                     '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
         dest = self._dest("t3")
         # 换引擎（funasr）→ 不命中 fast-whisper:small，避免误用旧引擎结果
         self.assertIsNone(
@@ -142,7 +144,8 @@ class CacheRoundTripTest(unittest.TestCase):
             )
         )
         # 平台字幕键引擎无关：引擎键未命中后作为兜底
-        _cache_entry("youtube:abcDEF12345", note_cache.SUBTITLE_KEY, "{}")
+        _cache_entry("youtube:abcDEF12345", note_cache.SUBTITLE_KEY,
+                     '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
         self.assertIsNotNone(
             note_cache.lookup_transcript(
                 "https://www.youtube.com/watch?v=abcDEF12345", "youtube", "funasr", "", dest
@@ -151,7 +154,10 @@ class CacheRoundTripTest(unittest.TestCase):
 
     def test_promote_then_lookup_hits(self):
         src = self._dest("t4")
-        src.write_text(json.dumps({"full_text": "x", "segments": []}), encoding="utf-8")
+        src.write_text(
+            json.dumps({"full_text": "x", "segments": [{"start": 0, "end": 1, "text": "x"}]}),
+            encoding="utf-8",
+        )
         note_cache.promote_transcript(
             "youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345",
             "fast-whisper:small", src,
@@ -175,7 +181,10 @@ class CacheRoundTripTest(unittest.TestCase):
 
     def test_promote_normalizes_bili_audio_video_id(self):
         src = self._dest("t7")
-        src.write_text("{}", encoding="utf-8")
+        src.write_text(
+            json.dumps({"full_text": "x", "segments": [{"start": 0, "end": 1, "text": "x"}]}),
+            encoding="utf-8",
+        )
         # URL 解析不出 BV（非 b23，避免测试触发真实网络）→ 用下载器权威 video_id 兜底，
         # 且把 `BV…_p2` 后缀归一到缓存身份 `BV…:p2`
         note_cache.promote_transcript(
@@ -221,6 +230,26 @@ class CacheRoundTripTest(unittest.TestCase):
     def test_promote_media_missing_src_noop(self):
         note_cache.promote_media("youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345", "/nonexistent.mp3")
         self.assertFalse(self.root.exists())
+
+    def test_empty_transcript_not_promoted(self):
+        src = self._dest("t12")
+        src.write_text(json.dumps({"language": "zh", "full_text": "", "segments": []}), encoding="utf-8")
+        note_cache.promote_transcript(
+            "youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345",
+            "fast-whisper:small", src,
+        )
+        self.assertFalse((self.root / "youtube:abcDEF12345").exists())
+
+    def test_empty_cached_transcript_not_hit(self):
+        _cache_entry("youtube:abcDEF12345", "fast-whisper:small",
+                     json.dumps({"language": "zh", "full_text": "", "segments": []}))
+        dest = self._dest("t13")
+        self.assertIsNone(
+            note_cache.lookup_transcript(
+                "https://www.youtube.com/watch?v=abcDEF12345", "youtube", "fast-whisper", "small", dest
+            )
+        )
+        self.assertFalse(dest.exists())
 
 
 class GenerateIntegrationTest(unittest.TestCase):
