@@ -13,10 +13,6 @@ from pydantic import HttpUrl
 from dotenv import load_dotenv
 
 from app.downloaders.base import Downloader
-from app.downloaders.bilibili_downloader import BilibiliDownloader
-from app.downloaders.douyin_downloader import DouyinDownloader
-from app.downloaders.local_downloader import LocalDownloader
-from app.downloaders.youtube_downloader import YoutubeDownloader
 from app.db.video_task_dao import delete_task_by_video, insert_video_task
 from app.enmus.exception import NoteErrorEnum, ProviderErrorEnum
 from app.enmus.task_status_enums import TaskStatus
@@ -27,8 +23,9 @@ from app.gpt.base import GPT
 from app.gpt.gpt_factory import GPTFactory
 from app.models.audio_model import AudioDownloadResult
 from app.models.model_config import ModelConfig
-from app.models.notes_model import AudioDownloadResult, NoteResult
+from app.models.notes_model import NoteResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
+from app.services import note_cache
 from app.services import pipeline
 from app.services.constant import SUPPORT_PLATFORM_MAP
 from app.services.provider import ProviderService
@@ -36,7 +33,6 @@ from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import get_transcriber, _transcribers
 from app.utils.note_helper import replace_content_markers, prepend_source_link
 from app.utils.screenshot_marker import extract_screenshot_timestamps
-from app.utils.status_code import StatusCode
 from app.utils.task_manifest import record_task_paths
 from app.utils.video_helper import generate_screenshot
 from app.utils.video_reader import VideoReader
@@ -54,7 +50,10 @@ BACKEND_BASE_URL = f"{API_BASE_URL}:{BACKEND_PORT}"
 # 输出目录（用于缓存音频、转写、Markdown 文件，以及存储截图）
 NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", "note_results"))
 NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-IMAGE_OUTPUT_DIR = os.getenv("OUT_DIR", "./static/screenshots")
+# 截图目录：优先 IMAGE_OUTPUT_DIR（config.setup_environment 设置），
+# 兼容上游残留的 OUT_DIR；都没有则落到数据目录，绝不写 CWD。
+_default_screens = Path(os.getenv("VIDEONOTE_DATA_DIR", ".")) / "static" / "screenshots"
+IMAGE_OUTPUT_DIR = os.getenv("IMAGE_OUTPUT_DIR") or os.getenv("OUT_DIR") or str(_default_screens)
 # 图片基础 URL（用于生成 Markdown 中的图片链接，需前端静态目录对应）
 IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "/static/screenshots")
 
@@ -118,6 +117,8 @@ class NoteGenerator:
         self.transcriber: Optional[Transcriber] = None
         self.video_path: Optional[Path] = None
         self.video_img_urls=[]
+        # 本次转写的来源（跨任务缓存分键）：None / "subtitle" / engine_key(...)。promote 用。
+        self._transcript_engine: Optional[str] = None
         logger.info("NoteGenerator 初始化完成")
 
 
@@ -178,6 +179,7 @@ class NoteGenerator:
             self.video_path = None
             self.video_img_urls = []
             self.transcriber = None
+            self._transcript_engine = None
             self._update_status(task_id, TaskStatus.PARSING)
 
             # 获取下载器与 GPT 实例
@@ -207,6 +209,12 @@ class NoteGenerator:
                 task_dir / "result.json",
                 gen_dir / "checkpoint.json",
             ])
+            # 跨任务内容缓存：同一视频（platform:video_id）复用上次的转写，避免重下/重转写。
+            # 命中 → 拷进 gen/transcript.json，下游 has_transcript → skip_download 即跳过下载与转写。
+            if not transcript_cache_file.exists():
+                note_cache.lookup_transcript(
+                    str(video_url), platform, self.transcriber_type, self.model_size, transcript_cache_file
+                )
             # 1. 获取字幕/转写：优先缓存 → 平台字幕 → 音频转写
             transcript = None
 
@@ -236,6 +244,7 @@ class NoteGenerator:
                             json.dumps(asdict(transcript), ensure_ascii=False, indent=2),
                             encoding="utf-8",
                         )
+                        self._transcript_engine = note_cache.SUBTITLE_KEY
                     else:
                         transcript = None
                         logger.info("平台无可用字幕，将下载音频后转写")
@@ -271,6 +280,20 @@ class NoteGenerator:
                     transcript_cache_file=transcript_cache_file,
                     status_phase=TaskStatus.TRANSCRIBING,
                     task_id=task_id,
+                )
+
+            # 3.4 转写就绪后 promote 进跨任务缓存（按来源分键：subtitle / 引擎；另存音频媒体）。
+            #     本次转写来自 per-task 缓存（_transcript_engine 为 None）时不动作。
+            if transcript is not None and audio_meta is not None:
+                note_cache.promote_transcript(
+                    platform,
+                    str(video_url),
+                    audio_meta.video_id,
+                    self._transcript_engine,
+                    transcript_cache_file,
+                )
+                note_cache.promote_media(
+                    platform, str(video_url), audio_meta.video_id, audio_meta.file_path
                 )
 
             # 3.5 抓取 B 站弹幕/热门评论（可选；失败不阻断笔记生成）
@@ -480,6 +503,14 @@ class NoteGenerator:
         data = {"status": status.value if isinstance(status, TaskStatus) else status}
         if message:
             data["message"] = message
+        # 保留 MCP 层首次提交的时间戳（get_task_status 的 elapsed_secs 用）；任务一旦开始就不变
+        try:
+            if status_file.exists():
+                old = json.loads(status_file.read_text(encoding="utf-8"))
+                if old.get("started_at"):
+                    data["started_at"] = old["started_at"]
+        except Exception:
+            pass
 
         # 同步全局索引（video_tasks.status）——尽力而为，失败不阻断
         try:
@@ -584,6 +615,11 @@ class NoteGenerator:
                     need_video=False,
                     skip_download=True,
                 )
+                # 命中转写缓存时媒体没真下载，audio.file_path 是悬空路径；
+                # 从跨任务缓存复制音频到本任务 raw/，audio_path 才有真实文件
+                cached_media = note_cache.lookup_media(str(video_url), platform, dl_dir)
+                if cached_media:
+                    audio.file_path = cached_media
                 audio_cache_file.write_text(
                     json.dumps(asdict(audio), ensure_ascii=False, indent=2),
                     encoding="utf-8",
@@ -692,6 +728,7 @@ class NoteGenerator:
                     json.dumps(data, ensure_ascii=False, indent=2),
                     encoding="utf-8"
                 )
+                self._transcript_engine = note_cache.SUBTITLE_KEY
                 return transcript
             else:
                 logger.info("平台无可用字幕，将使用音频转写")
@@ -743,6 +780,7 @@ class NoteGenerator:
             # 委托 pipeline 步骤层（返回 asdict dict，与 asdict(transcript) 写缓存等价）
             transcript_dict = pipeline.transcribe_audio(audio_file, transcriber=self.transcriber)
             transcript_cache_file.write_text(json.dumps(transcript_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._transcript_engine = note_cache.engine_key(self.transcriber_type, self.model_size)
             # 重建 TranscriptResult，保持返回类型一致（generate 下游仍按对象访问）
             transcript = TranscriptResult(
                 language=transcript_dict.get("language"),
@@ -911,7 +949,7 @@ class NoteGenerator:
         if "screenshot" in formats and video_path:
             try:
                 markdown = self._insert_screenshots(markdown, video_path, assets_dir)
-            except Exception as exc:
+            except Exception:
                 logger.warning("截图插入失败，跳过该步骤")
 
         if "link" in formats:

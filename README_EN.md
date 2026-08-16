@@ -132,7 +132,7 @@ flowchart LR
 
 # 0 🔄 End-to-End Pipeline
 
-End-to-end mode takes a single link: `generate_note` runs the whole pipeline asynchronously and returns a `task_id`; poll with lightweight `get_task_status` until `SUCCESS/FAILED/CANCELLED` (submit one task at a time), `wait_for_note` blocks for the final Markdown, and `cancel_note` cancels cooperatively. "AGENT direct generation" uses `prepare_note_material` — it only prepares the material package and **does NOT call the configured LLM**; the agent reads the transcript, looks at the frames, and writes the note itself.
+End-to-end mode takes a single link: `generate_note` runs the whole pipeline asynchronously and returns a `task_id`; poll with lightweight `get_task_status` until `SUCCESS/FAILED/CANCELLED` (up to 3 in-flight tasks per process; do not submit several `generate_note` calls in the same message). `wait_for_note` blocks the entire MCP event loop — prefer polling. `cancel_note` cancels cooperatively. "AGENT direct generation" uses `prepare_note_material` — it only prepares the material package and **does NOT call the configured LLM**; the agent reads the transcript, looks at the frames, and writes the note itself.
 
 | Tool | Description | Type |
 |------|------|------|
@@ -144,12 +144,13 @@ End-to-end mode takes a single link: `generate_note` runs the whole pipeline asy
 
 # 1 📥 Download and Platform Parsing
 
-`validate_url` detects which platform a link belongs to (bilibili / youtube / douyin / tiktok / kuaishou / local); URLs outside the built-in 6 platforms return `platform:"generic"` and automatically fall back to **yt-dlp generic extraction** (1800+ sites). `set_downloader_cookie` configures a platform cookie (e.g. Bilibili SESSDATA to get past login walls); `fetch_subtitles` fetches platform subtitles only, without downloading or transcribing.
+`validate_url` detects which platform a link belongs to (bilibili / youtube / douyin / tiktok / kuaishou / local); URLs outside the built-in 6 platforms return `platform:"generic"` and automatically fall back to **yt-dlp generic extraction** (1800+ sites). `inspect_video` splits Bilibili multi-P / YouTube playlists into per-episode URLs you can feed to `generate_note` (no download). Platform cookies go through `! videonote login bilibili` / `! videonote setup` — **do not** pass them via MCP. `fetch_subtitles` fetches platform subtitles only, without downloading or transcribing.
 
 | Tool | Description | Type |
 |------|------|------|
 | `validate_url` | Detect link platform; generic → yt-dlp generic extraction (1800+ sites) | MCP tool |
-| `set_downloader_cookie` | Set a platform cookie (e.g. Bilibili SESSDATA) | MCP tool |
+| `inspect_video` | List multi-P / playlist entries as standalone URLs | MCP tool |
+| `set_downloader_cookie` | Refuses cookies in-tool; use `! videonote login bilibili` | MCP tool |
 | `fetch_subtitles` | Fetch platform subtitles only (incl. Bilibili AI subtitles) | MCP tool |
 
 # 2 🎙 Speech-to-Text (ASR)

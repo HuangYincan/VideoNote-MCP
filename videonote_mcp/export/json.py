@@ -9,7 +9,7 @@
 import json
 from typing import List, Optional, Union
 
-from app.models.transcriber_model import TranscriptResult, TranscriptSegment
+from app.models.transcriber_model import TranscriptResult
 
 
 def _seg_to_dict(seg) -> dict:

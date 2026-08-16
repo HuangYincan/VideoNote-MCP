@@ -1,4 +1,4 @@
-from pydantic import AnyUrl, validator, BaseModel, field_validator
+from pydantic import AnyUrl, BaseModel, field_validator
 import re
 from urllib.parse import urlparse
 

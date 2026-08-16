@@ -116,7 +116,8 @@ def setup_environment() -> Path:
     screenshots = data_dir / "static" / "screenshots"
     config_dir = data_dir / "config"
     models_dir = data_dir / "models"
-    for d in (note_results, screenshots, config_dir, models_dir):
+    logs_dir = data_dir / "logs"
+    for d in (note_results, screenshots, config_dir, models_dir, logs_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     # 数据根目录本身（logger / path_helper / downloaders 会读）
@@ -171,6 +172,10 @@ def set_app_config(key: str, value) -> None:
     cfg = get_app_config()
     cfg[key] = value
     path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 def remove_app_config(key: str) -> None:
@@ -188,3 +193,7 @@ def remove_app_config(key: str) -> None:
         return
     cfg.pop(key)
     path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass

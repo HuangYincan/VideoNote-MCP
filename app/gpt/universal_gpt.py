@@ -1,7 +1,7 @@
 from app.gpt.base import GPT
 from app.gpt.prompt_builder import generate_base_prompt
 from app.models.gpt_model import GPTSource
-from app.exceptions.task import TaskCancelledError, check_cancel as _check_cancel
+from app.exceptions.task import check_cancel as _check_cancel
 import os
 import hashlib
 import json
@@ -10,11 +10,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.gpt.prompt import BASE_PROMPT, AI_SUM, SCREENSHOT, LINK, MERGE_PROMPT
-from app.gpt.utils import fix_markdown
+from app.gpt.prompt import MERGE_PROMPT
 from app.gpt.request_chunker import RequestChunker
 from app.models.transcriber_model import TranscriptSegment
-from datetime import timedelta
 from typing import List, Optional
 
 
@@ -263,7 +261,7 @@ class UniversalGPT(GPT):
                 messages = build_messages(group)
                 try:
                     response = self._chat_completion_create(messages)
-                except Exception as exc:
+                except Exception:
                     if checkpoint_key and source_signature:
                         self._save_checkpoint(checkpoint_key, source_signature, current_partials, "merge")
                     raise
@@ -353,7 +351,7 @@ class UniversalGPT(GPT):
             )
             try:
                 response = self._chat_completion_create(messages)
-            except Exception as exc:
+            except Exception:
                 if checkpoint_key and source_signature:
                     self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")
                 raise

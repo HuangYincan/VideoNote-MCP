@@ -13,10 +13,8 @@ ct-punc（自动标点），一个 AutoModel pipeline 端到端输出**已带标
 """
 from __future__ import annotations
 
-import os
 import threading
-from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
 from app.transcriber.base import Transcriber

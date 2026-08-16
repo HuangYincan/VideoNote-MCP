@@ -1,6 +1,6 @@
 [project]
 name = "videonote-mcp"
-version = "0.1.4"
+version = "0.1.5"
 description = "VideoNote 能力 MCP 封装：视频链接 → AI Markdown 笔记（内嵌下载/转写/LLM 流水线，无需启动 FastAPI 后端）"
 readme = "README.md"
 # 上界 3.14：av / faster-whisper(ctranslate2) 等目前尚未提供 3.14 wheel
@@ -45,6 +45,8 @@ preprocess = ["noisereduce", "scipy"]
 diarization = ["pyannote.audio>=3.1", "torch", "torchaudio"]
 # 中文转写（可选，重依赖：torch + funasr，Paraformer-zh + VAD + 标点）
 funasr = ["funasr", "torch"]
+# 本地 / CI 单测（CI 用 `uv run --with pytest`，不必进 lock）
+dev = ["pytest>=8"]
 
 [project.scripts]
 videonote = "videonote_mcp.cli:main"

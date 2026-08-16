@@ -1,7 +1,5 @@
 import requests
-import logging
 import os
-from typing import Union, List, Dict, Optional
 
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult

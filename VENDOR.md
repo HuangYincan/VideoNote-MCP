@@ -13,17 +13,18 @@
 
 | 子包 | 内容 |
 |------|------|
-| `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, xiaoyuzhoufm_download |
-| `app/transcriber/` | base, transcriber_provider, whisper, groq, bcut, kuaishou, mlx_whisper_transcriber, model_download_state, whisper_models |
+| `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, **bilibili_comment**, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, **generic_downloader**, xiaoyuzhoufm_download（**未接入** SUPPORT_PLATFORM_MAP，已去掉 import-time HTTP） |
+| `app/transcriber/` | base, transcriber_provider, whisper, groq, bcut, kuaishou, mlx_whisper_transcriber, **funasr_transcriber**, **audio_preprocess**, model_download_state, whisper_models |
 | `app/gpt/` | base, gpt_factory, openai_gpt, deepseek_gpt, qwen_gpt, universal_gpt, prompt, prompt_builder, request_chunker, utils, tools（不含 test.py）+ `app/gpt/provider/OpenAI_compatible_provider.py`（gpt_factory 依赖） |
 | `app/db/` | engine, init_db, sqlite_client, provider_dao, model_dao, video_task_dao + `app/db/models/`（models, providers, video_tasks） |
 | `app/models/` | audio_model, gpt_model, model_config, notes_model, provide_model, transcriber_model, video_record |
 | `app/enmus/` | exception, note_enums, task_status_enums |
-| `app/exceptions/` | biz_exception, note, provider（**不含** exception_handlers —— 仅 FastAPI 用） |
+| `app/exceptions/` | biz_exception, note, provider, **task**（**不含** exception_handlers —— 仅 FastAPI 用） |
 | `app/decorators/` | timeit |
 | `app/validators/` | video_url_validator |
-| `app/services/` | note, constant, provider, cookie_manager, task_serial_executor, transcriber_config_manager, proxy_config_manager（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用） |
-| `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, status_code, logger, path_helper, url_parser, openai_client, env_checker + **本仓库新增** `model_status.py`（见下）（**不含** response / export / ppt_generator / minio_client） |
+| `app/services/` | note, constant, provider, cookie_manager, task_serial_executor, transcriber_config_manager, proxy_config_manager, **pipeline**, **merge**, **diarization**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用） |
+| `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, status_code, logger, path_helper, url_parser, openai_client, env_checker, **task_manifest** + **本仓库新增** `model_status.py`（见下）（**不含** response / export / ppt_generator / minio_client） |
+| `videonote_mcp/export/` | SRT/VTT/JSON 确定性导出（不在上游 `utils/export.py`） |
 | `events/` | signals（blinker `transcription_finished`）、handlers（转写完成后临时文件清理）—— 顶层模块，供各转写器 `from events import transcription_finished` |
 
 ## 外科手术改动（相对上游）
@@ -36,7 +37,20 @@
 4. **`app/services/transcriber_config_manager.py`** — 把对 `app.routers.config` 的延迟 import 改为 `app.utils.model_status`；新增 **`app/utils/model_status.py`**（从 `routers/config.py` 抽取 `_check_whisper_model_exists` / `_check_mlx_whisper_model_exists` 两个纯函数，并补上「是否下载中」的查询）。
 5. **`app/downloaders/local_downloader.py`** — 封面提取改为**非致命**（try/except 跳过）：上游对纯音频文件（mp3/wav）会因无法抽帧直接使任务失败，本仓库允许跳过封面继续生成笔记。
 6. **`app/services/cookie_manager.py` / `app/services/transcriber_config_manager.py`** — 配置文件默认路径改为 `VIDEONOTE_CONFIG_DIR`（见 `videonote_mcp/config.py`），避免依赖 CWD。
-5. **未移植** 的模块：`routers/`、`main.py`、`utils/response.py`、`utils/export.py`、`utils/ppt_generator.py`、`utils/minio_client.py`、`services/chat_*`、`services/vector_store.py`、`services/model.py`、`services/model_fallback.py`、`exceptions/exception_handlers.py` —— 均确认仅 Web 层（routers/main）使用，核心流水线不依赖。
+7. **未移植** 的模块：`routers/`、`main.py`、`utils/response.py`、`utils/export.py`、`utils/ppt_generator.py`、`utils/minio_client.py`、`services/chat_*`、`services/vector_store.py`、`services/model.py`、`services/model_fallback.py`、`exceptions/exception_handlers.py` —— 均确认仅 Web 层（routers/main）使用，核心流水线不依赖。
+
+## 已分叉、不要当「4 处补丁」重打的文件
+
+本仓库在 `app/` 上已经长出独立能力。**不要**再按「diff -r 后手打 4 处补丁」同步——必冲突。上游更新只 cherry-pick 下载器/转写器的无分叉文件，或先把分叉抽回 `videonote_mcp/`。
+
+冻结清单（本仓库已改语义，覆盖上游同名文件时必须人工合并）：
+
+- `app/services/note.py`（任务文件夹、`IMAGE_OUTPUT_DIR`、material_only、便携笔记）
+- `app/services/provider.py` / `app/db/video_task_dao.py` / `app/db/models/video_tasks.py`
+- `app/services/transcriber_config_manager.py` / `app/utils/model_status.py` / `app/utils/path_helper.py` / `app/utils/logger.py`
+- `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py` / `xiaoyuzhoufm_download.py`
+- `app/transcriber/transcriber_provider.py`（funasr / mlx）
+- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`task_manifest.py`
 
 ## 如何同步上游更新
 
@@ -44,10 +58,10 @@
 # 1. 记下当前 vendored 版本
 git -C /path/to/BiliNote rev-parse HEAD
 
-# 2. 用 diff 对比差异
-diff -r app /path/to/BiliNote/backend/app --exclude=__pycache__ --exclude=routers --exclude=main.py
+# 2. 只 diff 未分叉的文件（下载器适配 / whisper 实现等）
+#    不要整树覆盖 app/
 
-# 3. 复制需要更新的文件，重新应用上面的 4 处改动
+# 3. cherry-pick 单文件，对照上面的冻结清单人工合并
 # 4. 更新本文件的 commit 号与日期
 # 5. 在 docs/CHANGELOG.md 记一条「同步上游」
 ```

@@ -9,7 +9,6 @@ API key 的设计原则：key 由用户在独立终端写入（不经过 agent �
 """
 import argparse
 import builtins
-import json
 import os
 import sys
 from pathlib import Path
@@ -812,7 +811,7 @@ def _wizard_data_cleanup_all(inq) -> None:
     if not inq.confirm(message="确认全局清理？此操作不可撤销", default=False, keybindings=_KB).execute():
         print(f"{_YELLOW}已取消全局清理{_RESET}", file=sys.stdout)
         return
-    r = cleanup_all_files(include_config=include_config, include_models=include_models)
+    cleanup_all_files(include_config=include_config, include_models=include_models)
     print(f"{_GREEN}✓ 全局清理完成{_RESET}", file=sys.stdout)
     _press_any_key()
 
@@ -1044,7 +1043,7 @@ def _providers_cli(argv) -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_list = sub.add_parser("list", help="列出供应商（key 掩码）")
+    sub.add_parser("list", help="列出供应商（key 掩码）")
     p_set = sub.add_parser("set", help="给供应商填 key / base_url / name")
     p_set.add_argument("provider_id")
     p_set.add_argument("--api-key", help="API key")
@@ -1120,7 +1119,7 @@ def _transcriber_cli(argv) -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_list = sub.add_parser("list", help="查看当前转写引擎与就绪状态")
+    sub.add_parser("list", help="查看当前转写引擎与就绪状态")
     p_set = sub.add_parser("set", help="切换转写引擎")
     p_set.add_argument("engine", choices=_TRANSCRIBER_ENGINES)
     p_set.add_argument("--size", help="whisper 模型尺寸（tiny/base/small/medium/large-v3）")
@@ -1174,12 +1173,12 @@ def _transcriber_cli(argv) -> None:
 
             if importlib.util.find_spec("pyannote") is None:
                 print(
-                    f"⚠ 当前环境未装 pyannote（可选依赖）。",
+                    "⚠ 当前环境未装 pyannote（可选依赖）。",
                     file=sys.stdout,
                 )
                 print(
-                    f"  `uv tool install --from git+https://github.com/HuangYincan/VideoNote-MCP videonote "
-                    f"--with pyannote.audio --with torch`，或用 `uvx --from ... --with pyannote.audio --with torch` 运行。",
+                    "  `uv tool install --from git+https://github.com/HuangYincan/VideoNote-MCP videonote "
+                    "--with pyannote.audio --with torch`，或用 `uvx --from ... --with pyannote.audio --with torch` 运行。",
                     file=sys.stdout,
                 )
                 print(
@@ -1301,7 +1300,7 @@ def _export_cli(argv) -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_list = sub.add_parser("list", help="列出支持的导出格式")
+    sub.add_parser("list", help="列出支持的导出格式")
     p_run = sub.add_parser("export", help="导出指定任务（<task_id> 必填）")
     p_run.add_argument("task_id", help="已完成任务的 task_id（generate_note 返回）")
     p_run.add_argument("--format", default=None, help="逗号分隔的格式（srt,vtt,json），缺省取 setup 默认")

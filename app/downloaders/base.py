@@ -1,4 +1,3 @@
-import enum
 
 from abc import ABC, abstractmethod
 from typing import Optional, Union

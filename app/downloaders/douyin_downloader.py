@@ -114,7 +114,7 @@ class DouyinDownloader(Downloader):
         super().__init__()
         self.headers_config = DouyinConfig.HEADERS.copy()
         self.headers_config["Cookie"] = cfm.get('douyin')
-        print(self.headers_config)
+        # 不要 print headers：Cookie 会进 mcp_stderr.log / 会话日志
         self.proxies_config = DouyinConfig.PROXIES.copy()
         self.ttwid_config = DouyinConfig.TTWID.copy()
         self.ms_token_config = DouyinConfig.MS_TOKEN.copy()
@@ -132,7 +132,7 @@ class DouyinDownloader(Downloader):
             try:
                 response = requests.head(video_url, allow_redirects=True)
                 url = response.url
-            except Exception as e:
+            except Exception:
                 return ""
         patterns = [
             r'video/(\d+)',

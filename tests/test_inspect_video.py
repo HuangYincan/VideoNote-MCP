@@ -1,0 +1,153 @@
+"""inspect_video：分 P / 播放列表解析（mock 网络）。"""
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.services import inspect as inspect_mod
+
+
+VIEW_MULTI = {
+    "code": 0,
+    "message": "0",
+    "data": {
+        "aid": 1,
+        "bvid": "BV1xx411c7mD",
+        "title": "系列课",
+        "duration": 300,
+        "cid": 100,
+        "pages": [
+            {"page": 1, "part": "第一讲", "duration": 120, "cid": 100},
+            {"page": 2, "part": "第二讲", "duration": 180, "cid": 101},
+        ],
+    },
+}
+
+VIEW_SINGLE = {
+    "code": 0,
+    "data": {
+        "aid": 2,
+        "bvid": "BV1aa411c7mD",
+        "title": "单集",
+        "duration": 90,
+        "cid": 200,
+        "pages": [{"page": 1, "part": "单集", "duration": 90, "cid": 200}],
+    },
+}
+
+
+class InspectBilibiliTest(unittest.TestCase):
+    def test_multi_p_lists_urls(self):
+        fake = mock.Mock()
+        fake.json.return_value = VIEW_MULTI
+        with mock.patch("requests.get", return_value=fake):
+            out = inspect_mod.inspect_video("https://www.bilibili.com/video/BV1xx411c7mD?p=2")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["kind"], "multi")
+        self.assertEqual(out["total"], 2)
+        self.assertEqual(out["current_p"], 2)
+        self.assertEqual(out["title"], "系列课")
+        self.assertEqual(
+            [e["url"] for e in out["entries"]],
+            [
+                "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+                "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+            ],
+        )
+        self.assertEqual(out["entries"][1]["title"], "第二讲")
+
+    def test_single_is_kind_single(self):
+        fake = mock.Mock()
+        fake.json.return_value = VIEW_SINGLE
+        with mock.patch("requests.get", return_value=fake):
+            out = inspect_mod.inspect_video("https://www.bilibili.com/video/BV1aa411c7mD")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["kind"], "single")
+        self.assertEqual(out["total"], 1)
+        self.assertEqual(out["entries"][0]["url"], "https://www.bilibili.com/video/BV1aa411c7mD?p=1")
+
+    def test_view_error(self):
+        fake = mock.Mock()
+        fake.json.return_value = {"code": -404, "message": "啥都木有"}
+        with mock.patch("requests.get", return_value=fake):
+            out = inspect_mod.inspect_video("https://www.bilibili.com/video/BV1xx411c7mD")
+        self.assertFalse(out["ok"])
+        self.assertIn("-404", out["error"])
+
+    def test_empty_url(self):
+        out = inspect_mod.inspect_video("  ")
+        self.assertFalse(out["ok"])
+
+
+class InspectYtdlpTest(unittest.TestCase):
+    def test_playlist(self):
+        info = {
+            "_type": "playlist",
+            "id": "PLxxx",
+            "title": "A playlist",
+            "entries": [
+                {"id": "aaaaaaaaaaa", "title": "ep1", "duration": 10, "webpage_url": None, "url": "aaaaaaaaaaa"},
+                {"id": "bbbbbbbbbbb", "title": "ep2", "duration": 20, "webpage_url": "https://www.youtube.com/watch?v=bbbbbbbbbbb"},
+            ],
+        }
+
+        class _YDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, download=False):
+                return info
+
+        with mock.patch("yt_dlp.YoutubeDL", _YDL):
+            out = inspect_mod.inspect_video("https://www.youtube.com/playlist?list=PLxxx")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["kind"], "multi")
+        self.assertEqual(out["total"], 2)
+        self.assertEqual(out["entries"][0]["url"], "https://www.youtube.com/watch?v=aaaaaaaaaaa")
+        self.assertEqual(out["entries"][1]["title"], "ep2")
+
+    def test_single_video(self):
+        info = {
+            "id": "ccccccccccc",
+            "title": "one",
+            "duration": 33,
+            "webpage_url": "https://www.youtube.com/watch?v=ccccccccccc",
+        }
+
+        class _YDL:
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, download=False):
+                return info
+
+        with mock.patch("yt_dlp.YoutubeDL", _YDL):
+            out = inspect_mod.inspect_video("https://youtu.be/ccccccccccc")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["kind"], "single")
+        self.assertEqual(out["entries"][0]["video_id"], "ccccccccccc")
+
+    def test_local_passthrough(self):
+        out = inspect_mod.inspect_video("/tmp/foo.mp4")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["platform"], "local")
+        self.assertEqual(out["kind"], "single")
+        self.assertEqual(out["entries"][0]["url"], "/tmp/foo.mp4")
+
+
+if __name__ == "__main__":
+    unittest.main()

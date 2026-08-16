@@ -6,6 +6,7 @@
 
 ### `generate_note(video_url, platform?, quality?, provider_id?, model_name?, format?, style?, screenshot?, link?, video_understanding?, video_interval?, grid_size?, notes_dir?, extras?, include_comments?, comments_limit?)`
 - 提交视频，异步生成，返回 `{task_id, status: "PENDING", platform, model_name}`。
+- **同视频（`platform:video_id`）再次生成会复用上次转写缓存**（`note_cache`，按引擎/尺寸分键），不再重下+重转写；命中时音频也从缓存复制到新任务，`audio_path` 指向真实文件。`cleanup_all` 会清缓存。
 - `quality`: fast / medium / slow。
 - `model_name` 省略：用 setup 默认模型，否则供应商第一个可用模型。
 - `style`: 9 种（minimal/detailed/academic/tutorial/xiaohongshu/life_journal/task_oriented/business/meeting_minutes）；自定义用 `extras="笔记风格要求：<描述>"`。
@@ -13,21 +14,25 @@
 - `include_comments=True` + `comments_limit`（默认 20）：整合 B 站弹幕+评论（需 SESSDATA；失败不阻断）。
 - `screenshot=True` + `format=["screenshot"]`：插单张截图，产出便携笔记 note.md + Assets/（相对引用）。
 - `notes_dir`: 便携笔记目录（指定即写 note.md，即使不插图片）。
-- **任务一次只发一个**：有进行中任务时 server 直接拒绝（先等上一个 SUCCESS/FAILED/CANCELLED）。
+- **并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：超限会拒绝。不要在同一条消息里并行塞多个 `generate_note`（客户端不稳）。`provider_id` 可省略。
+
+### `inspect_video(url, platform?)`
+- **只解析、不下载、不提交**。B 站分 P / YouTube 播放列表 / 单集。
+- 返回 `{ok, platform, kind: single|multi, title, current_p?, total, truncated, entries:[{p, title, duration, url, video_id}]}`。
+- `kind=multi` 时把每条 `entries[].url` 当独立视频，按单集流程（subagent）提交；用户只要一集就用对应那条 url。超过 200 条 `truncated=true`。
 
 ### `get_task_status(task_id, include_transcript=False)`
-- 轻量快照轮询。返回 `{status, message, task_id, result?}`；`SUCCESS` 时 `result` 含 `markdown`（或 material 模式的 `frames`/`video_path`/`audio_path`）、`note_dir`、`title`。
+- 轻量快照轮询。返回 `{status, stage, elapsed_secs, message, task_id, result?}`；`stage` 是中文阶段（如「转写中」），`elapsed_secs` 是任务已耗时——轮询汇报可用「转写中，已 3 分钟」。`SUCCESS` 时 `result` 含 `markdown`（或 material 模式的 `frames`/`video_path`/`audio_path`）、`note_dir`、`title`。
 - **默认不含完整转写**——转写可能数万 token，一次工具调用就会撑爆 context。需要转写文本用 `get_task_transcript(task_id)` 按需取；或传 `include_transcript=True` 一次性拿全量（长视频慎用）。
 
 ### `get_task_transcript(task_id, segment_range="")`
-- 读取已完成任务的**转写文本**（不耗 LLM，从磁盘按需取，避免撑爆 context）。
-- `segment_range` 空（默认）返回完整转写；超长转写按段切片分段读：`"0-50"` 取第 0~49 段、`"50-"` 取第 50 段起、`"150-200"` 取 150~199 段。
+- 读取已完成任务的**转写文本**（不耗 LLM）。
+- **默认只返回前 50 段**（`meta.truncated=true` 时用 `"50-"` 续取或 `"all"` 拿全文）。
+- `"0-50"` / `"50-"` / `"150-200"` 按段切片。
 - 返回 `{task_id, ok, language, segments, full_text, meta:{total_segments, returned_segments, total_chars, returned_chars, truncated}}`。
-- 适用：后续优化精修、回答"视频里某个细节"、Agent 直接生成时读长转写。
 
-### `wait_for_note(task_id, timeout=120, poll_interval=3, include_transcript=False)`
-- **阻塞**等 SUCCESS/FAILED/CANCELLED；**多任务/对话中勿用**（会卡住当前轮次）。等完成优先 `get_task_status` 轮询。
-- 默认不含完整转写（同 `get_task_status`）；`include_transcript=True` 一次拿全量。
+### `wait_for_note`（已废弃）
+- **不要调用**。会卡住 MCP 事件循环；现已改为立刻返回当前快照 + `deprecated`。用 `get_task_status` 轮询。
 
 ### `cancel_note(task_id)`
 - 取消进行中/排队任务（协作式，下一阶段边界生效）；返回 `{ok, task_id, status}`。
@@ -73,7 +78,7 @@
 
 ### `summarize_note(transcript, frames?, comments_danmaku?, title?, style?, extras?, format?, provider_id?, model_name?)`
 - **只做 LLM 总结**：吃**素材包**（转写/帧/评论任意组合）→ 异步任务，`result` 为 `{kind: "note", markdown, title}`。
-- `transcript` 传 `{language, full_text, segments}`；`frames` 传 `extract_frames` 返回的 file:// 路径列表；`comments_danmaku` 传弹幕+评论文本（可用 `fetch_comments` / `fetch_danmaku` 或 `fetch_comments_danmaku` 聚合）。`provider_id` 必填，`model_name` 省略取默认模型。
+- `comments_danmaku` 传弹幕+评论文本（用 `fetch_comments` + `fetch_danmaku`，没有名为 `fetch_comments_danmaku` 的 MCP 工具）。`provider_id` 可省略。
 - 适用：已有字幕/帧/评论，不想重新下载转写，只让 LLM 出笔记。
 
 ### 任意组合示例
@@ -107,18 +112,17 @@
 - **默认关**（`enable_preprocess`）。开启后 `generate_note` / `transcribe_media` 自动生效。
 - 零额外依赖（FFmpeg）；降噪（noisereduce）可选 extras，未装静默降级。
 
-### `diarize_media(audio_file, num_speakers?, hf_token?)`
+### `diarize_media(audio_file, num_speakers?)`
 - 说话人分离（pyannote，**可选重依赖**）：归一化 → 分离 → 返回 `{ok, turns:[{start,end,speaker}]}`。
-- 需先装 `pyannote.audio` + torch（`uvx --with pyannote.audio --with torch`），配 `HF_TOKEN`，
-  并在 huggingface.co 同意 pyannote 模型授权；未装/缺 token 返回带安装指引的 error。
+- **不要传 `hf_token`**（会拒绝）。token 只从 `HUGGINGFACE_HUB_TOKEN` 或 `! videonote setup` 写入的 `app_config.hf_token` 读。
+- 需先装 `pyannote.audio` + torch（`uvx --with pyannote.audio --with torch`），并在 huggingface.co 同意 pyannote 模型授权；未装/缺 token 返回带安装指引的 error。
 - setup ② 勾选「说话人分离」可引导安装。
 
 ## 全自动 / 手动模式
 
-- **任务开始必须先问用户**「全自动」还是「手动」。
-- **全自动**：用 setup 默认解析出**完整参数清单**（生成方式/LLM 模型（或选 AGENT 直接生成 `agent_direct`）/ `default_style` 默认 detailed / 视频理解默认 / 评论默认 / 截图默认 / **生成后是否后续优化**），**一次性列出给用户确认**、不逐个问；用户确认即生成，要改某项再以提问方式改。「AGENT 直接生成」在选 LLM 模型阶段提供（默认用配置 LLM）。`generate_note` / `prepare_note_material` 不传 style / screenshot / video_understanding / include_comments / agent_direct 即套默认。
-- **手动**：逐个确认参数（模型、风格、视频理解、评论/弹幕、截图、是否 AGENT 直接生成），用户明确指定或说「你定」前不调用生成类工具。
-- 默认值都可由 setup ③ 覆盖；`agent_direct` 默认关（行为与之前一致，即普通 LLM 生成）。
+- **默认全自动**：不要先问模式；`generate_note` 不传可选参数即套 setup / userConfig。不要主动问后续优化。
+- **手动**：仅当用户说「手动 / 我要选参数」时逐项问（模型、风格、视频理解、评论、截图）。
+- **AGENT 直接生成**：仅当用户明确要「你自己写」/`agent_direct`。`agent_direct` 配置键 server 不读，只是编排选择。
 
 ## 任务索引与清理
 
@@ -151,22 +155,26 @@
 ## 供应商 / 模型
 
 - `list_providers()` —— 供应商列表（key 掩码）。空 key 让用户在终端 `videonote providers set <id> --api-key '...'`。
-- `add_provider(name, api_key, base_url, type)` / `update_provider(provider_id, ...)` —— 新增/更新（**填 key 建议走 CLI，不进对话**）。
-- `list_models(provider_id)` —— 实时 /v1/models，回退本地 DB。
+- `add_provider(name, base_url, type)` / `update_provider(provider_id, name?, base_url?, enabled?)` —— 只改非敏感字段；**传 api_key 会被拒绝**。填 key：`! videonote providers set <id> --api-key '...'`。
+- `delete_provider(provider_id)` / `delete_model(provider_id, model_name)` —— 删供应商/模型（同时清默认设置）。
+- `test_provider(provider_id)` —— 用已存 key 探测连接并列出模型（不接受 key 参数）。
+- `read_app_config()` —— setup 持久化的默认值（默认供应商/模型、视频理解/弹幕开关、风格、导出格式、notes_dir）；敏感项不返回。
+- `list_models(provider_id)` —— `{ok, source, models:[{id, name}]}`。实时 /v1/models，回退本地 DB。
 - `add_model(provider_id, model_name)` —— 手动加模型名（接口不可用时）。
 
 ## 转写
 
 - `get_transcriber_config()` —— 当前引擎/尺寸/就绪（`ready=false` 时先下载或切云端）。
-- `set_transcriber(transcriber_type, whisper_model_size?)` —— 切引擎（fast-whisper/groq/bcut/kuaishou/mlx-whisper）。
+- `set_transcriber(transcriber_type, whisper_model_size?)` —— 切引擎（fast-whisper/groq/bcut/kuaishou/mlx-whisper/funasr）。
 - `list_transcriber_models()` / `download_transcriber_model(model_size, transcriber_type?)` —— 模型管理（下载为后台任务）。
 - `set_transcriber("funasr")` —— 中文最优引擎（Paraformer-zh + VAD + 标点）。**可选重依赖**：需 `funasr` + torch（`uvx --with funasr --with torch`）；模型首次转写时自动下载。未装时返回安装指引。
 
 ## 其它
 
-- `health_check()` —— ffmpeg/db/whisper 就绪状态。
+- `health_check()` —— `server_version` / ffmpeg / db / 队列 / keyed_providers / `skill_refresh`。
+- `preflight(url?, platform?, provider_id?)` —— 提交前体检：ffmpeg / 磁盘剩余 / 转写器就绪 / 供应商 key+模型 / 队列，url 非空时预解析时长。`ok=false` 时先修 detail 再提交，避免长任务半路失败。
 - `validate_url(url)` —— 识别平台（bilibili/youtube/douyin/tiktok/kuaishou/local）。内置 5 平台之外返回 `{supported: true, platform: "generic"}`（yt-dlp 通用提取，覆盖 1800+ 站点）；仅当 yt-dlp 也失败时 Agent 接手解析。
-- `set_downloader_cookie(platform, cookie)` —— 设置平台 Cookie（如 B 站 `SESSDATA=...`）。
+- `set_downloader_cookie` —— **拒绝写入 Cookie**。B 站：`! videonote login bilibili` / `! videonote setup`。
 - `fetch_comments(video_url, limit=20)` —— B 站热门评论（供生成前预览）。
 - `fetch_danmaku(video_url)` —— B 站弹幕汇总（高密度时段 + 高频词）。
 
@@ -176,12 +184,13 @@
 |------|------|
 | 配置入口（首次使用） | 用户在 Claude Code 跑 `/videonote-setup`（体检 → 填 key → 转写 → 默认值 → B站扫码 → 数据管理） |
 | 给内置供应商填 key | 用户在本会话 `! videonote providers set <id> --api-key 'sk-...'`（隐藏输入、agent 不碰 key） |
-| 自建/新增供应商 | `add_provider(name, api_key, base_url, type)` |
+| 自建/新增供应商 | `add_provider(name, base_url, type)`（空 key），再 `! videonote providers set <id> --api-key '...'` |
 | 查看供应商 / 模型 | `list_providers()`（掩码）/ `list_models(provider_id)` |
+| 测试/删除供应商 | `test_provider(provider_id)`；`delete_provider(provider_id)` / `delete_model(provider_id, model_name)` |
 | 切本地转写 | `set_transcriber("fast-whisper", "small")` + `download_transcriber_model("small")` |
 | 切云端转写 | `set_transcriber("groq")`（groq key 用 CLI 填） |
-| B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA）；或 `set_downloader_cookie(platform="bilibili", cookie="SESSDATA=...")` |
-| 本地文件 | `generate_note(video_url="/绝对/路径/x.mp4", platform="local", ...)` |
+| B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA） |
+| 本地文件 | `generate_note(video_url="file:///绝对/路径/foo%20bar.mp4")` 或普通路径，`platform` 可省略 |
 | 视频理解默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `video_understanding`/`video_interval` 即套用（默认关/6s） |
 | 评论/弹幕整合默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `include_comments`/`comments_limit` 即套用（默认关/20 条） |
 | 笔记默认（setup ③ 新增） | `default_style`（默认 detailed）/ `default_screenshot`（默认关）/ `agent_direct`（默认关，行为与之前一致）；全自动模式不传即套用 |

@@ -8,10 +8,8 @@ from app.db.provider_dao import (
     get_provider_by_name,
     get_provider_by_id,
     update_provider,
-    delete_provider, get_enabled_providers,
+    delete_provider,
 )
-from app.gpt.gpt_factory import GPTFactory
-from app.models.model_config import ModelConfig
 
 
 class ProviderService:

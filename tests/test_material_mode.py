@@ -53,7 +53,7 @@ def _cleanup_registry():
 
 def test_prepare_note_material_no_provider_needed():
     _cleanup_registry()
-    with mock.patch.object(server, "_run_note_task") as m_run, mock.patch.object(server, "_pool") as m_pool:
+    with mock.patch.object(server, "_run_note_task"), mock.patch.object(server, "_pool") as m_pool:
         m_pool.submit.return_value = _FakeFuture()
         resp = json.loads(
             server.prepare_note_material(

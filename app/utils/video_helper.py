@@ -42,6 +42,14 @@ def generate_screenshot(video_path: str, output_dir: str, timestamp: int, index:
 
 
 
+def _static_root() -> str:
+    """静态资源根：MCP 数据目录（隔离，避免写进仓库 CWD）；否则 CWD/static（兼容旧行为）。"""
+    data_dir = os.getenv("VIDEONOTE_DATA_DIR")
+    if data_dir:
+        return os.path.join(data_dir, "static")
+    return os.path.join(os.getcwd(), "static")
+
+
 def save_cover_to_static(local_cover_path: str, subfolder: Optional[str] = "cover") -> str:
     """
     将封面图片保存到 static 目录下，并返回前端可访问的路径
@@ -49,11 +57,8 @@ def save_cover_to_static(local_cover_path: str, subfolder: Optional[str] = "cove
     :param subfolder: 子目录，默认是 cover，可以自定义
     :return: 前端访问路径，例如 /static/cover/xxx.jpg
     """
-    # 项目根目录
-    project_root = os.getcwd()
-
-    # static目录
-    static_dir = os.path.join(project_root, "static")
+    # static 目录：MCP 数据目录（隔离）；无 env 时用 CWD（兼容 CLI/旧行为）
+    static_dir = _static_root()
 
     # 确定目标子目录
     target_dir = os.path.join(static_dir, subfolder or "cover")

@@ -50,6 +50,14 @@ def get_screenshots_dir() -> Path:
     return Path(os.getenv("IMAGE_OUTPUT_DIR", str(get_data_dir() / "static" / "screenshots"))).expanduser().resolve()
 
 
+def get_cache_dir() -> Path:
+    """跨任务转写缓存目录（note_results 的兄弟目录，与 note_cache.cache_root 一致）。
+
+    与 note_results 平级：per-task 清理以任务文件夹为边界不触碰；cleanup_all 一并清。
+    """
+    return get_note_dir().parent / "note_cache"
+
+
 def get_config_dir() -> Path:
     """配置目录（LLM key / cookie / 转写设置 / app_config）。"""
     return Path(os.getenv("VIDEONOTE_CONFIG_DIR", str(get_data_dir() / "config"))).expanduser().resolve()
@@ -272,8 +280,6 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
       - include_note=True：删整个 task_dir + manifest + 全局索引（video_tasks）记录。
     返回统计（deleted/missing/errors/note_kept）。
     """
-    note_dir = get_note_dir()
-    roots = [note_dir, get_data_dir()]
     notes = _note_paths(task_id)
     tdir = task_dir(task_id)
 
@@ -333,6 +339,7 @@ def cleanup_all_files(include_config: bool = False, include_models: bool = False
     _empty(get_note_dir(), "note_results")
     _empty(get_screenshots_dir(), "static/screenshots")
     _empty(get_logs_dir(), "logs")
+    _empty(get_cache_dir(), "note_cache")
     # 同步清空全局任务索引（尽力而为）
     try:
         from app.db.video_task_dao import list_tasks as _list
