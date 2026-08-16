@@ -143,12 +143,8 @@ def setup_environment() -> Path:
     # 源码 checkout 保持原默认 <仓库>/models（已有下载的模型不迁移）。
     if not _IS_SOURCE_CHECKOUT:
         os.environ.setdefault("VIDEONOTE_MODEL_DIR", str(models_dir))
-    # note.py 引用到的后端地址变量（本仓库不使用，仅保证不报错）
-    os.environ.setdefault("API_BASE_URL", "http://localhost")
-    os.environ.setdefault("BACKEND_PORT", "8483")
 
     return data_dir
-
 
 def get_app_config() -> dict:
     """读取持久化应用配置（如默认笔记位置），存于 VIDEONOTE_CONFIG_DIR/app_config.json。"""

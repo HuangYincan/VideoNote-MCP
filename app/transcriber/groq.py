@@ -9,7 +9,8 @@ from app.utils.openai_client import build_openai_client
 import ffmpeg
 import tempfile
 from dotenv import load_dotenv
-load_dotenv()
+if not os.environ.get("VIDEONOTE_DATA_DIR"):
+    load_dotenv()
 MAX_SIZE_MB = 18
 MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
 def compress_audio(input_path: str, target_bitrate='64k') -> str:

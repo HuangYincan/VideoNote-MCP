@@ -40,12 +40,10 @@ from app.utils.video_reader import VideoReader
 # ------------------ 环境变量与全局配置 ------------------
 
 # 从 .env 文件中加载环境变量
-load_dotenv()
-
-# 后端 API 地址与端口（若有需要可以在代码其他部分使用 BACKEND_BASE_URL）
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost")
-BACKEND_PORT = os.getenv("BACKEND_PORT", "8483")
-BACKEND_BASE_URL = f"{API_BASE_URL}:{BACKEND_PORT}"
+# 仅上游独立运行时加载 CWD .env；MCP/CLI 环境下 setup_environment 已设好
+# VIDEONOTE_DATA_DIR，此时 .env 可能覆盖数据目录等关键配置，必须跳过
+if not os.environ.get("VIDEONOTE_DATA_DIR"):
+    load_dotenv()
 
 # 输出目录（用于缓存音频、转写、Markdown 文件，以及存储截图）
 NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", "note_results"))

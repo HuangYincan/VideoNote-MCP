@@ -7,7 +7,8 @@ from typing import Union, Optional, List
 
 import yt_dlp
 
-from app.downloaders.base import Downloader, DownloadQuality
+from app.downloaders.base import Downloader, DownloadQuality, QUALITY_MAP
+from app.downloaders.common import ytdlp_retry
 from app.downloaders.bilibili_dm_patch import apply_bilibili_dm_img_patch
 from app.downloaders.bilibili_subtitle import BilibiliSubtitleFetcher
 from app.models.notes_model import AudioDownloadResult
@@ -83,7 +84,8 @@ class BilibiliDownloader(Downloader, ABC):
                 {
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
-                    'preferredquality': '64',
+                    # quality 参数真正生效：fast=32k / medium=64k / slow=128k
+                    'preferredquality': QUALITY_MAP.get(quality, '64'),
                 }
             ],
             'noplaylist': True,
@@ -94,7 +96,7 @@ class BilibiliDownloader(Downloader, ABC):
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # skip_download=True（已有字幕只需元信息）：download=False 只取 metadata
-            info = ydl.extract_info(video_url, download=not skip_download)
+            info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
             video_id = info.get("id")
             title = info.get("title")
             duration = info.get("duration", 0)
@@ -147,7 +149,7 @@ class BilibiliDownloader(Downloader, ABC):
             ydl_opts['cookiefile'] = self._cookiefile
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
+            info = ytdlp_retry(ydl.extract_info, video_url, download=True)
             video_id = info.get("id")
             video_path = os.path.join(output_dir, f"{video_id}.mp4")
 

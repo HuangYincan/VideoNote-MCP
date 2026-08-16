@@ -17,7 +17,8 @@ from app.services.cookie_manager import CookieConfigManager
 from app.utils.path_helper import get_data_dir
 from dotenv import load_dotenv
 
-load_dotenv()
+if not os.environ.get("VIDEONOTE_DATA_DIR"):
+    load_dotenv()
 DOUYIN_DOMAIN = "https://www.douyin.com"
 
 cfm=CookieConfigManager()

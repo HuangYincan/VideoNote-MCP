@@ -1016,7 +1016,7 @@ def fetch_subtitles(video_url: str, platform: Optional[str] = None) -> str:
                 {"ok": False, "error": "该视频没有可用平台字幕（人工/自动字幕）或获取失败"},
                 ensure_ascii=False,
             )
-        return json.dumps(transcript, ensure_ascii=False)
+        return json.dumps({"ok": True, **transcript}, ensure_ascii=False)
     except Exception as exc:
         logger.warning(f"fetch_subtitles 失败: {exc}")
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
@@ -1843,9 +1843,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
     init_db()
     try:
-        import events
+        from app.events import register_handler as _register_handler
 
-        events.register_handler()
+        _register_handler()
         logger.info("已注册转写完成清理事件")
     except Exception as e:
         logger.warning(f"注册事件监听器失败: {e}")

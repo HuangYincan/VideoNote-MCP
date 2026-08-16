@@ -10,7 +10,7 @@ from app.models.transcriber_model import TranscriptSegment, TranscriptResult
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_model_dir
-from events import transcription_finished
+from app.events import transcription_finished
 
 logger = get_logger(__name__)
 

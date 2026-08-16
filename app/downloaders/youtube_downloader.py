@@ -6,6 +6,7 @@ from typing import Union, Optional, List
 import yt_dlp
 
 from app.downloaders.base import Downloader, DownloadQuality
+from app.downloaders.common import ytdlp_retry
 from app.downloaders.youtube_subtitle import YouTubeSubtitleFetcher
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
@@ -58,7 +59,7 @@ class YoutubeDownloader(Downloader, ABC):
 
         _apply_proxy(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=not skip_download)
+            info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
             video_id = info.get("id")
             title = info.get("title")
             duration = info.get("duration", 0)
@@ -104,7 +105,7 @@ class YoutubeDownloader(Downloader, ABC):
 
         _apply_proxy(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
+            info = ytdlp_retry(ydl.extract_info, video_url, download=True)
             video_id = info.get("id")
             video_path = os.path.join(output_dir, f"{video_id}.mp4")
 

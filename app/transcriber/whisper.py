@@ -12,7 +12,7 @@ from app.utils.env_checker import is_cuda_available, is_torch_installed
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_model_dir
 
-from events import transcription_finished
+from app.events import transcription_finished
 from pathlib import Path
 import shutil
 import threading

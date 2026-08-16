@@ -15,8 +15,6 @@ QUALITY_MAP = {
 
 class Downloader(ABC):
     def __init__(self):
-        #TODO 需要修改为可配置
-        self.quality = QUALITY_MAP.get('fast')
         self.cache_data=getenv('DATA_DIR')
 
     @abstractmethod
@@ -28,12 +26,11 @@ class Downloader(ABC):
         :param need_video:
         :param video_url: 资源链接
         :param output_dir: 输出路径 默认根目录data
-        :param quality: 音频质量 fast | medium | slow
+        :param quality: 音频质量 fast | medium | slow（bitrate 见 QUALITY_MAP）
         :return:返回一个 AudioDownloadResult 类
         '''
         pass
 
-    @staticmethod
     def download_video(self, video_url: str,
                        output_dir: Union[str, None] = None) -> str:
         pass

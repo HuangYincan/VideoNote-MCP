@@ -42,7 +42,9 @@ class SaveCoverTest(unittest.TestCase):
         target = data_dir / "static" / "cover" / "src_cover.jpg"
         self.assertTrue(target.exists())
         self.assertEqual(target.read_bytes(), b"cover-bytes")
-        self.assertIn("/static/cover/src_cover.jpg", url)
+        # 返回 file:// 绝对路径（agent 可直接 Read；无后端可指）
+        self.assertTrue(url.startswith("file://"))
+        self.assertIn("src_cover.jpg", url)
 
     def test_falls_back_to_cwd_static_without_env(self):
         os.environ.pop("VIDEONOTE_DATA_DIR", None)

@@ -3,7 +3,8 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
-load_dotenv()
+if not os.environ.get("VIDEONOTE_DATA_DIR"):
+    load_dotenv()
 
 # 默认 SQLite，如果想换 PostgreSQL 或 MySQL，可以直接改 .env
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///video_note.db")

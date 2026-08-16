@@ -13,7 +13,7 @@
 
 | 子包 | 内容 |
 |------|------|
-| `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, **bilibili_comment**, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, **generic_downloader**, xiaoyuzhoufm_download（**未接入** SUPPORT_PLATFORM_MAP，已去掉 import-time HTTP） |
+| `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, **bilibili_comment**, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, **generic_downloader**（xiaoyuzhoufm_download **已删除** 2026-08-17：未接入且 yt-dlp 通用提取已覆盖小宇宙） |
 | `app/transcriber/` | base, transcriber_provider, whisper, groq, bcut, kuaishou, mlx_whisper_transcriber, **funasr_transcriber**, **audio_preprocess**, model_download_state, whisper_models |
 | `app/gpt/` | base, gpt_factory, openai_gpt, deepseek_gpt, qwen_gpt, universal_gpt, prompt, prompt_builder, request_chunker, utils, tools（不含 test.py）+ `app/gpt/provider/OpenAI_compatible_provider.py`（gpt_factory 依赖） |
 | `app/db/` | engine, init_db, sqlite_client, provider_dao, model_dao, video_task_dao + `app/db/models/`（models, providers, video_tasks） |
@@ -25,7 +25,7 @@
 | `app/services/` | note, constant, provider, cookie_manager, task_serial_executor, transcriber_config_manager, proxy_config_manager, **pipeline**, **merge**, **diarization**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用） |
 | `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, status_code, logger, path_helper, url_parser, openai_client, env_checker, **task_manifest** + **本仓库新增** `model_status.py`（见下）（**不含** response / export / ppt_generator / minio_client） |
 | `videonote_mcp/export/` | SRT/VTT/JSON 确定性导出（不在上游 `utils/export.py`） |
-| `events/` | signals（blinker `transcription_finished`）、handlers（转写完成后临时文件清理）—— 顶层模块，供各转写器 `from events import transcription_finished` |
+| `events/` | signals（blinker `transcription_finished`）、handlers（转写完成后临时文件清理）—— 已迁入 `app/events/`（2026-08-17），供各转写器 `from app.events import transcription_finished` |
 
 ## 外科手术改动（相对上游）
 
@@ -48,7 +48,7 @@
 - `app/services/note.py`（任务文件夹、`IMAGE_OUTPUT_DIR`、material_only、便携笔记）
 - `app/services/provider.py` / `app/db/video_task_dao.py` / `app/db/models/video_tasks.py`
 - `app/services/transcriber_config_manager.py` / `app/utils/model_status.py` / `app/utils/path_helper.py` / `app/utils/logger.py`
-- `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py` / `xiaoyuzhoufm_download.py`
+- `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py`
 - `app/transcriber/transcriber_provider.py`（funasr / mlx）
 - 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`task_manifest.py`
 

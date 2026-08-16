@@ -8,7 +8,7 @@ from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
-from events import transcription_finished
+from app.events import transcription_finished
 
 __version__ = "0.0.3"
 

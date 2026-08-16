@@ -1,3 +1,4 @@
+import os
 import re
 
 import requests
@@ -7,7 +8,8 @@ from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
 KUAISHOU_API_BASE = 'https://www.kuaishou.com/graphql'
 KUAISHOU_URL = "https://www.kuaishou.com/"
-load_dotenv()
+if not os.environ.get("VIDEONOTE_DATA_DIR"):
+    load_dotenv()
 headers = {
     'Accept-Language': 'zh-CN,zh;q=0.9',
     'Cache-Control': 'no-cache',
@@ -39,7 +41,7 @@ class KuaiShou:
     @staticmethod
     def _extract_kuaishou_link(text):
 
-        url = re.findall('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
+        url = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
         return url[0]
 
     def get_photo_id(self, url):

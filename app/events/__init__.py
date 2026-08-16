@@ -1,7 +1,7 @@
 # 注册监听器
 from app.utils.logger import get_logger
-from events.handlers import cleanup_temp_files
-from events.signals import transcription_finished
+from app.events.handlers import cleanup_temp_files
+from app.events.signals import transcription_finished
 
 logger = get_logger(__name__)
 

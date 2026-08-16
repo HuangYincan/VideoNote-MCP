@@ -15,6 +15,7 @@ from typing import Union, Optional
 import yt_dlp
 
 from app.downloaders.base import Downloader, DownloadQuality
+from app.downloaders.common import ytdlp_retry
 from app.downloaders.youtube_downloader import _apply_proxy
 from app.models.notes_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
@@ -95,7 +96,7 @@ class GenericDownloader(Downloader, ABC):
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=not skip_download)
+                info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
                 video_id = info.get("id")
                 title = info.get("title")
                 duration = info.get("duration", 0)
@@ -135,5 +136,5 @@ class GenericDownloader(Downloader, ABC):
             ydl_opts["cookiefile"] = self._cookiefile
         _apply_proxy(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
+            info = ytdlp_retry(ydl.extract_info, video_url, download=True)
         return os.path.join(output_dir, f"{info.get('id')}.mp4")
