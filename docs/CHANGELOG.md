@@ -2,6 +2,18 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## 发布 v0.1.5（2026-08-17）
+
+自 v0.1.4（08-06）以来的变化，全部随本版本发布：
+
+- **插件化 setup**：`/videonote-setup` 命令（体检 → 填 key → 转写 → 默认值 → B站扫码 → 数据管理）、`/plugin configure` userConfig 默认值、install.sh 修「用户级 mcp add 遮蔽插件 env」。
+- **正确性（Wave A）**：`file://` 本地路径、未知 task_id → NOT_FOUND、步骤任务写 SUCCESS 并入索引、截图/封面落数据目录（不再泄漏到 CWD）、MCP 拒绝 key/cookie/hf_token、`generate_note` 可省略 `provider_id`。
+- **Agent DX（Wave B）**：SKILL 默认全自动少问、`inspect_video` 拆 B 站分 P / 播放列表为可提交 url、`health_check` 带 `server_version`/队列/`skill_refresh`、`get_task_status` 加 `stage`/`elapsed_secs`、`get_task_transcript` 默认截前 50 段、`export_transcript` 回传错误、`merge_audio` 默认写数据目录。
+- **跨任务转写缓存（内容寻址）**：同一视频再次生成不重下 + 不重转写；命中时媒体一并复制（audio_path 不悬空）；空转写不进缓存。
+- **配置工具**：`delete_provider` / `delete_model` / `test_provider` / `read_app_config`（敏感项过滤）。
+- **提交前预检**：`preflight`（ffmpeg / 磁盘 / 转写器 / 供应商 key / 时长）。
+- **工程**：ruff F 类全仓清零 + CI 步骤；pytest 套件 170 个全绿；`docs/02` / `VENDOR.md` 与实现对齐。
+
 ## 维护（2026-08-17 · CI ruff + 配置工具 + 预检）
 
 - **ruff F 类清理**：`uvx ruff check --select F` 全仓清零（72 处自动修 + 10 处手动：重复 import、未用变量、`import torch` 探测 noqa）。CI 增加该步骤。
