@@ -2,6 +2,13 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## 第二轮全库扫描（2026-08-17 · 4 个并行审计代理）
+
+- 工具层 / vendored 流水线 / 下载器 / 分发·文档·测试·CI 四路并行扫描，**无新增 P0**。
+- 新增 #46-#76 共 31 条发现：P1 7 条（Cookie print 泄漏、tiktok 平台映射错误、requests 无 timeout、下载器 `__del__` 永不触发致 #10 修复未生效、Dockerfile 构建失败、release 无测试门禁、默认供应商不查 key）；P2 16 条（cancel_note 竞态、result.json 非原子写、ffmpeg 无 timeout、note_cache 媒体无上限/Windows 键、插件 userConfig 只覆盖 7/12 等）；P3 8 条（文档代差、CI 一致性无门禁等）。
+- 关键结论已代码级核实（default_model 分支、cancel 竞态、preflight 队列、tiktok 映射、模块级单例、Dockerfile COPY、时间戳正则、缓存键冒号）。
+- docs/05 追加「第二轮全库扫描」章节 + Wave D 建议落地顺序。
+
 ## 小项批（2026-08-17 · 7 项全部落地）
 
 - **下载质量可配置 + yt-dlp 重试**：base.py 写死的 `self.quality` 删除；bilibili postprocessor 按 `quality` 映射码率（fast=32 / medium=64 / slow=128）；新增 `app/downloaders/common.py` 的 `ytdlp_retry`（仅重试网络类错误、指数退避 1.5s×2^i、3 次，业务错误立即抛），6 处 `extract_info` 接入。youtube/generic 保持 `bestaudio` 不转码（转码反而降质）。
