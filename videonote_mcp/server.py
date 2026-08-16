@@ -20,7 +20,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from videonote_mcp.config import env_bool, env_int, env_or, get_app_config, remove_app_config, setup_environment
 from videonote_mcp import __version__ as _SERVER_VERSION
@@ -1546,6 +1546,146 @@ def validate_url(url: str) -> str:
         )
     except ValueError as e:
         return json.dumps({"supported": False, "reason": str(e)}, ensure_ascii=False)
+
+
+_PREFLIGHT_MIN_DISK_GB = 1.0
+
+
+def _fmt_duration(secs: Optional[float]) -> str:
+    """秒数 → 可读时长；None/0 → '未知'。"""
+    if not secs or secs <= 0:
+        return "未知"
+    total = int(secs)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _preflight_provider(provider_id: Optional[str]) -> "tuple[bool, str]":
+    """预检供应商：key 已填、模型可解析（与 generate_note 的解析逻辑一致）。"""
+    pid = provider_id or _resolve_default_provider_id()
+    if not pid:
+        return False, "无已填 key 的供应商：先 add_provider 再 `! videonote providers set <id> --api-key '...'`，或跑 /videonote-setup"
+    try:
+        row = ProviderService.get_provider_by_id(pid)
+    except Exception:
+        row = None
+    if not row:
+        return False, f"供应商不存在: {pid}"
+    key = (row.get("api_key") or "").strip()
+    if not key or "*" in key:
+        return False, f"供应商 {pid} 的 key 为空：`! videonote providers set {pid} --api-key '...'`（不要经 MCP 传 key）"
+    model = get_app_config().get(f"default_model:{pid}") or ""
+    if not model:
+        rows = get_models_by_provider(pid) or []
+        if rows:
+            model = rows[0]["model_name"]
+    if not model:
+        return False, f"供应商 {pid} 没有可用模型：先 list_models(provider_id) 或 add_model"
+    return True, f"{pid}（key 已填，默认模型 {model}）"
+
+
+@mcp.tool()
+def preflight(
+    url: str = "",
+    platform: Optional[str] = None,
+    provider_id: Optional[str] = None,
+) -> str:
+    """提交任务前的轻量体检（建议 generate_note / prepare_note_material 前调用）。
+
+    检查项：ffmpeg、磁盘剩余、转写器就绪（本地模型已下载/云端 key）、供应商 key 与
+    模型、任务队列；url 非空时顺带预解析视频时长（仅参考，不拦截）。
+    返回 {ok, checks:[{name, ok, detail}], duration_secs?}。ok=false 时先解决
+    detail 里的问题再提交，避免长任务跑到半路才因模型未下载 / 磁盘满失败。
+    """
+    checks: List[Dict[str, Any]] = []
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    checks.append(
+        {
+            "name": "ffmpeg",
+            "ok": ffmpeg_path is not None,
+            "detail": ffmpeg_path or "未找到 ffmpeg（视频下载/合并可能失败）",
+        }
+    )
+
+    try:
+        usage = shutil.disk_usage(str(DATA_DIR))
+        free_gb = usage.free / (1024**3)
+        checks.append(
+            {
+                "name": "disk",
+                "ok": free_gb >= _PREFLIGHT_MIN_DISK_GB,
+                "detail": f"{free_gb:.1f} GB 可用（最低要求 {_PREFLIGHT_MIN_DISK_GB} GB）",
+            }
+        )
+    except OSError as e:
+        checks.append({"name": "disk", "ok": False, "detail": f"无法读取磁盘信息: {e}"})
+
+    ready = TranscriberConfigManager().is_model_ready()
+    checks.append(
+        {
+            "name": "transcriber",
+            "ok": bool(ready["ready"]),
+            "detail": (
+                f"{ready['transcriber_type']}/{ready['model_size']} 就绪"
+                if ready["ready"]
+                else f"{ready['transcriber_type']}: {ready['reason']}"
+            ),
+        }
+    )
+
+    p_ok, p_detail = _preflight_provider(provider_id)
+    checks.append({"name": "provider", "ok": p_ok, "detail": p_detail})
+
+    with _tasks_lock:
+        queue_len = len(_task_futures)
+    checks.append({"name": "queue", "ok": True, "detail": f"{queue_len}/{_MAX_WORKERS} 进行中"})
+
+    duration_secs: Optional[float] = None
+    if url:
+        try:
+            from app.services.inspect import inspect_video as _inspect
+
+            info = _inspect(url, platform=platform)
+            if info.get("ok"):
+                entries = info.get("entries") or []
+                if entries:
+                    duration_secs = entries[0].get("duration")
+                if info.get("kind") == "multi":
+                    checks.append(
+                        {
+                            "name": "duration",
+                            "ok": True,
+                            "detail": f"多集共 {info.get('total', len(entries))} 条（建议逐条生成，分 P 用 entries[].url）",
+                        }
+                    )
+                else:
+                    checks.append(
+                        {"name": "duration", "ok": True, "detail": _fmt_duration(duration_secs)}
+                    )
+            else:
+                checks.append(
+                    {
+                        "name": "duration",
+                        "ok": True,
+                        "detail": f"无法预解析时长（{info.get('error', '未知原因')}）；提交后任务内会重试",
+                    }
+                )
+        except Exception as e:
+            checks.append(
+                {
+                    "name": "duration",
+                    "ok": True,
+                    "detail": f"无法预解析时长（{e}）；提交后任务内会重试",
+                }
+            )
+
+    failed = [c for c in checks if not c["ok"]]
+    return json.dumps(
+        {"ok": not failed, "checks": checks, "duration_secs": duration_secs},
+        ensure_ascii=False,
+    )
 
 
 @mcp.tool()

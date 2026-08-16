@@ -15,10 +15,11 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 4. 像合集 / 没带 `?p=` 的 B 站长链 / `list=` / `playlist` → `inspect_video(url)`。
    - `kind=single`：一条 url。
    - `kind=multi`：每条 `entries[].url` 当独立视频。用户没说「只要第 N 集」就处理全部（太多先报 `total`，问要不要只跑 `current_p`）。
-5. 直接 `generate_note(video_url)`（`provider_id` 可省略）。参数不传 = setup / userConfig 默认。
-6. **`get_task_status` 轮询**到 SUCCESS / FAILED / CANCELLED。**禁止 `wait_for_note`**（已废弃，会堵事件循环）。等待中可用 `stage` / `elapsed_secs` 报进度（如「转写中，已 3 分钟」）。
-7. 呈现 `result.markdown`（要点 + 章节 + 原文链接）。用户要细节再用 `get_task_transcript`（默认前 50 段；全文 `"all"`）。
-8. **不要主动问「要不要后续优化」**。用户要精修再读笔记 + 转写改。
+5. 长视频 / 首次使用 / 最近改过转写引擎 → `preflight(url)` 体检（ffmpeg/磁盘/转写器/供应商 key，`ok=false` 先修）。
+6. 直接 `generate_note(video_url)`（`provider_id` 可省略）。参数不传 = setup / userConfig 默认。
+7. **`get_task_status` 轮询**到 SUCCESS / FAILED / CANCELLED。**禁止 `wait_for_note`**（已废弃，会堵事件循环）。等待中可用 `stage` / `elapsed_secs` 报进度（如「转写中，已 3 分钟」）。
+8. 呈现 `result.markdown`（要点 + 章节 + 原文链接）。用户要细节再用 `get_task_transcript`（默认前 50 段；全文 `"all"`）。
+9. **不要主动问「要不要后续优化」**。用户要精修再读笔记 + 转写改。
 
 用户改某一项（风格 / 视频理解 / 评论 / 截图）→ 只改那一项再跑。用户说「手动」才逐项问（见 reference）。
 
@@ -33,7 +34,7 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 ## 工作流（默认 = 配置 LLM）
 
 ```
-health_check → validate_url → (必要时 inspect_video) → generate_note
+health_check → validate_url → (必要时 inspect_video / preflight) → generate_note
     → get_task_status 直到终态 → 呈现 markdown
 ```
 

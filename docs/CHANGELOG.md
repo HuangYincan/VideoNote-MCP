@@ -6,7 +6,8 @@
 
 - **ruff F 类清理**：`uvx ruff check --select F` 全仓清零（72 处自动修 + 10 处手动：重复 import、未用变量、`import torch` 探测 noqa）。CI 增加该步骤。
 - **配置工具补齐**（Phase 2d）：MCP 新增 `delete_provider` / `delete_model(provider_id, model_name)` / `test_provider(provider_id)`（用已存 key 探测，不接受 key 参数）/ `read_app_config()`（返回 setup 默认值，过滤 hf_token / cookie / api_key 等敏感项）。`skills/videonote/reference/tools.md` 同步。
-- 测试 `tests/test_server_contracts.py` 新增 6 个（ProviderConfigToolsTest），套件 158 → 164。
+- **提交前预检**（Phase 2，审计 #37）：新增 `preflight(url?, platform?, provider_id?)` —— ffmpeg / 磁盘剩余（≥1GB）/ 转写器就绪 / 供应商 key+模型（与 generate_note 解析一致）/ 队列，url 非空时预解析时长（失败不拦截）。
+- 测试 `tests/test_server_contracts.py` 新增 12 个（ProviderConfigToolsTest + PreflightTest），套件 158 → 170。
 
 ## 维护（2026-08-17 · 内容寻址转写缓存）
 

@@ -252,5 +252,146 @@ class ProviderConfigToolsTest(unittest.TestCase):
         self.assertEqual(data["default_export_formats"], ["md", "pdf"])
 
 
+class PreflightTest(unittest.TestCase):
+    """Phase 2 审计#27：提交前预检（ffmpeg/磁盘/转写器/供应商/时长）。"""
+
+    def _ready(self, **over):
+        return {
+            "ready": True,
+            "transcriber_type": "fast-whisper",
+            "model_size": "small",
+            "downloading": False,
+            "reason": "",
+            **over,
+        }
+
+    def test_env_ok_passes(self):
+        with mock.patch.object(server.shutil, "which", return_value="/usr/bin/ffmpeg"):
+            with mock.patch.object(
+                server.shutil, "disk_usage", return_value=mock.Mock(free=5 * 1024**3)
+            ):
+                with mock.patch.object(
+                    server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
+                ):
+                    with mock.patch.object(server, "_preflight_provider", return_value=(True, "openai（key 已填，默认模型 gpt-4o）")):
+                        data = json.loads(server.preflight())
+        self.assertTrue(data["ok"])
+        by_name = {c["name"]: c for c in data["checks"]}
+        self.assertTrue(by_name["ffmpeg"]["ok"])
+        self.assertTrue(by_name["disk"]["ok"])
+        self.assertTrue(by_name["transcriber"]["ok"])
+        self.assertTrue(by_name["provider"]["ok"])
+        self.assertIn("0/3", by_name["queue"]["detail"])
+        self.assertIsNone(data["duration_secs"])
+
+    def test_ffmpeg_missing_and_low_disk_fail(self):
+        with mock.patch.object(server.shutil, "which", return_value=None):
+            with mock.patch.object(
+                server.shutil, "disk_usage", return_value=mock.Mock(free=int(0.5 * 1024**3))
+            ):
+                with mock.patch.object(
+                    server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
+                ):
+                    with mock.patch.object(server, "_preflight_provider", return_value=(True, "ok")):
+                        data = json.loads(server.preflight())
+        self.assertFalse(data["ok"])
+        by_name = {c["name"]: c for c in data["checks"]}
+        self.assertFalse(by_name["ffmpeg"]["ok"])
+        self.assertFalse(by_name["disk"]["ok"])
+
+    def test_transcriber_not_ready_fails(self):
+        with mock.patch.object(server.shutil, "which", return_value="/usr/bin/ffmpeg"):
+            with mock.patch.object(
+                server.shutil, "disk_usage", return_value=mock.Mock(free=10 * 1024**3)
+            ):
+                with mock.patch.object(
+                    server.TranscriberConfigManager,
+                    "is_model_ready",
+                    return_value=self._ready(ready=False, reason="whisper-small 未下载"),
+                ):
+                    with mock.patch.object(server, "_preflight_provider", return_value=(True, "ok")):
+                        data = json.loads(server.preflight())
+        self.assertFalse(data["ok"])
+        detail = {c["name"]: c for c in data["checks"]}["transcriber"]["detail"]
+        self.assertIn("未下载", detail)
+
+    def test_provider_check_mirrors_generate_resolution(self):
+        # 无默认供应商 → 失败
+        with mock.patch.object(server, "_resolve_default_provider_id", return_value=None):
+            ok, detail = server._preflight_provider(None)
+        self.assertFalse(ok)
+        self.assertIn("providers set", detail)
+        # 供应商不存在 → 失败
+        with mock.patch.object(server, "_resolve_default_provider_id", return_value="nosuch"):
+            with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=None):
+                ok, detail = server._preflight_provider("nosuch")
+        self.assertFalse(ok)
+        # key 为空 → 失败
+        with mock.patch.object(
+            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "api_key": ""}
+        ):
+            ok, detail = server._preflight_provider("p1")
+        self.assertFalse(ok)
+        self.assertIn("providers set p1", detail)
+        # key 已填 + 默认模型 → 通过
+        with mock.patch.object(
+            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "api_key": "sk-abc"}
+        ):
+            with mock.patch.object(server, "get_app_config", return_value={"default_model:p1": "gpt-4o"}):
+                ok, detail = server._preflight_provider("p1")
+        self.assertTrue(ok)
+        self.assertIn("gpt-4o", detail)
+        # key 已填但无模型 → 失败
+        with mock.patch.object(
+            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "api_key": "sk-abc"}
+        ):
+            with mock.patch.object(server, "get_app_config", return_value={}):
+                with mock.patch.object(server, "get_models_by_provider", return_value=[]):
+                    ok, detail = server._preflight_provider("p1")
+        self.assertFalse(ok)
+        self.assertIn("list_models", detail)
+
+    def test_duration_best_effort(self):
+        # 解析失败不拦（info ok=false → duration 检查仍 ok）
+        with mock.patch.object(server.shutil, "which", return_value="/usr/bin/ffmpeg"):
+            with mock.patch.object(
+                server.shutil, "disk_usage", return_value=mock.Mock(free=10 * 1024**3)
+            ):
+                with mock.patch.object(
+                    server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
+                ):
+                    with mock.patch.object(server, "_preflight_provider", return_value=(True, "ok")):
+                        with mock.patch(
+                            "app.services.inspect.inspect_video", return_value={"ok": False, "error": "需要登录"}
+                        ):
+                            data = json.loads(server.preflight(url="https://www.bilibili.com/video/BV1xx411c7mD"))
+        self.assertTrue(data["ok"])
+        detail = {c["name"]: c for c in data["checks"]}["duration"]["detail"]
+        self.assertIn("无法预解析", detail)
+        # 解析成功 → duration_secs
+        with mock.patch.object(server.shutil, "which", return_value="/usr/bin/ffmpeg"):
+            with mock.patch.object(
+                server.shutil, "disk_usage", return_value=mock.Mock(free=10 * 1024**3)
+            ):
+                with mock.patch.object(
+                    server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
+                ):
+                    with mock.patch.object(server, "_preflight_provider", return_value=(True, "ok")):
+                        with mock.patch(
+                            "app.services.inspect.inspect_video",
+                            return_value={"ok": True, "kind": "single", "entries": [{"duration": 754}]},
+                        ):
+                            data = json.loads(server.preflight(url="https://x"))
+        self.assertEqual(data["duration_secs"], 754)
+        detail = {c["name"]: c for c in data["checks"]}["duration"]["detail"]
+        self.assertEqual(detail, "12:34")
+
+    def test_fmt_duration(self):
+        self.assertEqual(server._fmt_duration(754), "12:34")
+        self.assertEqual(server._fmt_duration(3661), "1:01:01")
+        self.assertEqual(server._fmt_duration(None), "未知")
+        self.assertEqual(server._fmt_duration(0), "未知")
+
+
 if __name__ == "__main__":
     unittest.main()
