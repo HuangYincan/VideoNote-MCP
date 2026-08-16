@@ -51,7 +51,19 @@ class GenericDownloader(Downloader, ABC):
                 "# Netscape HTTP Cookie File\n"
                 f"example.com\tTRUE\t/\tTRUE\t0\tgeneric\t{cookie}\n"
             )
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
         self._cookiefile = path
+
+    def __del__(self):
+        path = getattr(self, "_cookiefile", None)
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     def download(
         self,

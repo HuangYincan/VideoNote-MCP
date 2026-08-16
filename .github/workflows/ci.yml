@@ -36,3 +36,5 @@ jobs:
           EOF
       - name: CLI smoke
         run: uv run videonote providers list
+      - name: Unit tests
+        run: uv run --with pytest python -m pytest -q

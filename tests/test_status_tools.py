@@ -18,6 +18,7 @@
 import json
 import shutil
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -136,7 +137,7 @@ class GetTranscriptTest(unittest.TestCase):
         shutil.rmtree(self.task_dir, ignore_errors=True)
 
     def test_full(self):
-        data = json.loads(server.get_task_transcript(self.task_id))
+        data = json.loads(server.get_task_transcript(self.task_id, "all"))
         self.assertTrue(data["ok"])
         self.assertEqual(data["language"], "zh")
         self.assertEqual(data["full_text"], "第一句\n第二句\n第三句")
@@ -145,6 +146,31 @@ class GetTranscriptTest(unittest.TestCase):
         self.assertEqual(meta["total_segments"], 3)
         self.assertEqual(meta["returned_segments"], 3)
         self.assertFalse(meta["truncated"])
+
+    def test_default_caps_at_50(self):
+        tid = "longtrans0001"
+        tdir = server.NOTE_OUTPUT_DIR / tid
+        (tdir / "gen").mkdir(parents=True, exist_ok=True)
+        segs = [{"start": float(i), "end": float(i + 1), "text": f"段{i}"} for i in range(80)]
+        (tdir / "gen" / "transcript.json").write_text(
+            json.dumps({"language": "zh", "full_text": "x", "segments": segs}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (tdir / "status.json").write_text(
+            json.dumps({"status": "SUCCESS", "message": "完成"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        try:
+            data = json.loads(server.get_task_transcript(tid))
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["meta"]["total_segments"], 80)
+            self.assertEqual(data["meta"]["returned_segments"], 50)
+            self.assertTrue(data["meta"]["truncated"])
+            full = json.loads(server.get_task_transcript(tid, "all"))
+            self.assertEqual(full["meta"]["returned_segments"], 80)
+            self.assertFalse(full["meta"]["truncated"])
+        finally:
+            shutil.rmtree(tdir, ignore_errors=True)
 
     def test_slice(self):
         data = json.loads(server.get_task_transcript(self.task_id, "0-2"))
@@ -186,6 +212,36 @@ class GetTranscriptTest(unittest.TestCase):
             shutil.rmtree(pdir, ignore_errors=True)
 
 
+class StageElapsedTest(unittest.TestCase):
+    def test_stage_label_and_elapsed_from_started_at(self):
+        tid = "stage0000001"
+        tdir = server.NOTE_OUTPUT_DIR / tid
+        tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / "status.json").write_text(
+            json.dumps({"status": "TRANSCRIBING", "message": "转写中", "started_at": time.time() - 125}),
+            encoding="utf-8",
+        )
+        try:
+            resp = json.loads(server.get_task_status(tid))
+            self.assertEqual(resp["status"], "TRANSCRIBING")
+            self.assertEqual(resp["stage"], "转写中")
+            self.assertGreaterEqual(resp["elapsed_secs"], 124)
+        finally:
+            shutil.rmtree(tdir, ignore_errors=True)
+
+    def test_missing_started_at_elapsed_none(self):
+        tid = "stage0000002"
+        tdir = server.NOTE_OUTPUT_DIR / tid
+        tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / "status.json").write_text(json.dumps({"status": "PENDING", "message": "排队中"}), encoding="utf-8")
+        try:
+            resp = json.loads(server.get_task_status(tid))
+            self.assertEqual(resp["stage"], "排队中")
+            self.assertIsNone(resp["elapsed_secs"])
+        finally:
+            shutil.rmtree(tdir, ignore_errors=True)
+
+
 class WaitForNoteTest(unittest.TestCase):
     def setUp(self):
         self.task_id = "waitnote00001"
@@ -194,8 +250,17 @@ class WaitForNoteTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.task_dir, ignore_errors=True)
 
+    def test_unknown_task_is_not_found(self):
+        resp = json.loads(server.get_task_status("nosuch000001"))
+        self.assertEqual(resp["status"], "NOT_FOUND")
+        self.assertIsNone(resp["result"])
+
+    def test_wait_unknown_returns_immediately(self):
+        resp = json.loads(server.wait_for_note("nosuch000002", timeout=30, poll_interval=5))
+        self.assertEqual(resp["status"], "NOT_FOUND")
+
     def test_wait_forwards_include_transcript(self):
-        # SUCCESS 任务首轮即返回，不真正阻塞
+        # SUCCESS 立刻返回；wait_for_note 不再 sleep
         light = json.loads(server.wait_for_note(self.task_id, timeout=1, poll_interval=1))
         self.assertEqual(light["status"], "SUCCESS")
         self.assertNotIn("transcript", light["result"])
@@ -205,6 +270,21 @@ class WaitForNoteTest(unittest.TestCase):
         )
         self.assertEqual(full["status"], "SUCCESS")
         self.assertIn("transcript", full["result"])
+
+    def test_wait_pending_does_not_block(self):
+        pid = "waitpend00001"
+        pdir = server.NOTE_OUTPUT_DIR / pid
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "status.json").write_text(
+            json.dumps({"status": "TRANSCRIBING", "message": "转写中"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        try:
+            resp = json.loads(server.wait_for_note(pid, timeout=30, poll_interval=5))
+            self.assertEqual(resp["status"], "TRANSCRIBING")
+            self.assertTrue(resp.get("deprecated"))
+        finally:
+            shutil.rmtree(pdir, ignore_errors=True)
 
 
 if __name__ == "__main__":

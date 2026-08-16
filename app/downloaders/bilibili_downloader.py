@@ -44,8 +44,20 @@ class BilibiliDownloader(Downloader, ABC):
         tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
         tmp.writelines(lines)
         tmp.close()
+        try:
+            os.chmod(tmp.name, 0o600)
+        except OSError:
+            pass
         logger.info("已生成 B站 Netscape Cookie 文件: %s (条目: %d)", tmp.name, len(lines) - 1)
         return tmp.name
+
+    def __del__(self):
+        path = getattr(self, "_cookiefile", None)
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     def download(
         self,

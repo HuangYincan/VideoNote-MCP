@@ -80,4 +80,5 @@ def export_transcript(
         record_task_paths(task_id or "export", [str(out_dir / f"transcript.{_FORMAT_EXT[f]}") for f in written])
     if errors:
         logger.error(f"导出完成但部分失败: {errors}")
+        written["_errors"] = errors  # type: ignore[assignment]
     return written

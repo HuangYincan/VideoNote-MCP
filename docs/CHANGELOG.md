@@ -2,6 +2,58 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## 维护（2026-08-17 · 内容寻址转写缓存）
+
+同一视频再次 `generate_note` / `prepare_note_material` 不再重下 + 重转写：
+
+- **`app/services/note_cache.py`**：按 `platform:video_id` 缓存上次转写。身份从 URL 预解析（B 站 BV+p、YouTube v=、抖音 / TikTok；本地文件 sha256；b23 短链解析失败、快手 / generic 解析不出则不命中）。
+- **转写按来源分键**：`subtitle`（平台字幕，引擎无关）/ `transcriber_type[:model_size]`（本地引擎拼尺寸）——切换引擎或模型尺寸不会误用旧结果。
+- **命中路径最省事**：命中 → 把缓存 transcript 拷进 `{task_id}/gen/transcript.json`，下游已有的 `has_transcript → skip_download` 逻辑自动跳过下载与转写（只做元信息提取）。转写完成后按下载器权威 `audio_meta.video_id` promote（bilibili `_pN` 后缀归一化）。
+- **淘汰**：无 LRU；`cleanup_all` 连 `note_cache/` 一起清（`task_manifest.get_cache_dir`）。
+- **`get_task_status` 加 `stage` + `elapsed_secs`**：返回中文阶段标签（「转写中」）与任务已耗时（`status.json` 首次提交打 `started_at`，`note._update_status` 保留），轮询可报「转写中，已 3 分钟」。
+- **媒体缓存 + 命中复制**（修复 audio_path 悬空）：完整下载时把音频一并收进 `note_cache/<ident>/media/`（引擎无关，local 跳过）；命中缓存时从媒体缓存复制到新任务 raw/，`audio_path` 指向真实文件而非悬空路径（`promote_media` / `lookup_media`）。
+- **修 `logs/` 目录首启缺失**：`setup_environment()` 现在创建 `data/logs/`（原 server import 时 `open(logs/mcp_stderr.log)` 因目录不存在被 `except: pass` 吞掉，全新数据目录首启 stderr 重定向静默失效）。
+- 测试 `tests/test_note_cache.py`（19 个：身份 / 分键 / 命中 / promote / 媒体缓存 / generate 集成），套件 133 → 154。
+
+## 维护（2026-08-17 · Wave B Agent DX + SKILL 少问）
+
+按 [docs/05-优化清单.md](05-优化清单.md) 做 Agent 更好用的一小刀（不发新版本号，仍 0.1.4）：
+
+- **SKILL 默认全自动**：给链接就跑，不再先问全自动/手动、不再列 6 项确认、不主动问后续优化。用户说「手动」才逐项问。handoff 仅当返回 `handoff: true`。
+- **`wait_for_note` 已废弃**：不再 `sleep`，立刻返回当前快照；进行中带 `deprecated`。用 `get_task_status` 轮询。
+- **`get_task_transcript` 默认前 50 段**（`truncated` 时用 `"50-"` / `"all"`）。
+- **`list_models` 形状统一**：`{ok, source, models:[{id, name}]}`（实时 API 与 DB 回退一致）。
+- **`health_check.skill_refresh`**：给出 disable + install 刷新命令。
+- **`export_transcript`** 把写入失败放进 `errors`；未配置导出格式时默认 `["srt"]`。
+- **`merge_audio`** 默认输出 `note_results/merged/`，不再写 `Path.cwd()`。
+- 文档 / `reference/tools.md` / docs/02 / docs/04 / docs/05 对齐。
+
+## 维护（2026-08-17 · inspect_video 分 P / 播放列表）
+
+- 新工具 `inspect_video`：只解析、不下载。B 站走 view API 列出 `pages`，YouTube/generic 用 yt-dlp `extract_flat` 列播放列表。
+- 每条 `entries[].url` 可直接喂给 `generate_note` / `prepare_note_material`（B 站 `?p=N`，YouTube `watch?v=`）。Agent 按单视频流程处理；多集用 subagent。
+- SKILL 规则 3 / 工作流第 2 步：先 inspect，再按 entries 提交。工具数 31 → 32。
+
+## 维护（2026-08-17 · Wave A 落地）
+
+按 [docs/05-优化清单.md](05-优化清单.md) 修正确性 + 可回归（不发新版本号，仍 0.1.4）：
+
+- **步骤任务写 SUCCESS**：`transcribe_media` / `extract_frames` / `summarize_note` 完成后 `_write_status(SUCCESS)`，并 `insert_video_task` 进全局索引。
+- **截图目录**：`note.py` 读 `IMAGE_OUTPUT_DIR`（兼容 `OUT_DIR`），默认数据目录，不再写 CWD。
+- **`file://`**：`generate_note` / `prepare_note_material` / `diarize_media` 走 `_coerce_local_path`（unquote + Windows 盘符）。
+- **未知 task_id → `NOT_FOUND`**（不再假 PENDING）；`wait_for_note` 立刻返回，并标明会阻塞 stdio。
+- **密钥红线**：MCP `add_provider` / `update_provider` / `set_downloader_cookie` / `diarize_media` 拒绝 api_key / cookie / hf_token；填 key 走 CLI。`generate_note` / `summarize_note` 可省略 `provider_id`。
+- **卫生**：xiaoyuzhou 去掉 import-time HTTP；cookie tempfile `0600` + unlink；抖音不再 print Cookie；`app_config.json` / downloader cookie `chmod 0600`；预处理清理不再二次拼 `_16k`，且不删源文件。
+- **可观测**：`health_check` 含 `server_version` / 队列 / keyed_providers / funasr+mlx 是否已装；`__version__` = 0.1.4。
+- **测试 / CI**：`tests/test_server_contracts.py` 等契约测试；CI `uv run --with pytest pytest -q`。
+- **文档**：重写 `docs/02`、更新 `VENDOR.md` 冻结清单、对齐 31 工具与「最多 3 并发」口径（README / 04 / SKILL tools.md / CLAUDE.md）。
+
+## 维护（2026-08-17 · 全栈优化点审计）
+
+- 对照 MCP 层（31 个工具）、vendored `app/`、Skill/插件、CI 与文档，产出 [docs/05-优化清单.md](05-优化清单.md)（P0–P3 + Wave A/B/C）。
+- 最高优先级（随后 Wave A 已修）：步骤任务不写 SUCCESS、`IMAGE_OUTPUT_DIR` 读成 `OUT_DIR`、主入口不认 `file://`、未知 task 假 PENDING、密钥可经 MCP 进对话。
+- `docs/00` 索引补 05。
+
 ## 维护（2026-08-16 · README 快速开始精简）
 
 - **中文 README 快速开始精简**：步骤 3 收敛为一行 `! videonote setup`（LLM-Key / B 站扫码 / CLI 向导，配置细节交向导与 Configure 页）；删除「插件默认值怎么填」NOTE 块。

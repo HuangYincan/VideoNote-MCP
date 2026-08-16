@@ -24,6 +24,10 @@ class CookieConfigManager:
     def _write(self, data: Dict[str, Dict[str, str]]):
         with self.path.open("w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
 
     def get(self, platform: str) -> Optional[str]:
         data = self._read()

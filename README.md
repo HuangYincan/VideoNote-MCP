@@ -134,7 +134,7 @@ flowchart LR
 
 # 0 🔄 端到端全流程
 
-端到端模式只给一条链接即可：`generate_note` 异步跑完整条流水线并返回 `task_id`；用轻量 `get_task_status` 快照轮询到 `SUCCESS/FAILED/CANCELLED`（任务一次只发一个），`wait_for_note` 可阻塞等最终 Markdown，`cancel_note` 协作式取消。「AGENT 直接生成」走 `prepare_note_material` —— 只准备素材包、**不调用配置 LLM**，由 agent 自己读转写、看图、写笔记。
+端到端模式只给一条链接即可：`generate_note` 异步跑完整条流水线并返回 `task_id`；用轻量 `get_task_status` 快照轮询到 `SUCCESS/FAILED/CANCELLED`（单进程最多 3 个进行中任务，不要在同一消息里并行提交），`wait_for_note` 会阻塞整个 MCP 事件循环，优先轮询。`cancel_note` 协作式取消。「AGENT 直接生成」走 `prepare_note_material` —— 只准备素材包、**不调用配置 LLM**，由 agent 自己读转写、看图、写笔记。
 
 | 工具 | 说明 | 类型 |
 |------|------|------|
@@ -146,12 +146,13 @@ flowchart LR
 
 # 1 📥 下载与平台解析
 
-`validate_url` 判断链接属于哪个平台（bilibili / youtube / douyin / tiktok / kuaishou / local）；内置 6 平台之外返回 `platform:"generic"`，自动走 **yt-dlp 通用提取**覆盖 1800+ 站点。`set_downloader_cookie` 配平台 Cookie（如 B 站 SESSDATA，可跳过登录墙）；`fetch_subtitles` 只取平台字幕，不下载不转写。
+`validate_url` 判断链接属于哪个平台（bilibili / youtube / douyin / tiktok / kuaishou / local）；内置 6 平台之外返回 `platform:"generic"`，自动走 **yt-dlp 通用提取**覆盖 1800+ 站点。`inspect_video` 把 B 站分 P / YouTube 播放列表拆成每集可独立提交的 url（不下载）。平台 Cookie 走 `! videonote login bilibili` / `! videonote setup`，**不要**经 MCP 传入。`fetch_subtitles` 只取平台字幕，不下载不转写。
 
 | 工具 | 说明 | 类型 |
 |------|------|------|
 | `validate_url` | 识别链接平台；generic 走 yt-dlp 通用提取（1800+ 站点） | MCP 工具 |
-| `set_downloader_cookie` | 设置平台 Cookie（如 B 站 SESSDATA） | MCP 工具 |
+| `inspect_video` | 解析分 P / 播放列表，返回每集可 `generate_note` 的 url | MCP 工具 |
+| `set_downloader_cookie` | 拒绝写入 Cookie；请用 `! videonote login bilibili` | MCP 工具 |
 | `fetch_subtitles` | 只取平台字幕（含 B 站 AI 字幕），跳过下载与转写 | MCP 工具 |
 
 # 2 🎙 语音转写（ASR）

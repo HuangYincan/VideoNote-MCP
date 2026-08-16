@@ -51,9 +51,16 @@ def diarize_audio(
 
     token = hf_token or os.environ.get("HUGGINGFACE_HUB_TOKEN") or ""
     if not token:
+        try:
+            from videonote_mcp.config import get_app_config
+
+            token = (get_app_config().get("hf_token") or "").strip()
+        except Exception:
+            token = ""
+    if not token:
         raise RuntimeError(
             "说话人分离需要 HF_TOKEN（HuggingFace token）。请设置环境变量 "
-            "HUGGINGFACE_HUB_TOKEN 或通过 setup 向导配置。"
+            "HUGGINGFACE_HUB_TOKEN，或跑 `videonote setup` 在向导里保存。"
         )
 
     try:

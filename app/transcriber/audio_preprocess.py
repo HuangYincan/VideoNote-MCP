@@ -141,12 +141,28 @@ def cleanup_preprocess_files(wav_path: str) -> None:
     失败静默。
     """
     p = Path(wav_path)
-    stem = p.stem
     parent = p.parent
-    patterns = (f"{stem}_16k.wav", f"{stem}_part_*.wav", f"{stem}_denoised.wav")
-    for pattern in patterns:
-        for f in parent.glob(pattern):
-            try:
-                f.unlink(missing_ok=True)
-            except OSError:
-                pass
+    # 只删我们生成的临时文件，绝不碰源文件。
+    # 正常调用传入 normalize_to_wav 产物（foo_16k.wav）；
+    # 误把源路径（foo.wav / foo.mp3）传进来时，只清旁边的 _16k / _part / _denoised。
+    candidates = []
+    if p.suffix.lower() == ".wav" and p.stem.endswith("_16k"):
+        candidates.append(p)
+        candidates.extend(parent.glob(f"{p.stem}_part_*.wav"))
+        candidates.append(parent / f"{p.stem}_denoised.wav")
+    else:
+        stem = p.stem
+        candidates.append(parent / f"{stem}_16k.wav")
+        candidates.extend(parent.glob(f"{stem}_16k_part_*.wav"))
+        candidates.append(parent / f"{stem}_16k_denoised.wav")
+        candidates.append(parent / f"{stem}_denoised.wav")
+    seen = set()
+    for f in candidates:
+        try:
+            fp = Path(f)
+            if fp in seen or not fp.is_file():
+                continue
+            seen.add(fp)
+            fp.unlink(missing_ok=True)
+        except OSError:
+            pass
