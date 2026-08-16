@@ -2,6 +2,17 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## 小项批（2026-08-17 · 7 项全部落地）
+
+- **下载质量可配置 + yt-dlp 重试**：base.py 写死的 `self.quality` 删除；bilibili postprocessor 按 `quality` 映射码率（fast=32 / medium=64 / slow=128）；新增 `app/downloaders/common.py` 的 `ytdlp_retry`（仅重试网络类错误、指数退避 1.5s×2^i、3 次，业务错误立即抛），6 处 `extract_info` 接入。youtube/generic 保持 `bestaudio` 不转码（转码反而降质）。
+- **`.env` 隔离**：6 处 vendored `load_dotenv()` 加守卫（`VIDEONOTE_DATA_DIR` 已设置则不加载），MCP/CLI 启动不再被 CWD `.env` 覆盖。
+- **仓库垃圾清理**：删除 `API_BASE_URL` / `BACKEND_PORT` / `BACKEND_BASE_URL` 残留（note.py / config.py / video_helper.py）；截图封面返回 `file://` 绝对路径（不再伪造后端 URL）；顶层 `events/` 迁入 `app/events/`；删除根目录泄漏的旧 `video_note.db`。
+- **小宇宙死代码删除**：`xiaoyuzhoufm_download.py` stub + 测试删除（从未接入，yt-dlp generic 已覆盖）。
+- **错误形状统一**：`fetch_subtitles` 成功返回 `{ok: true, ...}`。
+- **progress 判定**：FastMCP 3.4.5 stdio 下后台线程无 session 可用，推式通知架构不可行；`stage`/`elapsed_secs`（Wave B 已交付）为替代。结论记录在 docs/05 #21。
+- kuaishou URL 正则改 raw string，消除 SyntaxWarning。
+- 文档：docs/05 标记 #11/#21/#27/#29/#35/#36/#38/#41 状态；VENDOR.md 同步删除与迁移。
+
 ## 发布 v0.1.5（2026-08-17）
 
 自 v0.1.4（08-06）以来的变化，全部随本版本发布：
