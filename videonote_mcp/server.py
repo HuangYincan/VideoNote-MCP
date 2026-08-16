@@ -22,7 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from videonote_mcp.config import env_bool, env_int, env_or, get_app_config, setup_environment
+from videonote_mcp.config import env_bool, env_int, env_or, get_app_config, remove_app_config, setup_environment
 from videonote_mcp import __version__ as _SERVER_VERSION
 
 DATA_DIR = setup_environment()
@@ -59,7 +59,7 @@ from videonote_mcp.provider_probe import probe_models
 # vendored 核心流水线
 from app.db.engine import get_engine
 from app.db.init_db import init_db
-from app.db.model_dao import get_models_by_provider, insert_model
+from app.db.model_dao import get_models_by_provider, insert_model, delete_model as _dao_delete_model
 from app.db.provider_dao import seed_default_providers
 from app.enmus.note_enums import DownloadQuality
 from app.enmus.task_status_enums import TaskStatus
@@ -1255,6 +1255,83 @@ def add_model(provider_id: str, model_name: str) -> str:
     return json.dumps(
         {"added": True, "provider_id": provider_id, "model_name": model_name}, ensure_ascii=False
     )
+
+
+@mcp.tool()
+def delete_provider(provider_id: str) -> str:
+    """删除一个 LLM 供应商配置（同时清掉它的 default_model 默认设置）。
+
+    仅删除配置；不影响已生成的任务。删除前确认没有进行中的任务依赖它。
+    """
+    provider = ProviderService.get_provider_by_id(provider_id)
+    if not provider:
+        raise ValueError(f"供应商不存在: {provider_id}")
+    ProviderService.delete_provider(provider_id)
+    remove_app_config(f"default_model:{provider_id}")
+    return json.dumps({"deleted": True, "id": provider_id, "name": provider.get("name")}, ensure_ascii=False)
+
+
+@mcp.tool()
+def delete_model(provider_id: str, model_name: str) -> str:
+    """删除某供应商手动添加的模型名（list_models 里 database 来源的模型）。"""
+    if not model_name:
+        raise ValueError("model_name 必填")
+    rows = get_models_by_provider(provider_id) or []
+    target = next((r for r in rows if r.get("model_name") == model_name), None)
+    if target is None:
+        raise ValueError(f"模型不存在: {provider_id}/{model_name}（可 list_models 查看）")
+    _dao_delete_model(target["id"])
+    remove_app_config(f"default_model:{provider_id}")
+    return json.dumps({"deleted": True, "provider_id": provider_id, "model_name": model_name}, ensure_ascii=False)
+
+
+@mcp.tool()
+def test_provider(provider_id: str) -> str:
+    """测试供应商连接并列出可用模型。
+
+    用已保存的 key 探测 /v1/models（**不接受 key 参数**，填 key 走 CLI）。
+    """
+    provider = ProviderService.get_provider_by_id(provider_id)
+    if not provider:
+        raise ValueError(f"供应商不存在: {provider_id}（先 add_provider 或 CLI providers add）")
+    r = probe_models(
+        provider.get("api_key"),
+        provider.get("base_url"),
+        name=provider.get("name", ""),
+    )
+    if not r["ok"]:
+        return json.dumps(
+            {"ok": False, "provider_id": provider_id, "error": r.get("error", "连接失败")},
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {
+            "ok": True,
+            "provider_id": provider_id,
+            "count": len(r["models"]),
+            "models": sorted(set(r["models"]))[:50],
+        },
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+def read_app_config() -> str:
+    """读取 setup 持久化的应用配置默认值（非敏感）。
+
+    Agent 在生成前可据此推断默认：默认供应商/模型（default_provider_id +
+    default_model:{id}）、视频理解/弹幕开关、风格、导出格式、notes_dir 等。
+    敏感项（hf_token / cookie / api_key 等）一律不返回。
+    """
+    raw = get_app_config()
+    _blocked = ("token", "cookie", "api_key", "secret", "password")
+    safe = {
+        k: v for k, v in raw.items() if not any(s in k.lower() for s in _blocked)
+    }
+    default_provider = _resolve_default_provider_id()
+    if default_provider:
+        safe["default_provider_id"] = default_provider
+    return json.dumps(safe, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()

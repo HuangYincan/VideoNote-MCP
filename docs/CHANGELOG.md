@@ -2,6 +2,12 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## 维护（2026-08-17 · CI ruff + 配置工具 + 预检）
+
+- **ruff F 类清理**：`uvx ruff check --select F` 全仓清零（72 处自动修 + 10 处手动：重复 import、未用变量、`import torch` 探测 noqa）。CI 增加该步骤。
+- **配置工具补齐**（Phase 2d）：MCP 新增 `delete_provider` / `delete_model(provider_id, model_name)` / `test_provider(provider_id)`（用已存 key 探测，不接受 key 参数）/ `read_app_config()`（返回 setup 默认值，过滤 hf_token / cookie / api_key 等敏感项）。`skills/videonote/reference/tools.md` 同步。
+- 测试 `tests/test_server_contracts.py` 新增 6 个（ProviderConfigToolsTest），套件 158 → 164。
+
 ## 维护（2026-08-17 · 内容寻址转写缓存）
 
 同一视频再次 `generate_note` / `prepare_note_material` 不再重下 + 重转写：

@@ -181,5 +181,76 @@ class ConcurrencyGuardTest(unittest.TestCase):
                 server._task_futures.update(old)
 
 
+class ProviderConfigToolsTest(unittest.TestCase):
+    """Phase 2d：delete_provider / delete_model / test_provider / read_app_config。"""
+
+    def test_delete_provider_deletes_and_clears_default(self):
+        with mock.patch.object(
+            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
+        ):
+            with mock.patch.object(server.ProviderService, "delete_provider") as m_del:
+                with mock.patch.object(server, "remove_app_config") as m_rm:
+                    resp = json.loads(server.delete_provider("p1"))
+        self.assertTrue(resp["deleted"])
+        self.assertEqual(resp["id"], "p1")
+        m_del.assert_called_once_with("p1")
+        m_rm.assert_called_once_with("default_model:p1")
+
+    def test_delete_provider_missing_raises(self):
+        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=None):
+            with self.assertRaises(ValueError):
+                server.delete_provider("nosuch")
+
+    def test_delete_model_resolves_and_deletes(self):
+        with mock.patch.object(
+            server, "get_models_by_provider", return_value=[{"id": 7, "model_name": "local-1"}]
+        ):
+            with mock.patch.object(server, "_dao_delete_model") as m_del:
+                with mock.patch.object(server, "remove_app_config"):
+                    resp = json.loads(server.delete_model("p1", "local-1"))
+        self.assertTrue(resp["deleted"])
+        m_del.assert_called_once_with(7)
+
+    def test_delete_model_missing_raises(self):
+        with mock.patch.object(server, "get_models_by_provider", return_value=[]):
+            with self.assertRaises(ValueError):
+                server.delete_model("p1", "nope")
+
+    def test_test_provider_ok_and_fail(self):
+        provider = {"id": "p1", "api_key": "sk-123", "base_url": "https://api.x", "name": "x"}
+        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=provider):
+            with mock.patch.object(
+                server, "probe_models", return_value={"ok": True, "models": ["b", "a", "a"]}
+            ):
+                ok = json.loads(server.test_provider("p1"))
+        self.assertTrue(ok["ok"])
+        self.assertEqual(ok["count"], 3)
+        self.assertEqual(ok["models"], ["a", "b"])
+
+        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=provider):
+            with mock.patch.object(
+                server, "probe_models", return_value={"ok": False, "error": "401"}
+            ):
+                bad = json.loads(server.test_provider("p1"))
+        self.assertFalse(bad["ok"])
+        self.assertEqual(bad["error"], "401")
+
+    def test_read_app_config_filters_sensitive_and_reports_default(self):
+        cfg = {
+            "hf_token": "hf_xxx",
+            "notes_dir": "/tmp/notes",
+            "default_model:p1": "gpt-4o",
+            "default_export_formats": ["md", "pdf"],
+        }
+        with mock.patch.object(server, "get_app_config", return_value=cfg):
+            with mock.patch.object(server, "_resolve_default_provider_id", return_value="p1"):
+                data = json.loads(server.read_app_config())
+        self.assertNotIn("hf_token", data)
+        self.assertIn("notes_dir", data)
+        self.assertEqual(data["default_provider_id"], "p1")
+        self.assertEqual(data["default_model:p1"], "gpt-4o")
+        self.assertEqual(data["default_export_formats"], ["md", "pdf"])
+
+
 if __name__ == "__main__":
     unittest.main()

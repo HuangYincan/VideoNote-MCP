@@ -156,6 +156,9 @@
 
 - `list_providers()` —— 供应商列表（key 掩码）。空 key 让用户在终端 `videonote providers set <id> --api-key '...'`。
 - `add_provider(name, base_url, type)` / `update_provider(provider_id, name?, base_url?, enabled?)` —— 只改非敏感字段；**传 api_key 会被拒绝**。填 key：`! videonote providers set <id> --api-key '...'`。
+- `delete_provider(provider_id)` / `delete_model(provider_id, model_name)` —— 删供应商/模型（同时清默认设置）。
+- `test_provider(provider_id)` —— 用已存 key 探测连接并列出模型（不接受 key 参数）。
+- `read_app_config()` —— setup 持久化的默认值（默认供应商/模型、视频理解/弹幕开关、风格、导出格式、notes_dir）；敏感项不返回。
 - `list_models(provider_id)` —— `{ok, source, models:[{id, name}]}`。实时 /v1/models，回退本地 DB。
 - `add_model(provider_id, model_name)` —— 手动加模型名（接口不可用时）。
 
@@ -182,6 +185,7 @@
 | 给内置供应商填 key | 用户在本会话 `! videonote providers set <id> --api-key 'sk-...'`（隐藏输入、agent 不碰 key） |
 | 自建/新增供应商 | `add_provider(name, base_url, type)`（空 key），再 `! videonote providers set <id> --api-key '...'` |
 | 查看供应商 / 模型 | `list_providers()`（掩码）/ `list_models(provider_id)` |
+| 测试/删除供应商 | `test_provider(provider_id)`；`delete_provider(provider_id)` / `delete_model(provider_id, model_name)` |
 | 切本地转写 | `set_transcriber("fast-whisper", "small")` + `download_transcriber_model("small")` |
 | 切云端转写 | `set_transcriber("groq")`（groq key 用 CLI 填） |
 | B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA） |
