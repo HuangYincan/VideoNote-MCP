@@ -417,7 +417,9 @@ class NoteGenerator:
                 title=semantic_title,
                 status="SUCCESS",
                 summary=summary,
-                note_dir=str(task_dir),
+                # note_dir 契约（docs 审计 G2）：note 任务指向 note.md 所在目录 gen/，
+                # 与 get_task_status 的 result.note_dir 一致；material 无 note.md 用 task_dir
+                note_dir=str(_note_dir) if _note_dir is not None else str(task_dir),
             )
 
             # 6. 完成

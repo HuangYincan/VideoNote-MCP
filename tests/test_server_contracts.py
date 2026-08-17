@@ -225,6 +225,75 @@ class ListModelsShapeTest(unittest.TestCase):
         self.assertEqual(data["models"], [{"id": "local-1", "name": "local-1"}])
 
 
+class NoteDirContractTest(unittest.TestCase):
+    """docs 审计 G2：result.note_dir 指向 note.md 所在目录（gen/），
+    便携副本经 manifest 定位为 portable_note_dir；video_tasks 列与之一致。"""
+
+    def _fake_result(self, **over):
+        from app.models.audio_model import AudioDownloadResult
+        from app.models.notes_model import NoteResult
+        from app.models.transcriber_model import TranscriptResult
+
+        return NoteResult(
+            markdown="# 测试标题\n正文",
+            transcript=TranscriptResult(language="zh", full_text="hi", segments=[]),
+            audio_meta=AudioDownloadResult(
+                file_path="/tmp/x.mp3", title="视频标题", duration=10.0,
+                cover_url=None, platform="local", video_id="local-x", raw_info={},
+            ),
+            **over,
+        )
+
+    def tearDown(self):
+        from app.db.video_task_dao import delete_task
+
+        for tid in ("nodedir000001", "nodedir000002"):
+            try:
+                delete_task(tid)
+            except Exception:
+                pass
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def test_note_dir_points_to_gen(self):
+        # 默认模式：note_dir = {task_id}/gen（note.md 真实所在）
+        tid = "nodedir000001"
+        (server.NOTE_OUTPUT_DIR / tid / "gen").mkdir(parents=True)  # 模拟 note.py 写盘
+        (server.NOTE_OUTPUT_DIR / tid / "gen" / "note.md").write_text("# 测试", encoding="utf-8")
+        with mock.patch.object(server, "NoteGenerator") as m_gen:
+            m_gen.return_value.generate.return_value = self._fake_result()
+            server._run_note_task(tid)
+        resp = json.loads(server.get_task_status(tid))
+        self.assertEqual(
+            resp["result"]["note_dir"],
+            str(server.NOTE_OUTPUT_DIR / tid / "gen"),
+        )
+        self.assertNotIn("portable_note_dir", resp["result"])
+
+    def test_portable_note_dir_from_manifest(self):
+        # 指定 notes_dir：便携副本经 manifest 定位，补 portable_note_dir
+        # （真实流程 note.py 在 generate() 内写便携副本并 record，_run_note_task
+        #  在 generate 返回后读 manifest 计算——测试预置 manifest 模拟这一过程）
+        tid = "nodedir000002"
+        portable = server.NOTE_OUTPUT_DIR.parent / "portable" / "标题"
+        try:
+            portable.mkdir(parents=True, exist_ok=True)
+            (portable / "note.md").write_text("# 便携", encoding="utf-8")
+            server.record_task_paths(tid, [portable, portable / "note.md"])
+            (server.NOTE_OUTPUT_DIR / tid / "gen").mkdir(parents=True)
+            (server.NOTE_OUTPUT_DIR / tid / "gen" / "note.md").write_text("# 测试", encoding="utf-8")
+            with mock.patch.object(server, "NoteGenerator") as m_gen:
+                m_gen.return_value.generate.return_value = self._fake_result()
+                server._run_note_task(tid)
+            resp = json.loads(server.get_task_status(tid))
+            self.assertEqual(resp["result"]["portable_note_dir"], str(portable))
+            self.assertEqual(
+                resp["result"]["note_dir"],
+                str(server.NOTE_OUTPUT_DIR / tid / "gen"),
+            )
+        finally:
+            shutil.rmtree(portable, ignore_errors=True)
+
+
 class ConcurrencyGuardTest(unittest.TestCase):
     def test_guard_raises_when_full(self):
         # 门禁只统计「正在执行」（future.running()）——排队不占名额（docs 审计 F7）
