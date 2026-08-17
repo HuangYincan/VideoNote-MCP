@@ -21,7 +21,7 @@ note_styles = [
 
 
 # 生成 BASE_PROMPT 函数
-def generate_base_prompt(title, segment_text, tags, _format=None, style=None, extras=None, comments_danmaku=None):
+def generate_base_prompt(title, segment_text, tags, _format=None, style=None, extras=None, comments_danmaku=None, outline=None):
     # 生成 Base Prompt 开头部分
     prompt = BASE_PROMPT.format(
         video_title=title,
@@ -40,6 +40,19 @@ def generate_base_prompt(title, segment_text, tags, _format=None, style=None, ex
     # 添加额外内容
     if extras:
         prompt += f"\n{extras}"
+
+    # 多 chunk 场景：注入「更早部分已生成的章节标题」，统一标题风格、避免同义章节
+    # （docs/05 #39 标题漂移）。首个 chunk 无大纲（outline=None）不注入。
+    if outline:
+        prompt += (
+            "\n\n===== 已生成的章节大纲 =====\n"
+            "这是同一视频更早部分的笔记中已经出现的章节标题：\n"
+            f"{outline}\n"
+            "===== 大纲结束 =====\n"
+            "你的内容请沿用统一的标题风格：不要重复创建相同或同义的章节标题；"
+            "新内容属于已有章节时并入该章节（可作子节），只有讨论全新主题时才新增章节；"
+            "保持标题层级一致。"
+        )
 
     # 添加观众评论与弹幕 —— 强制在笔记中输出「观众观点」章节（可见、可总结）
     if comments_danmaku:

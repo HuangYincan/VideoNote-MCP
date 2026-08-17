@@ -14,6 +14,36 @@ from app.gpt.prompt import MERGE_PROMPT
 from app.gpt.request_chunker import RequestChunker
 from app.models.transcriber_model import TranscriptSegment
 from typing import List, Optional
+import re
+
+# 大纲注入上限（docs/05 #39 标题漂移）：标题数量与单条长度都截断，
+# 控制注入体积（估算切块时不带大纲，留 ~5% 余量即可容纳）
+_OUTLINE_MAX_ITEMS = 15
+_OUTLINE_MAX_TITLE_LEN = 40
+
+
+def extract_outline(partials: List[str], limit: int = _OUTLINE_MAX_ITEMS,
+                    max_title_len: int = _OUTLINE_MAX_TITLE_LEN) -> str:
+    """从已生成的笔记片段中提取章节标题，供后续 chunk 沿用统一标题风格。
+
+    - 只取 `#`~`####` 标题行；去掉行内 markdown 记号（加粗/反引号）与
+      `*Content-[mm:ss]` 时间戳后缀
+    - 按出现顺序去重（同名/同义标题只保留第一个）
+    - 超出 limit 截断（防止注入体积失控）
+    """
+    titles: List[str] = []
+    seen = set()
+    for partial in partials or []:
+        for line in re.findall(r"^#{1,4}\s+(.+)$", partial, re.M):
+            title = re.sub(r"\s*\*Content-\[[^\]]*\]\s*$", "", line)
+            title = title.replace("**", "").replace("`", "").replace("*", "").strip()
+            if not title or title in seen:
+                continue
+            seen.add(title)
+            titles.append(title[:max_title_len])
+            if len(titles) >= limit:
+                return "\n".join(f"- {t}" for t in titles)
+    return "\n".join(f"- {t}" for t in titles)
 
 
 class UniversalGPT(GPT):
@@ -67,6 +97,7 @@ class UniversalGPT(GPT):
             style=kwargs.get('style'),
             extras=kwargs.get('extras'),
             comments_danmaku=comments_danmaku,
+            outline=kwargs.get('outline'),
         )
 
         video_img_urls = kwargs.get('video_img_urls', [])
@@ -361,6 +392,9 @@ class UniversalGPT(GPT):
             # 评论/弹幕只出现在第一个 chunk（尚未生成任何 partial 时），
             # 其余 chunk 传 None，避免大数据在多个 chunk 重复而爆 token
             chunk_comments = comments_danmaku if (len(partials) == 0 and offset == 0) else None
+            # 已有 partial（含 checkpoint 恢复）的章节标题注入后续 chunk，
+            # 统一标题风格避免漂移（docs/05 #39）；首个 chunk 无大纲。
+            outline = extract_outline(partials)
             messages = self.create_messages(
                 chunk.segments,
                 title=source.title,
@@ -370,6 +404,7 @@ class UniversalGPT(GPT):
                 style=source.style,
                 extras=source.extras,
                 comments_danmaku=chunk_comments,
+                outline=outline,
             )
             try:
                 response = self._chat_completion_create(messages)
