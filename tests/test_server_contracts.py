@@ -385,6 +385,34 @@ class StyleFormatValidationTest(unittest.TestCase):
         self.assertNotIn("style 必须是", str(cm.exception))
 
 
+class FetchCommentsLimitTest(unittest.TestCase):
+    """fetch_comments 的 limit<=0 会令 fetcher 的 `len(seen) >= limit` 恒真——静默空结果，钳制到 ≥1。"""
+
+    def test_limit_clamped_to_one(self):
+        with mock.patch(
+            "app.downloaders.bilibili_comment.BilibiliCommentFetcher.fetch_comments",
+            return_value={"ok": True, "comments": []},
+        ) as m:
+            server.fetch_comments("https://www.bilibili.com/video/BV1xx411c7mD", limit=0)
+        self.assertEqual(m.call_args.kwargs.get("limit"), 1)
+
+    def test_negative_limit_clamped(self):
+        with mock.patch(
+            "app.downloaders.bilibili_comment.BilibiliCommentFetcher.fetch_comments",
+            return_value={"ok": True, "comments": []},
+        ) as m:
+            server.fetch_comments("https://www.bilibili.com/video/BV1xx411c7mD", limit=-5)
+        self.assertEqual(m.call_args.kwargs.get("limit"), 1)
+
+    def test_valid_limit_passes_through(self):
+        with mock.patch(
+            "app.downloaders.bilibili_comment.BilibiliCommentFetcher.fetch_comments",
+            return_value={"ok": True, "comments": []},
+        ) as m:
+            server.fetch_comments("https://www.bilibili.com/video/BV1xx411c7mD", limit=10)
+        self.assertEqual(m.call_args.kwargs.get("limit"), 10)
+
+
 class ConcurrencyGuardTest(unittest.TestCase):
     def test_guard_raises_when_full(self):
         # 门禁只统计「正在执行」（future.running()）——排队不占名额（docs 审计 F7）

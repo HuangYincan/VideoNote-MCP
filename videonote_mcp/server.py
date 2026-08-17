@@ -1201,6 +1201,7 @@ def fetch_comments(video_url: str, limit: int = 20) -> str:
     try:
         from app.downloaders.bilibili_comment import BilibiliCommentFetcher
 
+        limit = max(1, int(limit))  # limit<=0 会让 fetcher 的 `len(seen) >= limit` 恒真，静默返回空
         result = BilibiliCommentFetcher().fetch_comments(video_url, limit=limit)
     except Exception as exc:
         logger.warning(f"fetch_comments 失败: {exc}")
