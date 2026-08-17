@@ -28,6 +28,10 @@
 - **E1 可观测性收口（1ced97a）**：stderr 日志超限轮转（`VIDEONOTE_STDERR_LOG_MAX_MB` 默认 50MB → `.log.1`，防长跑体积失控）；`_open_stderr_log` 打开失败不再静默（原因打到原始 stderr）；atexit 退出摘要记录进行中/排队任务数（排查孤儿 ffmpeg/whisper 子进程）。新测试 tests/test_stderr_log.py 7 项。
 - 文档：docs/06 新增 Wave E 章节；docs/05 #39/#44 标注更新。
 
+## Wave E 批 6（2026-08-17 · 自主改进轮 #90-#117，402 tests）
+
+- **format 字符串/混型校验（#117）**：`_check_style_and_format` 的 `set(formats)` 把字符串 `"toc"` 拆成字符集报「收到: ['c','o','t']」——合法格式被说成非法；int/str 混排（`[1, "toc"]`）还让 `sorted()` 裸 TypeError。入口显式要求字符串列表（与 export_transcript #104 口径一致），未知元素字符串化后报出。接入 generate_note / summarize_note（batch 委托 generate_note 自动受益）。+3 契约测试。**402 passed + ruff F-clean**。
+
 ## Wave E 批 5（2026-08-17 · 自主改进轮 #90-#116，399 tests）
 
 - **下载器健壮性（f5bdc8b，#90）**：#36 剩余 4 子项——kuaishou 失败点抛明确 RuntimeError（原 TypeError/AttributeError/IndexError 三连）；Bcut 轮询指数退避 `min(1<<i, 5)` + 5 处 HTTP 补 timeout；generic cookie 从「写死 example.com 的 Netscape 文件（永不生效）」改 `http_headers` 直接注入；audio.json 实体悬空视为缓存失效重新下载。tests/test_downloader_robustness.py 16 项。

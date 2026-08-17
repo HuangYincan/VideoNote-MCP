@@ -386,6 +386,25 @@ class StyleFormatValidationTest(unittest.TestCase):
             server.generate_note("https://example.com/v", style=None)
         self.assertNotIn("style 必须是", str(cm.exception))
 
+    def test_string_format_rejected_explicitly(self):
+        # 字符串 "toc" 曾穿透到 set() 被拆成字符集报「['c','o','t']」——把合法格式说成非法
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", format="toc")
+        self.assertIn("format 必须是字符串列表", str(cm.exception))
+
+    def test_mixed_type_format_no_sort_crash(self):
+        # int/str 混排曾让 sorted() 裸 TypeError；元素字符串化后明确报出
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", format=[1, "toc"])
+        self.assertIn("收到: ['1']", str(cm.exception))
+
+    def test_string_format_rejected_in_summarize_note(self):
+        with self.assertRaises(ValueError) as cm:
+            server.summarize_note(
+                {"language": "zh", "full_text": "x", "segments": []}, format="toc"
+            )
+        self.assertIn("format 必须是字符串列表", str(cm.exception))
+
 
 class FetchCommentsLimitTest(unittest.TestCase):
     """fetch_comments 的 limit<=0 会令 fetcher 的 `len(seen) >= limit` 恒真——静默空结果，钳制到 ≥1。"""

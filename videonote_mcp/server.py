@@ -130,13 +130,21 @@ def _check_style_and_format(style, formats) -> None:
     schema enum 只约束客户端生成参数（MCP 服务端不做运行时校验），
     直接调用函数/老客户端仍可能传非法值——静默降级成「无风格笔记」太隐蔽，入口显式报错。
     默认值路径（setup 配置）不在校验范围：配置是用户自持的，坏值走原有行为。
+
+    formats 非列表（如字符串 "toc"）曾穿透到 `set(formats)` 被拆成字符集——
+    报「收到: ['c','o','t']」把合法格式说成非法；int/str 混排还让 sorted() 裸
+    TypeError。入口显式要求字符串列表（与 export_transcript 的 #104 口径一致）。
     """
     if style is not None and style not in _STYLE_VALUES:
         raise ValueError(f"style 必须是 {' / '.join(_STYLE_VALUES)} 之一，收到: {style!r}")
     if formats:
-        unknown = sorted(set(formats) - set(_FORMAT_VALUES))
+        if not isinstance(formats, (list, tuple)):
+            raise ValueError(
+                f"format 必须是字符串列表（支持 {' / '.join(_FORMAT_VALUES)}），收到: {formats!r}"
+            )
+        unknown = sorted({str(f) for f in formats if f not in _FORMAT_VALUES})
         if unknown:
-            raise ValueError(f"format 只支持 toc / link / screenshot / summary，收到: {unknown}")
+            raise ValueError(f"format 只支持 {' / '.join(_FORMAT_VALUES)}，收到: {unknown}")
 
 
 def _check_grid_size(grid_size) -> None:
