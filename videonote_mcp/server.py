@@ -1670,6 +1670,19 @@ def set_transcriber(
         raise ValueError(
             f"transcriber_type 必须是 {' / '.join(_TRANSCRIBER_TYPES)} 之一，收到: {transcriber_type!r}"
         )
+    if whisper_model_size is not None:
+        # #103 只校了引擎；尺寸同样入口校验——非法尺寸被持久化后，任务跑到 TRANSCRIBING
+        # 才因模型加载失败炸（或 preflight 报「未下载」）。与运行时同源（whisper_models
+        # 注册表：内置档位 / 自定义名 / 含 "/" 的 HF repo_id / 已存在的本地目录）
+        from app.transcriber.whisper_models import resolve_whisper_model
+
+        try:
+            resolve_whisper_model(whisper_model_size)
+        except ValueError:
+            raise ValueError(
+                f"未知 whisper 模型尺寸: {whisper_model_size!r}（可选: {', '.join(WHISPER_MODEL_SIZES)}"
+                "，或自定义模型名 / HF repo_id / 本地目录）"
+            )
     mgr = TranscriberConfigManager()
     cfg = mgr.update_config(
         transcriber_type,

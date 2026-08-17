@@ -28,7 +28,7 @@
 - **E1 可观测性收口（1ced97a）**：stderr 日志超限轮转（`VIDEONOTE_STDERR_LOG_MAX_MB` 默认 50MB → `.log.1`，防长跑体积失控）；`_open_stderr_log` 打开失败不再静默（原因打到原始 stderr）；atexit 退出摘要记录进行中/排队任务数（排查孤儿 ffmpeg/whisper 子进程）。新测试 tests/test_stderr_log.py 7 项。
 - 文档：docs/06 新增 Wave E 章节；docs/05 #39/#44 标注更新。
 
-## Wave E 批 4（2026-08-17 · 自主改进轮 #90-#107，364 tests）
+## Wave E 批 4（2026-08-17 · 自主改进轮 #90-#108，371 tests）
 
 - **下载器健壮性（f5bdc8b，#90）**：#36 剩余 4 子项——kuaishou 失败点抛明确 RuntimeError（原 TypeError/AttributeError/IndexError 三连）；Bcut 轮询指数退避 `min(1<<i, 5)` + 5 处 HTTP 补 timeout；generic cookie 从「写死 example.com 的 Netscape 文件（永不生效）」改 `http_headers` 直接注入；audio.json 实体悬空视为缓存失效重新下载。tests/test_downloader_robustness.py 16 项。
 - **DB 路径修复（5ba8497，#91）**：`app/db/engine.py` 默认 `sqlite:///video_note.db` 是相对 CWD 路径——裸脚本/单文件测试在仓库根分裂出 DB（根目录残留垃圾的真实根因）；改 `get_data_dir()` 稳定路径；`cache_data` 弃用 vendored 旧 `DATA_DIR` env。
@@ -48,6 +48,7 @@
 - **app 层静默降级加固（#106）**：4 并行代理对 `app/` 全 8 目录二轮扫描（第一轮 E3 清 4 P0，本轮无 P1）→ 7 项：① 三个配置管理器（cookie/transcriber/proxy）损坏 JSON 静默当空——引擎悄悄回退 fast-whisper、cookie 悄悄消失，最重的是 `cookie_manager.set()` 读损坏文件写回会把**其它平台 cookie 永久抹掉**（数据丢失）；新增 `app/utils/json_store.py`（损坏 → warning + `.corrupt` 备份 + 空配置；`write_json_atomic` tmp+replace+0600）全部接入。② `check_whisper_model_exists` 模型名解析失败谎报「未下载」→ 区分 ValueError + warning。③ `chunk_duration_guess` probe 失败无日志回退 1800s → 分段时间轴漂移数十秒任务照常 SUCCESS，warning 留痕。④ note.py 全局索引同步失败 debug→warning（list_tasks 静默缺任务）。⑤ started_at 读取 `except:pass`→warning。⑥ universal_gpt checkpoint 损坏静默弃用白烧 LLM 配额 → warning。⑦ inspect 播放列表非 http 条目以成功形状返回 → 跳过 + warning，全坏显式错误。VENDOR.md 冻结清单同步。+17 测试（test_json_store.py 10 + test_app_silent_fallbacks.py 7）。**357 passed + ruff F-clean**。
 - 文档：docs/05 第三轮 #90-#94、docs/06、CHANGELOG；skills tools.md 同步 batch 新签名；docs/05 Wave B 第 6 条过时 ⏸ 标记修正（Resource 6f 已落地）。
 - **输出目录 file:// 规整 + 导出格式垃圾配置（#107）**：① 三处输出目录参数（`generate_note(notes_dir)` / `export_transcript(out_dir)` / `merge_audio(out_dir)`）统一 `_coerce_local_path` 规整——`file:///…` URI 直传曾 `Path("file:///…")` 在 CWD 下建字面 `file:` 垃圾目录，「数据目录外」提示也基于未规整值恒误报；batch 委托 generate_note 自动继承。② `app_config.default_export_formats` 非列表垃圾值（如字符串）令缺省链 `or` 短路——工具入口炸「必须是列表」、自动导出静默失败、env 回退永不生效；抽 `_resolve_default_export_formats()`（非列表 → warning + 回退 env）接入工具与 `_auto_export_transcript`。docstring 与 tools.md 标注输出目录支持 file://。+7 契约测试（OutputDirFileUriTest + DefaultExportFormatsJunkTest）。**364 passed + ruff F-clean**。
+- **set_transcriber 尺寸入口校验（#108）**：#103 收口——引擎类型已白名单但 `whisper_model_size` 没有：`set_transcriber("fast-whisper", whisper_model_size="bogus")` 成功返回后配置落盘，任务跑到 TRANSCRIBING 才因模型加载失败（#106 之后 preflight 也只报「未下载」）。改用运行时同源的 `resolve_whisper_model`（whisper_models 注册表：内置档位 / 自定义名 / 含 `/` 的 HF repo_id / 已存在本地目录）入口校验，未知尺寸立即报错；CLI `transcriber set --size`（自由串，download 才有 choices）同口径拒绝。+7 测试（SetTranscriberSizeValidationTest 5 项 + CLI 2 项，含 repo_id/本地目录直通不被误伤）。**371 passed + ruff F-clean**。
 
 ## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）
 

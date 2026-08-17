@@ -132,6 +132,19 @@ class TestTranscriberCli:
             cli._transcriber_cli(["set", "not-an-engine"])
         assert ei.value.code == 2
 
+    def test_set_invalid_size_rejected(self, capsys):
+        # set --size 是自由串（download 才有 choices）：非法尺寸持久化后运行时才炸，
+        # 与 MCP set_transcriber 同口径入口拒绝（#108）
+        with pytest.raises(SystemExit) as ei:
+            cli._transcriber_cli(["set", "fast-whisper", "--size", "bogus-size"])
+        assert ei.value.code == 1
+        assert "未知 whisper 模型尺寸" in capsys.readouterr().err
+
+    def test_set_repo_id_size_accepted(self, capsys):
+        # 含 "/" 的 HF repo_id 是合法输入（resolve 直通），不得误伤
+        cli._transcriber_cli(["set", "fast-whisper", "--size", "Systran/faster-whisper-small"])
+        assert "fast-whisper / Systran/faster-whisper-small" in _cli_out(capsys)
+
     def test_preprocess_toggle(self, capsys):
         cli._transcriber_cli(["preprocess", "on"])
         assert "音频预处理: 开" in _cli_out(capsys)

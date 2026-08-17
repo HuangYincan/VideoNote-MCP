@@ -1149,6 +1149,20 @@ def _transcriber_cli(argv) -> None:
     elif opts.cmd == "set":
         if opts.engine in ("fast-whisper", "mlx-whisper") and not opts.size:
             opts.size = "small"
+        if opts.size:
+            # 与 MCP set_transcriber 同口径（#108）：非法尺寸被持久化后任务跑到
+            # TRANSCRIBING 才因模型加载失败；下载白名单有 choices，set 是自由串
+            from app.transcriber.whisper_models import resolve_whisper_model
+
+            try:
+                resolve_whisper_model(opts.size)
+            except ValueError:
+                print(
+                    f"✗ 未知 whisper 模型尺寸: {opts.size!r}（可选: {', '.join(_WHISPER_SIZES)}，"
+                    "或自定义模型名 / HF repo_id / 本地目录）",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         cfg = mgr.update_config(opts.engine, opts.size)
         print(f"已切换: {cfg['transcriber_type']} / {cfg['whisper_model_size']}", file=sys.stdout)
         if opts.engine == "fast-whisper":

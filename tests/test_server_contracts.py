@@ -824,6 +824,55 @@ class SetTranscriberValidationTest(unittest.TestCase):
         self.assertEqual(set(server._TRANSCRIBER_TYPES), {e.value for e in TranscriberType})
 
 
+class SetTranscriberSizeValidationTest(unittest.TestCase):
+    """set_transcriber 的 whisper_model_size 同样入口校验（#103 只校了引擎）：
+    非法尺寸被持久化后，任务跑到 TRANSCRIBING 才因模型加载失败炸（或 preflight
+    报「未下载」）——与运行时同源（whisper_models 注册表），#108。"""
+
+    def test_bogus_size_rejected(self):
+        with self.assertRaises(ValueError) as cm:
+            server.set_transcriber("fast-whisper", whisper_model_size="bogus-size")
+        self.assertIn("未知 whisper 模型尺寸", str(cm.exception))
+        self.assertIn("large-v3", str(cm.exception))
+
+    def test_bogus_size_rejected_even_for_cloud_engine(self):
+        # 云端引擎忽略尺寸，但尺寸仍会被持久化——拼错就该现在报，而不是切回本地时炸
+        with self.assertRaises(ValueError) as cm:
+            server.set_transcriber("groq", whisper_model_size="bogus-size")
+        self.assertIn("未知 whisper 模型尺寸", str(cm.exception))
+
+    def test_builtin_size_passes(self):
+        with mock.patch.object(
+            server.TranscriberConfigManager,
+            "update_config",
+            return_value={"transcriber_type": "fast-whisper", "whisper_model_size": "small"},
+        ) as m:
+            resp = json.loads(server.set_transcriber("fast-whisper", whisper_model_size="small"))
+        m.assert_called_once()
+        self.assertEqual(resp["whisper_model_size"], "small")
+
+    def test_repo_id_passthrough_accepted(self):
+        # 含 "/" 的 HF repo_id 是合法运行时输入（resolve 直通），不得被白名单误伤
+        with mock.patch.object(
+            server.TranscriberConfigManager,
+            "update_config",
+            return_value={"transcriber_type": "fast-whisper", "whisper_model_size": "Systran/faster-whisper-small"},
+        ) as m:
+            server.set_transcriber("fast-whisper", whisper_model_size="Systran/faster-whisper-small")
+        m.assert_called_once()
+
+    def test_local_dir_passthrough_accepted(self):
+        # 已存在的本地目录同样是合法运行时输入
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(
+                server.TranscriberConfigManager,
+                "update_config",
+                return_value={"transcriber_type": "fast-whisper", "whisper_model_size": td},
+            ) as m:
+                server.set_transcriber("fast-whisper", whisper_model_size=td)
+            m.assert_called_once()
+
+
 class SummarizeTranscriptShapeTest(unittest.TestCase):
     """summarize_note 的 transcript 形状：缺 segments/full_text 时曾静默拿空素材让 LLM
     凭空生成笔记（还烧配额）；入口显式报错（#104）。"""
