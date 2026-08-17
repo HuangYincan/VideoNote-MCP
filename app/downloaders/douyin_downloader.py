@@ -37,7 +37,7 @@ def get_timestamp(unit: str = "milli"):
         int: 根据给定单位的当前时间 (The current time based on the given unit)
     """
 
-    now = datetime.datetime.utcnow() - datetime.datetime(1970, 1, 1)
+    now = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
     if unit == "milli":
         return int(now.total_seconds() * 1000)
     elif unit == "sec":
@@ -204,7 +204,9 @@ class DouyinDownloader(Downloader):
             return response.json()
         except Exception as e:
             logger.warning("抖音视频信息请求失败: %s", e)
-            raise ValueError("请求失败:", e)
+            # 旧写法 ValueError("请求失败:", e) 是元组参数——str() 输出
+            # ('请求失败:', <异常>)，且无 from e 丢失原始链（#124 B4）
+            raise ValueError(f"请求失败: {e}") from e
         # print(kwargs)
 
     def download(
@@ -215,61 +217,62 @@ class DouyinDownloader(Downloader):
             need_video: Optional[bool] = False,
             skip_download: bool = False,
     ) -> AudioDownloadResult:
-        try:
-            logger.info("正在下载视频: %s，保存路径: %s，质量: %s", video_url, output_dir, quality)
-            if output_dir is None:
-                output_dir = get_data_dir()
-            if not output_dir:
-                output_dir = self.cache_data
-            os.makedirs(output_dir, exist_ok=True)
+        logger.info("正在下载视频: %s，保存路径: %s，质量: %s", video_url, output_dir, quality)
+        if output_dir is None:
+            output_dir = get_data_dir()
+        if not output_dir:
+            output_dir = self.cache_data
+        os.makedirs(output_dir, exist_ok=True)
 
-            video_data = self.fetch_video_info(video_url)
-            detail = video_data.get('aweme_detail') or {}
-            aweme_id = detail.get('aweme_id') or ''
-            if not aweme_id:
-                raise ValueError(f"抖音接口未返回 aweme_id: {video_url}")
-            title = detail.get('item_title') or '抖音视频'
-            duration = (detail.get('video') or {}).get('duration', 0)
-            tags = [t.get('tag_name') for t in (detail.get('video_tag') or []) if t.get('tag_name')]
+        video_data = self.fetch_video_info(video_url)
+        detail = video_data.get('aweme_detail') or {}
+        aweme_id = detail.get('aweme_id') or ''
+        if not aweme_id:
+            raise ValueError(f"抖音接口未返回 aweme_id: {video_url}")
+        title = detail.get('item_title') or '抖音视频'
+        # douyin aweme_detail.video.duration 单位是**毫秒**（如 15.3s 视频返回 15300），
+        # 与 bilibili/youtube 的秒口径不一致——归一为秒（#124 B6）
+        duration = int((detail.get('video') or {}).get('duration', 0)) / 1000.0
+        tags = [t.get('tag_name') for t in (detail.get('video_tag') or []) if t.get('tag_name')]
 
-            output_path = os.path.join(output_dir, f"{aweme_id}.mp3")
+        output_path = os.path.join(output_dir, f"{aweme_id}.mp3")
 
-            if not skip_download:
-                # play_url 的 uri 是播放键不是完整 URL；用 url_list[0] 兜底 uri
-                music = (detail.get('music') or {}).get('play_url') or {}
-                url = (music.get('url_list') or [None])[0] or music.get('uri')
-                if not url:
-                    raise RuntimeError("抖音接口未返回音频播放地址")
-                with requests.get(url, headers=DouyinConfig.HEADERS, timeout=30, stream=True) as audio_data:
-                    audio_data.raise_for_status()
-                    with open(output_path, 'wb') as f:
-                        for chunk in audio_data.iter_content(1024 * 1024):
-                            f.write(chunk)
+        if not skip_download:
+            # play_url 的 uri 是播放键不是完整 URL；用 url_list[0] 兜底 uri
+            music = (detail.get('music') or {}).get('play_url') or {}
+            url = (music.get('url_list') or [None])[0] or music.get('uri')
+            if not url:
+                raise RuntimeError("抖音接口未返回音频播放地址")
+            # 用 self.headers_config（已注入 cookie）而非类级 DOUYIN HEADERS——
+            # 类属性 Cookie 恒 None，用户配置的 cookie 对音频请求不生效（#124 B5）
+            with requests.get(url, headers=self.headers_config, timeout=30, stream=True) as audio_data:
+                audio_data.raise_for_status()
+                with open(output_path, 'wb') as f:
+                    for chunk in audio_data.iter_content(1024 * 1024):
+                        f.write(chunk)
 
-            # 封面：优先 cover_original_scale → cover → dynamic_cover；
-            # 旧代码的 else 分支引用了不存在的顶层 video_data['video']，会 KeyError
-            video_info = detail.get('video') or {}
-            cover_url = ""
-            for key in ("cover_original_scale", "cover", "dynamic_cover"):
-                u = (video_info.get(key) or {}).get("url_list") or []
-                if u:
-                    cover_url = u[0]
-                    break
+        # 封面：优先 cover_original_scale → cover → dynamic_cover；
+        # 旧代码的 else 分支引用了不存在的顶层 video_data['video']，会 KeyError
+        video_info = detail.get('video') or {}
+        cover_url = ""
+        for key in ("cover_original_scale", "cover", "dynamic_cover"):
+            u = (video_info.get(key) or {}).get("url_list") or []
+            if u:
+                cover_url = u[0]
+                break
 
-            return AudioDownloadResult(
-                file_path=output_path,
-                title=title,
-                duration=duration,
-                cover_url=cover_url,
-                platform="douyin",
-                video_id=aweme_id,
-                raw_info={
-                    'tags': (detail.get('caption') or '') + ''.join(tags),
-                },
-                video_path=None  # ❗音频下载不包含视频路径
-            )
-        except Exception as e:
-            raise e
+        return AudioDownloadResult(
+            file_path=output_path,
+            title=title,
+            duration=duration,
+            cover_url=cover_url,
+            platform="douyin",
+            video_id=aweme_id,
+            raw_info={
+                'tags': (detail.get('caption') or '') + ''.join(tags),
+            },
+            video_path=None  # ❗音频下载不包含视频路径
+        )
 
     def download_video(self, video_url: str, output_dir: Union[str, None] = None) -> str:
 

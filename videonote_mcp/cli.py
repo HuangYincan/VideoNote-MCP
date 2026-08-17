@@ -16,7 +16,14 @@ import sys
 from pathlib import Path
 from typing import List
 
-from videonote_mcp.config import get_app_config, remove_app_config, resolve_int_config, set_app_config, setup_environment
+from videonote_mcp.config import (
+    get_app_config,
+    remove_app_config,
+    resolve_default_export_formats,
+    resolve_int_config,
+    set_app_config,
+    setup_environment,
+)
 
 # 提前初始化运行时环境（数据目录、DB、输出目录）——必须在 import provider_probe / app.*
 # 之前执行。provider_probe 会连累 app.utils.logger（其日志目录依赖 VIDEONOTE_DATA_DIR），
@@ -443,7 +450,9 @@ def _wizard_transcriber(inq) -> None:
             pick = inq.select(
                 message=f"当前引擎：{cur}",
                 choices=choices,
-                default=cur_engine if cur_engine in ("fast-whisper", "groq", "bcut", "kuaishou", "mlx-whisper") else "fast-whisper",
+                # 与 _TRANSCRIBER_ENGINES 同源：漏 funasr 会让当前引擎为 funasr 的用户
+                # 回车确认时被光标默认位切回 fast-whisper（#124 A1）
+                default=cur_engine if cur_engine in _TRANSCRIBER_ENGINES else "fast-whisper",
                 keybindings=_KB,
             ).execute()
             if pick == "back":
@@ -597,7 +606,7 @@ def _wizard_other(inq) -> None:
                     {"name": f"视频理解默认（{'开' if vu_on else '关'} / {vu_int}s，需多模态模型）", "value": "video"},
                     {"name": f"评论/弹幕整合默认（{'开' if cm_on else '关'} / {cm_lim}条，需 SESSDATA）", "value": "comments"},
                     {"name": f"笔记默认（风格 {st_style} / 截图 {'开' if ss_on else '关'} / AGENT直接写 {'开' if ad_on else '关'}）", "value": "note-default"},
-                    {"name": f"导出格式默认（生成后自动导出：{','.join(get_app_config().get('default_export_formats') or ['无'])}）", "value": "export-default"},
+                    {"name": f"导出格式默认（生成后自动导出：{_format_list_display(get_app_config().get('default_export_formats'))}）", "value": "export-default"},
                     {"name": "← 返回主菜单", "value": "back"},
                 ],
                 keybindings=_KB,
@@ -1245,9 +1254,14 @@ def _providers_cli(argv) -> None:
         key = opts.api_key
         if not key:
             key = _ask_secret(f"{opts.name} 的 API key（输入不回显）")
-        new_id = ProviderService.add_provider(
-            name=opts.name, api_key=key, base_url=opts.base_url, logo="custom", type_=opts.type
-        )
+        try:
+            new_id = ProviderService.add_provider(
+                name=opts.name, api_key=key, base_url=opts.base_url, logo="custom", type_=opts.type
+            )
+        except ValueError as e:
+            # 重名等业务错误：打印原因退出，不裸 traceback（向导有捕获、CLI 漏网，#124 A2）
+            print(f"✗ {e}", file=sys.stderr)
+            sys.exit(1)
         print(f"已新增 {opts.name} → id={new_id}", file=sys.stdout)
 
 
@@ -1464,6 +1478,14 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
         print("（已取消）", file=sys.stdout)
 
 
+def _format_list_display(cfg) -> str:
+    """向导菜单里的导出格式显示：非列表垃圾配置（手动编辑 JSON 常见）显示「无」
+    而不是被 `','.join` 拆成字符（#124 A4）。"""
+    if isinstance(cfg, list) and cfg:
+        return ",".join(str(f) for f in cfg)
+    return "无"
+
+
 def _export_cli(argv) -> None:
     """`videonote export ...`：把已完成任务的转写导出为纯格式（srt/vtt/json）。"""
     parser = argparse.ArgumentParser(
@@ -1485,12 +1507,13 @@ def _export_cli(argv) -> None:
             print(f"  - {f}: {desc}")
         return
 
-    # 缺省格式：命令行 > setup 配置 > 默认 ["srt"]（与 MCP export_transcript 同源，#123 A6）
+    # 缺省格式：命令行 > setup 配置 > env > 默认 ["srt"]（与 MCP export_transcript 同源，
+    # #123 A6 统一 ["srt"]；非列表垃圾配置由 resolve_default_export_formats 守卫回退，#124 A4）
     formats = None
     if opts.format:
         formats = [f.strip() for f in opts.format.split(",") if f.strip()]
     if formats is None:
-        formats = get_app_config().get("default_export_formats") or ["srt"]
+        formats = resolve_default_export_formats() or ["srt"]
 
     from videonote_mcp.export import FORMATS, export_transcript
 

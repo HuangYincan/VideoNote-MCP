@@ -91,7 +91,9 @@ class VideoReader:
         try:
             subprocess.run(cmd, check=True, timeout=120)
             return output_path
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            # TimeoutExpired 未捕获会从 future.result() 冒出，外层兜底把整个抽帧任务
+            # 打成「视频处理失败」——已抽出的几百帧全丢（#124 B12）：单帧失败本就该跳过
             return None
 
     def extract_frames(self, max_frames=1000) -> list[str]:

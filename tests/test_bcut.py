@@ -89,5 +89,34 @@ class BcutSessionLifecycleTest(unittest.TestCase):
         tr.__del__()  # session 已 None → 不抛
 
 
+class BcutEtagHeaderNoneTest(unittest.TestCase):
+    """分片上传响应 header 存在但值为 None 时不再 AttributeError（#124 B10）。"""
+
+    def test_etag_none_header_safe(self):
+        tr = BcutTranscriber()
+        # 手动铺分片状态，绕过申请上传接口
+        tr._BcutTranscriber__clips = 1
+        tr._BcutTranscriber__per_size = 1024
+        tr._BcutTranscriber__upload_urls = ["http://up/1"]
+        resp = mock.Mock()
+        resp.raise_for_status.return_value = None
+        resp.headers = {"Etag": None}  # 异常网关响应：header 在但值为 None
+        with mock.patch.object(tr.session, "put", return_value=resp):
+            tr._BcutTranscriber__upload_part(b"x" * 2048)
+        self.assertEqual(tr._BcutTranscriber__etags, [""])  # None → ""，不崩
+
+    def test_etag_present_keeps_value(self):
+        tr = BcutTranscriber()
+        tr._BcutTranscriber__clips = 1
+        tr._BcutTranscriber__per_size = 1024
+        tr._BcutTranscriber__upload_urls = ["http://up/1"]
+        resp = mock.Mock()
+        resp.raise_for_status.return_value = None
+        resp.headers = {"Etag": "\"abc123\""}  # 带引号正常值 → 去引号
+        with mock.patch.object(tr.session, "put", return_value=resp):
+            tr._BcutTranscriber__upload_part(b"x" * 2048)
+        self.assertEqual(tr._BcutTranscriber__etags, ["abc123"])
+
+
 if __name__ == "__main__":
     unittest.main()

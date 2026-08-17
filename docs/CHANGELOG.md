@@ -2,6 +2,35 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave F 批 13（2026-08-17 · 第 8 轮双代理扫描 #124，582 tests）
+
+- **转写向导默认值漏 funasr（A1）**：`_TRANSCRIBER_ENGINES` 同源复用——当前引擎为 funasr 时回车确认不再无意识切回 fast-whisper。
+- **add_model 幂等（A3）**：`get_model_by_provider_and_name` 查重——重复添加返回 `added:false`，models 表不再产生重复行。
+- **CLI export 字符集误报（A4）**：默认格式解析共享 `resolve_default_export_formats()`（MCP/CLI/自动导出三处同源）——字符串 `"srt"` 不再被 `set()` 拆成字符报「未知格式 'r','s','t'」。
+- **env_bool 垃圾值回退 default（A5）**：`"maybe"` 等手滑值不再把 default=True 的开关静默翻反。
+- **转写配置布尔解析同源（A6）**：JSON 手填 `"false"` 字符串不再因 `bool("false")` 误开预处理/说话人分离。
+- **模型下载去重原子化（A7）**：`model_download_state` 加模块锁 + `try_mark(key)` 原子原语——两个并发请求不再各起一个 worker 重下整个模型。
+- **export_transcript 零格式显式报错（A8）**：`formats=[]` 不再 ok:true + formats:{} 假成功。
+- **summarize 外来 segment 清洗（A9）**：未知键（words/id）过滤、缺 start/end/text 跳过留痕——第三方转写 dict 不再 TypeError 后台 FAILED。
+- **result.json 损坏可见（A10）**：`get_task_status` 增加 `result_error` 字段——SUCCESS 但结果文件读不出不再静默 result:null。
+- **batch 单集退化分支形状补齐（A11）**：truncated/remaining/platform/kind 与多集分支同键——Agent 按多集形状取值不再 KeyError。
+- **preflight 可跳过 LLM 检查（A12）**：`need_provider=False` 时 material 流程不再被「无已填 key 的供应商」误导。
+- **快手零字节 mp3 不再当成功产物（B1）**：转前 unlink 残留 + exists 分支校验非零字节——ffmpeg 中断残留的 0 字节 mp3 不再命中缓存被当转写产物。
+- **checkpoint 写失败不炸主流程（B2）**：磁盘满/权限错误只 warning——LLM 成功输出不再被恢复辅助的写失败变成任务 FAILED。
+- **ytdlp_retry 补 DNS 关键词（B3）**：`urlopen error [Errno -2] Name or service not known` 类 DNS 瞬时故障现在会重试。
+- **抖音下载细节（B4/B5/B6）**：异常保留链（`from e`，消息不再是元组 repr）；音频下载改用注入 cookie 的实例 headers；duration 毫秒归一为秒（与 bilibili/youtube 口径一致）。
+- **快手下载细节（B7/B8/B9）**：title 清洗统一（换行/空格进 DB 与 prompt 的历史问题消除）；`_download_mp4` 响应 with 托管 + raise_for_status（每任务连接池不再泄漏）；`get_video_details` 非 200 不再静默返 None。
+- **bcut Etag None 守卫（B10）**：header 存在但值为 None 的异常网关响应不再 AttributeError。
+- **封面短 hash 防互踩（B11）**：`{base}_{sha256(input)[:8]}_cover.jpg`——不同目录同名视频不再互相覆盖封面、先前笔记的 file:// 引用不再静默指错。
+- **单帧超时不再毁整批（B12）**：`TimeoutExpired` 与 CalledProcessError 同处理——已抽出的几百帧不再因一帧超时全丢。
+- **笔记/缓存原子写（B13）**：note.py 9 处产物写点改 `write_json_atomic`/`write_text_atomic`（tmp+replace）——转写缓存截断不再引发下次任务重下+重转写、note.md 不再半残不可恢复。
+- **list_tasks 分页下推 SQL（B14）**：DAO 层 limit/offset（LIMIT/OFFSET）——长跑用户不再每次全表拉回 Python 切片。
+- **Cookie 并发写锁（B15）**：类级 RLock 保护读-改-写区间——两个并发 set 不同平台不再互相覆盖。
+- **第三方日志落盘（B16）**：文件 handler 挂 root（一次性）——httpx/yt-dlp 等依赖的 WARNING+ 进入 app.log，root level 保持 WARNING 防第三方 INFO 洪泛。
+- **whisper 误删模型收窄（B18）**：仅 cache 损坏类异常（LocalEntryNotFoundError/本地 OSError）purge；网络抖动/404 只告警重试一次——不再整目录 rmtree 丢掉可断点续传的半截下载。
+- **帧目录防互踩（B19）**：extract_frames 默认目录 `frames_{stem}_{uuid8}`——同名视频并发/重复处理不再互相覆盖帧文件。
+- **B17 弃用 API**：抖音 msToken 签名路径 datetime.utcnow → timezone-aware（3.12+ DeprecationWarning 消除）。
+
 ## Wave F 批 12（2026-08-17 · 第 7 轮双代理扫描 #123，532 tests）
 
 - **cleanup_all 模型下载守卫（A1）**：`include_models=True` 且仍有模型后台下载时拒绝（dl_state.downloading_keys）；CLI 向导扫 models/ 下 `.incomplete` 残留（huggingface 下载中标记）兜底另一进程的下载——删 models/ 不再打断下载线程、health_check 不报「已下载」的残缺模型。

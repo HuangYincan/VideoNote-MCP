@@ -57,9 +57,14 @@ class WhisperTranscriber(Transcriber):
         try:
             self.model = self._build_model(model_size, model_dir)
         except Exception as e:
-            # 自愈：损坏 / 截断 / 半成品 cache → 删掉对应 HF cache 重下一次
-            logger.warning(f"加载 whisper-{model_size} 失败：{e}；清理 cache 后重新下载")
-            self._purge_cache(model_dir, model_size)
+            if self._is_cache_error(e):
+                # 自愈：损坏 / 截断 / 半成品 cache → 删掉对应 HF cache 重下一次
+                logger.warning(f"加载 whisper-{model_size} 失败（cache 损坏）：{e}；清理 cache 后重新下载")
+                self._purge_cache(model_dir, model_size)
+            else:
+                # 网络瞬时故障/404/参数错误不 purge：删掉只会丢失可断点续传的
+                # 半截下载，等再次加载时自然重试（#124 B18）
+                logger.warning(f"加载 whisper-{model_size} 失败（非 cache 损坏，不清理）: {e}")
             self.model = self._build_model(model_size, model_dir)
 
     def _build_model(self, model_size: str, model_dir: str) -> WhisperModel:
@@ -73,6 +78,31 @@ class WhisperTranscriber(Transcriber):
             compute_type=self.compute_type,
             download_root=model_dir,
         )
+
+    @staticmethod
+    def _is_cache_error(exc: Exception) -> bool:
+        """加载失败是否属 cache 损坏类（才值得删了重下，#124 B18）。
+
+        - LocalEntryNotFoundError：HF cache 目录存在但快照不完整/校验失败——删掉重下；
+        - 其余 OSError：本地文件系统错误（截断/权限/磁盘），几乎都关联 cache 状态。
+        网络层错误不 purge——删了只会丢掉可断点续传的半截下载。注意内建
+        ConnectionError/TimeoutError（含 socket 超时）也是 OSError 子类，必须显式排除。
+        404（EntryNotFoundError）、参数错误同样不 purge。
+        本地路径模型的 FileNotFoundError 也是 OSError 子类，会误判为 cache
+        错误——但 _purge_cache 对 is_local_target 直接返回不删，无数据风险。
+        """
+        try:
+            from huggingface_hub.utils import LocalEntryNotFoundError
+        except ImportError:  # huggingface_hub 版本差异：退化为仅本地文件错误
+            LocalEntryNotFoundError = ()
+        if isinstance(exc, LocalEntryNotFoundError):
+            return True
+        if not isinstance(exc, OSError):
+            return False
+        # OSError 中的网络类（socket 超时 / 连接重置 / 对端断开）属瞬时故障
+        if isinstance(exc, (ConnectionError, TimeoutError, BrokenPipeError)):
+            return False
+        return True
 
     @staticmethod
     def _purge_cache(model_dir: str, model_size: str) -> None:

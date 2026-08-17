@@ -439,5 +439,35 @@ class GenerateIntegrationTest(unittest.TestCase):
             self.assertEqual(Path(ap).read_bytes(), b"fake-mp3")
 
 
+class AtomicWriteGuardTest(unittest.TestCase):
+    """note.py 的缓存/笔记产物全部经原子写（#124 B13）：源级断言防回归。
+
+    转写缓存截断 → 下次任务重下+重转写（小时级成本）；note.md 截断 → 半残不可恢复。
+    不跑 generate 全流程，直接 AST 扫描源码：产物路径上不允许裸 .write_text。
+    """
+
+    def _note_src(self):
+        src = Path(__file__).resolve().parents[1] / "app" / "services" / "note.py"
+        return src.read_text(encoding="utf-8")
+
+    def test_no_bare_write_text_on_products(self):
+        import ast
+
+        tree = ast.parse(self._note_src())
+        writes = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr == "write_text" and isinstance(node.func.value, ast.Attribute):
+                    writes.append(node.lineno)
+        # 允许的例外：write_text 仅出现在 write_text_atomic 内部实现（app/utils/json_store.py）
+        self.assertEqual(writes, [], f"note.py 仍有裸 write_text: {writes}")
+
+    def test_atomic_helpers_imported_and_used(self):
+        src = self._note_src()
+        self.assertIn("from app.utils.json_store import write_json_atomic, write_text_atomic", src)
+        self.assertGreaterEqual(src.count("write_json_atomic("), 5)
+        self.assertGreaterEqual(src.count("write_text_atomic("), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

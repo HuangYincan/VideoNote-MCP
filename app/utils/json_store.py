@@ -52,3 +52,20 @@ def write_json_atomic(path: Path, data: Dict[str, Any], mode: int = 0o600) -> No
     except OSError:
         pass
     tmp.replace(p)
+
+
+def write_text_atomic(path: Path, text: str, mode: int = 0o600) -> None:
+    """原子写文本（tmp + replace）：markdown/纯文本产物的写盘保护（#124 B13）。
+
+    note.py 的笔记/缓存产物曾直接 write_text——进程中断/磁盘满留下截断文件：
+    转写缓存截断 → 下次任务重下+重转写（小时级成本）；note.md 截断 → 半残不可恢复。
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        tmp.chmod(mode)
+    except OSError:
+        pass
+    tmp.replace(p)

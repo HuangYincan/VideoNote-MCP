@@ -328,5 +328,35 @@ class TestYoutubeCookie(unittest.TestCase):
         dl._cleanup_cookie_file()
 
 
+class ExtractFramesDefaultDirTest(unittest.TestCase):
+    """默认 save_dir 带随机后缀：同名视频并发/重复处理不互踩（#124 B19）。"""
+
+    def _run_default(self, tmp, name="v.mp4"):
+        fake_reader = mock.Mock()
+        fake_reader.run.return_value = []
+        video = Path(tmp) / name
+        video.write_bytes(b"fake")
+        with mock.patch.object(pipeline, "VideoReader", return_value=fake_reader):
+            return pipeline.extract_frames(str(video))
+
+    def test_default_dir_has_uuid_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(pipeline, "NOTE_OUTPUT_DIR", Path(tmp)):
+                frames = self._run_default(tmp)
+            self.assertEqual(frames, [])
+            dirs = list(Path(tmp).glob("frames_*"))
+            self.assertEqual(len(dirs), 1)
+            self.assertRegex(dirs[0].name, r"^frames_v_[0-9a-f]{8}$")
+
+    def test_two_calls_get_isolated_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(pipeline, "NOTE_OUTPUT_DIR", Path(tmp)):
+                self._run_default(tmp)
+                self._run_default(tmp)
+            dirs = sorted(d.name for d in Path(tmp).glob("frames_*"))
+            self.assertEqual(len(dirs), 2)
+            self.assertNotEqual(dirs[0], dirs[1])  # 不再跨任务累积/互踩
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -131,7 +131,9 @@ class BcutTranscriber(Transcriber):
                 timeout=(10, 120)
             )
             resp.raise_for_status()
-            etag = resp.headers.get("Etag", "").strip('"')
+            # header 存在但值为 None（异常网关响应）时 `.strip` 抛 AttributeError——
+            # 分片上传失败信息会变成天书（#124 B10）
+            etag = (resp.headers.get("Etag") or "").strip('"')
             self.__etags.append(etag)
             logger.info(f"分片{clip}上传成功: {etag}")
 

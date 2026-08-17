@@ -1,3 +1,5 @@
+from typing import Optional
+
 from app.db.models.video_tasks import VideoTask
 from app.db.engine import get_db
 from app.utils.logger import get_logger
@@ -68,10 +70,14 @@ def update_task_status(task_id: str, status: str, message: str = ""):
 
 
 # 列出全部任务（全局索引），供 list_tasks 工具 / setup 数据管理
-def list_tasks() -> list:
+def list_tasks(limit: Optional[int] = None, offset: int = 0) -> list:
     db = next(get_db())
     try:
-        rows = db.query(VideoTask).order_by(VideoTask.created_at.desc()).all()
+        # 分页下推到 SQL（LIMIT/OFFSET），任务量大的会话不再全表拉回 Python 层切片
+        query = db.query(VideoTask).order_by(VideoTask.created_at.desc()).offset(max(0, int(offset or 0)))
+        if limit is not None:
+            query = query.limit(max(1, int(limit)))
+        rows = query.all()
         return [
             {
                 "task_id": r.task_id,

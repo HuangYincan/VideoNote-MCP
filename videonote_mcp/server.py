@@ -29,6 +29,7 @@ from videonote_mcp.config import (
     env_or,
     get_app_config,
     remove_app_config,
+    resolve_default_export_formats,
     resolve_int_config,
     setup_environment,
 )
@@ -91,7 +92,12 @@ from videonote_mcp.provider_probe import probe_models
 # vendored 核心流水线
 from app.db.engine import get_engine
 from app.db.init_db import init_db
-from app.db.model_dao import get_models_by_provider, insert_model, delete_model as _dao_delete_model
+from app.db.model_dao import (
+    get_model_by_provider_and_name,
+    get_models_by_provider,
+    insert_model,
+    delete_model as _dao_delete_model,
+)
 from app.db.provider_dao import seed_default_providers
 from app.enmus.note_enums import DownloadQuality
 from app.enmus.task_status_enums import TaskStatus
@@ -438,18 +444,6 @@ def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None,
             _task_events.pop(task_id, None)
 
 
-def _resolve_default_export_formats() -> list:
-    """导出格式缺省链：app_config（须为列表）→ env。非列表垃圾配置会遮蔽 env 回退
-    （truthy 值令 `or` 短路）→ 打 warning 后回退（#107，与 #104 缺省链口径一致）。"""
-    from videonote_mcp.config import env_json_list
-
-    cfg = get_app_config().get("default_export_formats")
-    if cfg is not None and not isinstance(cfg, list):
-        logger.warning("app_config.default_export_formats 不是列表（%r），忽略改用环境/默认", cfg)
-        cfg = None
-    return cfg or env_json_list("VIDEONOTE_DEFAULT_EXPORT_FORMATS", [])
-
-
 def _auto_export_transcript(task_id: str, transcript) -> None:
     """笔记任务成功后按 `default_export_formats` 自动导出纯格式（srt/vtt/json）。
 
@@ -459,7 +453,7 @@ def _auto_export_transcript(task_id: str, transcript) -> None:
     try:
         from videonote_mcp.export import export_transcript
 
-        default_formats = _resolve_default_export_formats()
+        default_formats = resolve_default_export_formats()
         if not default_formats or not transcript:
             return
         export_transcript(
@@ -1038,6 +1032,7 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
         # started_at 损坏（旧版本/手工编辑）不影响状态查询（docs 审计 H 组）
         elapsed = None
     result = None
+    result_error = None
     result_file = task_dir / "result.json"
     if status == "SUCCESS" and result_file.exists():
         try:
@@ -1063,19 +1058,23 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
                 am = result.get("audio_meta") or {}
                 result["title"] = am.get("title") or ""
         except Exception as e:
+            # result.json 损坏（写盘中断/磁盘故障）：status 是 SUCCESS 但内容不可读。
+            # 与 status.json 的 #118 快照回退不同，result 无法重建——显式标 result_error，
+            # 让 Agent 能区分「成功但内容不可读」与「任务不存在」（#124 A10）
             logger.error(f"读取结果文件失败 task_id={task_id}: {e}")
+            result_error = f"结果文件读取失败（可能写盘中断）: {e}"
 
-    return json.dumps(
-        {
-            "status": status,
-            "stage": _stage_label(status),
-            "elapsed_secs": elapsed,
-            "message": data.get("message", ""),
-            "task_id": task_id,
-            "result": result,
-        },
-        ensure_ascii=False,
-    )
+    payload = {
+        "status": status,
+        "stage": _stage_label(status),
+        "elapsed_secs": elapsed,
+        "message": data.get("message", ""),
+        "task_id": task_id,
+        "result": result,
+    }
+    if result_error:
+        payload["result_error"] = result_error
+    return json.dumps(payload, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -1329,13 +1328,9 @@ def list_tasks(limit: Optional[int] = None, offset: int = 0) -> str:
     """
     from app.db.video_task_dao import list_tasks as _list
 
-    tasks = _list()
     offset = max(0, int(offset or 0))
-    if limit is not None:
-        limit = max(1, int(limit))
-        tasks = tasks[offset : offset + limit]
-    elif offset:
-        tasks = tasks[offset:]
+    limit = max(1, int(limit)) if limit is not None else None
+    tasks = _list(limit=limit, offset=offset)
     return json.dumps(tasks, ensure_ascii=False)
 
 
@@ -1752,6 +1747,14 @@ def add_model(provider_id: str, model_name: str) -> str:
     if not provider:
         # 无 FK + SQLite 弱类型：此前静默写入孤儿行（list_models 显示但供应商不存在，#123 A7）
         raise ValueError(f"供应商不存在: {provider_id}（先 add_provider 或 list_providers 确认）")
+    if get_model_by_provider_and_name(provider_id, model_name):
+        # 幂等：重复 add 不再插重复行（向导写前查重、MCP 直插曾产生重复行，
+        # list_models 本地回退显示重名，#124 A3）
+        return json.dumps(
+            {"added": False, "provider_id": provider_id, "model_name": model_name,
+             "message": "模型已存在，跳过重复添加"},
+            ensure_ascii=False,
+        )
     insert_model(provider_id=provider_id, model_name=model_name)
     return json.dumps(
         {"added": True, "provider_id": provider_id, "model_name": model_name}, ensure_ascii=False
@@ -1921,17 +1924,14 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
         )
     if transcriber_type == "fast-whisper":
         key = size
-        # 进行中去重：同尺寸二次提交直接返回（此前排队重下整个模型，~75MB-1.5GB，#121 C10）
-        if dl_state.is_downloading(key):
+        # 进行中去重：原子抢占下载权（#121 C10 排队重下 / #122 A7 mark 前移 /
+        # #124 A7 检查-标记跨线程竞态——try_mark 一把锁合并两步，双并发请求只赢一个）
+        if not dl_state.try_mark(key):
             return json.dumps(
                 {"started": False, "model_size": size, "transcriber_type": "fast-whisper",
                  "message": "模型正在下载中，跳过重复提交"},
                 ensure_ascii=False,
             )
-        # 提交即占位（#122 A7）：检查在调用线程、mark 在 worker 内是 TOCTOU——
-        # 两次连续提交会各自起一个 worker 重下整个模型。mark 前移到 submit 前，
-        # 后续提交立刻命中「下载中」分支。
-        dl_state.mark_downloading(key)
 
         def _dl():
             try:
@@ -1960,14 +1960,13 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
     if transcriber_type == "mlx-whisper":
         if not (sys.platform == "darwin"):
             raise ValueError("mlx-whisper 仅在 macOS 可用，请改用 fast-whisper")
-        # 进行中去重（#121 C10）；mark 前移到 submit 前防 TOCTOU（#122 A7）
-        if dl_state.is_downloading(f"mlx-{size}"):
+        # 进行中去重：try_mark 原子抢占（#121 C10 / #122 A7 / #124 A7，与 fast-whisper 同原语）
+        if not dl_state.try_mark(f"mlx-{size}"):
             return json.dumps(
                 {"started": False, "model_size": size, "transcriber_type": "mlx-whisper",
                  "message": "模型正在下载中，跳过重复提交"},
                 ensure_ascii=False,
             )
-        dl_state.mark_downloading(f"mlx-{size}")
 
         def _dl_mlx():
             try:
@@ -2186,6 +2185,7 @@ def preflight(
     url: str = "",
     platform: Optional[str] = None,
     provider_id: Optional[str] = None,
+    need_provider: bool = True,
 ) -> str:
     """提交任务前的轻量体检（建议 generate_note / prepare_note_material 前调用）。
 
@@ -2193,6 +2193,10 @@ def preflight(
     模型、任务队列；url 非空时顺带预解析视频时长（仅参考，不拦截）。
     返回 {ok, checks:[{name, ok, detail}], duration_secs?}。ok=false 时先解决
     detail 里的问题再提交，避免长任务跑到半路才因模型未下载 / 磁盘满失败。
+
+    - need_provider: 默认为 True（generate_note 需要 LLM 供应商）。
+      只做素材包（prepare_note_material 不调 LLM）时传 False，跳过供应商检查——
+      否则会得到「无已填 key 的供应商」的误导结论（#124 A12）。
     """
     checks: List[Dict[str, Any]] = []
 
@@ -2231,8 +2235,9 @@ def preflight(
         }
     )
 
-    p_ok, p_detail = _preflight_provider(provider_id)
-    checks.append({"name": "provider", "ok": p_ok, "detail": p_detail})
+    if need_provider:
+        p_ok, p_detail = _preflight_provider(provider_id)
+        checks.append({"name": "provider", "ok": p_ok, "detail": p_detail})
 
     with _tasks_lock:
         running_list = [tid for tid, f in _task_futures.items() if f.running()]
@@ -2409,13 +2414,21 @@ def batch_generate_notes(
                     "ok": False,
                     "total": 1,
                     "submitted": 0,
+                    # 形状与多条目分支完全一致（truncated/remaining/platform/kind 齐），
+                    # Agent 按一种形状解析，不再因单集分支缺键 KeyError（#124 A11）
+                    "truncated": False,
+                    "remaining": 0,
+                    "platform": parsed.get("platform"),
+                    "kind": parsed.get("kind"),
                     "errors": [{"p": 1, "title": parsed.get("title"), "url": video_url, "error": str(exc)}],
                     "tasks": [],
                 },
                 ensure_ascii=False,
             )
         return json.dumps(
-            {"ok": True, "total": 1, "submitted": 1, "errors": [], "tasks": [task]},
+            {"ok": True, "total": 1, "submitted": 1, "truncated": False, "remaining": 0,
+             "platform": parsed.get("platform"), "kind": parsed.get("kind"),
+             "errors": [], "tasks": [task]},
             ensure_ascii=False,
         )
 
@@ -2510,9 +2523,13 @@ def export_transcript(
         )
 
     if formats is None:
-        formats = _resolve_default_export_formats()
+        formats = resolve_default_export_formats()
         if not formats:
             formats = ["srt"]
+    if formats == []:
+        # 显式空列表：零导出还报 ok:true 与 #122 A1「任何格式没导出必须 ok:false」矛盾
+        # （CLI 版对 not written 显式退出报错）——入口显式报错，省略参数才走默认（#124 A8）
+        raise ValueError("formats 为空列表，未导出任何格式（省略该参数以用默认格式）")
     if not isinstance(formats, list):
         raise ValueError(f"formats 必须是字符串列表（支持 {' / '.join(FORMATS)}），收到: {formats!r}")
     unknown = sorted({f for f in formats if f not in FORMATS})

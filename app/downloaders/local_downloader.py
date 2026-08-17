@@ -1,3 +1,4 @@
+import hashlib
 import os
 import subprocess
 from abc import ABC
@@ -36,7 +37,11 @@ class LocalDownloader(Downloader, ABC):
             output_dir = os.path.join(get_data_dir(), "covers")
 
         base_name = os.path.splitext(os.path.basename(input_path))[0]
-        output_path = os.path.join(output_dir, f"{base_name}_cover.jpg")
+        # 文件名带输入路径短 hash：两个不同目录同名视频（/a/clip.mp4 与 /b/clip.mp4）
+        # 此前产出同名封面互相覆盖，先前笔记已嵌入的 file:// 引用会静默变成另一视频
+        # 的封面（#124 B11）；同一路径重复处理仍同名（幂等覆盖，符合预期）
+        digest = hashlib.sha256(input_path.encode("utf-8")).hexdigest()[:8]
+        output_path = os.path.join(output_dir, f"{base_name}_{digest}_cover.jpg")
 
         # covers 目录此前从不创建 → ffmpeg 写失败被吞、cover_url 恒为空（#121 B3）
         os.makedirs(output_dir, exist_ok=True)

@@ -38,6 +38,12 @@ def ytdlp_retry(fn, *args, attempts: int = 3, base_delay: float = 1.5, **kwargs)
                     "502",
                     "503",
                     "504",
+                    # DNS 瞬时故障：yt-dlp 消息形如 `urlopen error [Errno -2] Name or
+                    # service not known`——不含任何上述关键词，此前从不重试（#124 B3）
+                    "urlopen",
+                    "name or service",
+                    "temporary failure in name resolution",
+                    "dns",
                 )
             )
             if not retriable or i == attempts - 1:

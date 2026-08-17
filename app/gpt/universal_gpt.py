@@ -196,17 +196,25 @@ class UniversalGPT(GPT):
             return None
 
     def _save_checkpoint(self, checkpoint_key: str, source_signature: str, partials: list, phase: str) -> None:
-        path = self._checkpoint_path(checkpoint_key)
-        data = {
-            "version": 1,
-            "source_signature": source_signature,
-            "phase": phase,
-            "partials": partials,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        tmp_path = path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_path.replace(path)
+        """尽力而为的恢复辅助：写失败（磁盘满/权限）只记 warning，绝不 raise。
+
+        旧实现直接 write_text/replace——checkpoint 写失败会把成功的 LLM 输出变成任务
+        失败；在 except 处理器里保存时还会替换掉原始 LLM 异常（#124 B2）。
+        """
+        try:
+            path = self._checkpoint_path(checkpoint_key)
+            data = {
+                "version": 1,
+                "source_signature": source_signature,
+                "phase": phase,
+                "partials": partials,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            tmp_path = path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(path)
+        except Exception as exc:  # noqa: BLE001 —— checkpoint 是辅助，写失败不影响主流程
+            logger.warning(f"保存 checkpoint 失败（忽略，不影响总结主流程）: {exc}")
 
     def _clear_checkpoint(self, checkpoint_key: str) -> None:
         self._checkpoint_path(checkpoint_key).unlink(missing_ok=True)

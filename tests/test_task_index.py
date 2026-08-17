@@ -106,5 +106,38 @@ class DaoTest(unittest.TestCase):
         self.assertNotIn(tid, [t["task_id"] for t in list_tasks()])
 
 
+class ListTasksPaginationTest(unittest.TestCase):
+    """list_tasks 分页下推到 SQL（#124 B14）：limit/offset 不再全表拉回切片。"""
+
+    @classmethod
+    def setUpClass(cls):
+        init_db()
+        # 插入 5 条独立任务，供分页断言
+        for i in range(5):
+            insert_video_task(f"BV-P{i}", "bilibili", f"page-{i}", title=f"任务{i}")
+
+    def test_limit_returns_only_n_entries(self):
+        self.assertEqual(len(list_tasks(limit=2)), 2)
+
+    def test_offset_skips_entries(self):
+        total = len(list_tasks())
+        self.assertEqual(len(list_tasks(offset=3)), total - 3)
+
+    def test_limit_and_offset_combine(self):
+        total = len(list_tasks())
+        n = len(list_tasks(limit=2, offset=3))
+        self.assertEqual(n, 2 if total >= 5 else max(0, total - 3))
+
+    def test_limit_one_is_subset_of_all(self):
+        one = list_tasks(limit=1)
+        all_tasks = list_tasks()
+        self.assertEqual(len(one), 1)
+        self.assertIn(one[0]["task_id"], [t["task_id"] for t in all_tasks])
+
+    def test_no_args_returns_all(self):
+        # 无参数行为与旧版一致：全量
+        self.assertEqual(len(list_tasks()), len(list_tasks(limit=None, offset=0)))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

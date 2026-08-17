@@ -20,13 +20,13 @@ class KuaiShouDownloader(Downloader, ABC):
 
     def _download_mp4(self, photo_info: dict, mp4_path: str) -> None:
         """下载 mp4 视频到 mp4_path；HTTP 非 200 抛明确异常。"""
-        resp = requests.get(photo_info['photoUrl'], stream=True, timeout=30)
-        if resp.status_code == 200:
+        # with 托管响应关闭：裸 requests.get 的 stream 响应直到 GC 才释放连接
+        #（每次下载泄漏一个连接池条目，#124 B8）
+        with requests.get(photo_info['photoUrl'], stream=True, timeout=30) as resp:
+            resp.raise_for_status()
             with open(mp4_path, "wb") as f:
                 for chunk in resp.iter_content(1024 * 1024):
                     f.write(chunk)
-        else:
-            raise Exception(f"视频下载失败: {resp.status_code}")
 
     def download(
             self,
@@ -66,10 +66,11 @@ class KuaiShouDownloader(Downloader, ABC):
                 video_path=None
             )
 
-        if os.path.exists(mp3_path):
+        if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
             logger.info("[已存在] 跳过下载: %s", mp3_path)
             # #123 B9：有 mp3 无 mp4（清理过视频只留音频）时 video_path 悬空——下游
             # VideoReader 拿不存在路径炸「视频处理失败」。mp4 缺失则补下。
+            # #124 B1：零字节/半成品 mp3（ffmpeg 中断残留）不被 exists 当成功产物。
             if not os.path.exists(mp4_path):
                 logger.info("[已存在] mp3 命中但 mp4 缺失，重新下载视频: %s", mp4_path)
                 self._download_mp4(photo_info, mp4_path)
@@ -91,6 +92,10 @@ class KuaiShouDownloader(Downloader, ABC):
 
         # 使用 ffmpeg 转换为 mp3
         try:
+            # 转前先清残留：`-y` 中途超时/报错会留下半成品 mp3，下次 exists 命中把
+            # 损坏音频当成功产物（#124 B1）
+            if os.path.exists(mp3_path):
+                os.unlink(mp3_path)
             subprocess.run([
                 "ffmpeg", "-y", "-i", mp4_path, "-vn", "-acodec", "libmp3lame", mp3_path
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
@@ -99,7 +104,7 @@ class KuaiShouDownloader(Downloader, ABC):
 
         return AudioDownloadResult(
             file_path=mp3_path,
-            title=photo_info['caption'],
+            title=title,
             duration=photo_info['duration'],
             cover_url=photo_info['coverUrl'],
             platform="kuaishou",

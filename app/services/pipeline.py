@@ -23,6 +23,7 @@ import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional, Union
+from uuid import uuid4
 
 from app.downloaders.base import Downloader
 from app.gpt.base import GPT
@@ -347,7 +348,8 @@ def extract_frames(
     """只做视频画面理解素材：给定本地 mp4 → 按间隔抽帧并持久化。
 
     返回持久化后的帧图片 **file:// 绝对路径** 列表（供多模态模型 Read / 喂给 summarize_material）。
-    save_dir 缺省为 note_results/frames_<视频名>/。
+    save_dir 缺省为 note_results/frames_<视频名>_<随机后缀>/：不同目录的同名视频
+    并发处理不再互相覆盖帧文件，重复处理也不会混入旧帧（#124 B19）。
     """
     video_path = str(video_path)
     if not Path(video_path).exists():
@@ -364,7 +366,7 @@ def extract_frames(
     data_uris = reader.run()
 
     if save_dir is None:
-        save_dir = NOTE_OUTPUT_DIR / f"frames_{Path(video_path).stem}"
+        save_dir = NOTE_OUTPUT_DIR / f"frames_{Path(video_path).stem}_{uuid4().hex[:8]}"
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -480,7 +482,20 @@ def summarize_material(
     segments: List = transcript.get("segments") or []
     seg_objs: List[TranscriptSegment] = []
     for s in segments:
-        seg_objs.append(s if isinstance(s, TranscriptSegment) else TranscriptSegment(**s))
+        if isinstance(s, TranscriptSegment):
+            seg_objs.append(s)
+            continue
+        # 外部素材（fetch_subtitles / 用户自备 JSON）的段常带额外键（words/id/line_id）
+        # 或缺字段——`TranscriptSegment(**s)` 会对未知键抛 TypeError，后台 FAILED 信息
+        # 完全不可操作（#124 A9）：过滤到已知键，缺 start/end/text 的段跳过留痕
+        if not isinstance(s, dict):
+            logger.warning(f"跳过非对象的转写段: {str(s)[:40]!r}")
+            continue
+        known = {k: s.get(k) for k in ("start", "end", "text", "speaker") if k in s}
+        if "start" not in known or "end" not in known or "text" not in known:
+            logger.warning(f"跳过缺字段的转写段（需要 start/end/text）: {str(s)[:80]!r}")
+            continue
+        seg_objs.append(TranscriptSegment(**known))
 
     source = GPTSource(
         title=material.get("title") or "",

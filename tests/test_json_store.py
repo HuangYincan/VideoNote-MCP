@@ -113,7 +113,74 @@ class ProxyConfigCorruptionTest(unittest.TestCase):
                 cfg = mgr.get_config()
             self.assertFalse(cfg["enabled"])
             self.assertTrue(Path(str(p) + ".corrupt").exists())
+class WriteTextAtomicTest(unittest.TestCase):
+    """write_text_atomic：tmp + replace，写盘中断不留半截文件（#124 B13）。"""
 
+    def test_writes_content_and_cleans_tmp(self):
+        import tempfile
+
+        from app.utils.json_store import write_text_atomic
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "note.md"
+            write_text_atomic(p, "# 标题\n正文")
+            self.assertEqual(p.read_text(encoding="utf-8"), "# 标题\n正文")
+            self.assertFalse(Path(str(p) + ".tmp").exists())
+            self.assertEqual(list(Path(td).glob("*.tmp")), [])
+
+    def test_overwrites_existing(self):
+        import tempfile
+
+        from app.utils.json_store import write_text_atomic
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "note.md"
+            p.write_text("旧", encoding="utf-8")
+            write_text_atomic(p, "新内容")
+            self.assertEqual(p.read_text(encoding="utf-8"), "新内容")
+
+    def test_nested_dir_created(self):
+        import tempfile
+
+        from app.utils.json_store import write_text_atomic
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "a" / "b" / "note.md"
+            write_text_atomic(p, "x")
+            self.assertTrue(p.exists())
+
+
+class CookieConcurrentWriteTest(unittest.TestCase):
+    """并发 set 不同平台互不覆盖（#124 B15）：读-改-写区间加锁。"""
+
+    def test_concurrent_sets_all_survive(self):
+        import tempfile
+        import threading
+
+        from app.services.cookie_manager import CookieConfigManager
+
+        with tempfile.TemporaryDirectory() as td:
+            cm = CookieConfigManager(str(Path(td) / "downloader.json"))
+
+            def _set(i):
+                for _ in range(3):
+                    cm.set(f"p{i}", f"cookie-{i}")
+
+            threads = [threading.Thread(target=_set, args=(i,)) for i in range(20)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            got = cm.list_all()
+            self.assertEqual(len(got), 20)  # 无锁时读-改-写竞态会互相覆盖
+            for i in range(20):
+                self.assertEqual(got[f"p{i}"], f"cookie-{i}")
+
+    def test_lock_is_class_level(self):
+        from app.services.cookie_manager import CookieConfigManager
+
+        # class-level 锁：多实例并发也互斥（每个 NoteGenerator 各持一个实例）
+        self.assertIsInstance(CookieConfigManager._lock, type(__import__("threading").RLock()))
 
 if __name__ == "__main__":
     unittest.main()

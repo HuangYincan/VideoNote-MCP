@@ -1,5 +1,7 @@
 """effective_frame_interval 封顶逻辑（docs/05 #33）：帧组数超限时自适应拉大间隔。"""
+import tempfile
 import unittest
+from unittest import mock
 
 from app.utils.video_reader import effective_frame_interval
 
@@ -94,6 +96,40 @@ class ShortVideoFallbackTest(unittest.TestCase):
         finally:
             shutil.rmtree(frame_dir, ignore_errors=True)
             shutil.rmtree(grid_dir, ignore_errors=True)
+
+
+class SingleFrameFailureTest(unittest.TestCase):
+    """单帧 ffmpeg 失败/超时只跳过该帧，不毁整个抽帧任务（#124 B12）。
+
+    旧实现只捕 CalledProcessError：单帧超时（120s）从 future.result() 冒出，
+    外层把整个任务打成「视频处理失败」，已抽出的几百帧全丢。
+    """
+
+    def test_calledprocesserror_returns_none(self):
+        import subprocess
+
+        from app.utils.video_reader import VideoReader
+
+        with tempfile.TemporaryDirectory() as td:
+            reader = VideoReader(video_path="/no/such.mp4", frame_dir=td)
+            with mock.patch(
+                "app.utils.video_reader.subprocess.run",
+                side_effect=subprocess.CalledProcessError(1, "ffmpeg"),
+            ):
+                self.assertIsNone(reader._extract_single_frame(10))
+
+    def test_timeoutexpired_returns_none(self):
+        import subprocess
+
+        from app.utils.video_reader import VideoReader
+
+        with tempfile.TemporaryDirectory() as td:
+            reader = VideoReader(video_path="/no/such.mp4", frame_dir=td)
+            with mock.patch(
+                "app.utils.video_reader.subprocess.run",
+                side_effect=subprocess.TimeoutExpired("ffmpeg", 120),
+            ):
+                self.assertIsNone(reader._extract_single_frame(10))
 
 
 if __name__ == "__main__":

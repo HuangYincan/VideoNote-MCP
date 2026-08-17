@@ -66,6 +66,24 @@ def test_env_bool():
     assert env_bool("VN_TEST", default=True) is True
 
 
+def test_env_bool_garbage_falls_back_to_default():
+    """垃圾值（非已知布尔词）回退 default，不静默翻反 default=True 的开关（#124 A5）。
+
+    旧实现把垃圾值一律当 False——将来某调用点用 default=True 时，环境里一个手滑的
+    "maybe" 会把开关静默翻成 False；与 env_int 的「解析失败回退」语义对齐后，
+    "y"/"t" 这类缩写也不再被当成 False。
+    """
+    os.environ["VN_TEST"] = "maybe"
+    assert env_bool("VN_TEST", default=True) is True
+    os.environ["VN_TEST"] = "y"
+    assert env_bool("VN_TEST", default=True) is True
+    os.environ["VN_TEST"] = "off"
+    assert env_bool("VN_TEST", default=True) is False
+    os.environ["VN_TEST"] = "ON"
+    assert env_bool("VN_TEST", default=False) is True
+    os.environ.pop("VN_TEST", None)
+
+
 def test_env_int():
     os.environ["VN_TEST"] = "6"
     assert env_int("VN_TEST", 0) == 6

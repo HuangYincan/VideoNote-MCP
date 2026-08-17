@@ -32,6 +32,7 @@ from app.services.constant import get_downloader as _new_downloader
 from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import get_transcriber, _transcribers
+from app.utils.json_store import write_json_atomic, write_text_atomic
 from app.utils.note_helper import replace_content_markers, prepend_source_link
 from app.utils.screenshot_marker import extract_screenshot_timestamps
 from app.utils.task_manifest import record_task_paths
@@ -291,10 +292,7 @@ class NoteGenerator:
                     transcript = downloader.download_subtitles(video_url)
                     if transcript and transcript.segments:
                         logger.info(f"成功获取平台字幕，共 {len(transcript.segments)} 段")
-                        transcript_cache_file.write_text(
-                            json.dumps(asdict(transcript), ensure_ascii=False, indent=2),
-                            encoding="utf-8",
-                        )
+                        write_json_atomic(transcript_cache_file, asdict(transcript))
                         self._transcript_engine = note_cache.SUBTITLE_KEY
                     else:
                         transcript = None
@@ -416,14 +414,14 @@ class NoteGenerator:
 
             # 4.5 写出 note.md 到 gen/（恒写；用户指定 notes_dir 时额外写便携副本）
             _note_dir.mkdir(parents=True, exist_ok=True)
-            (_note_dir / "note.md").write_text(markdown, encoding="utf-8")
+            write_text_atomic(_note_dir / "note.md", markdown)
             logger.info(f"笔记已写出: {_note_dir / 'note.md'}")
             record_task_paths(task_id, [_note_dir, _note_dir / "note.md"])
             if notes_dir:
                 # 便携模式：额外写一份 <notes_dir>/<标题>/note.md（以标题命名的可读副本）
                 try:
                     portable_dir = _reserve_portable_dir(folder_title, task_id, Path(notes_dir))
-                    (portable_dir / "note.md").write_text(markdown, encoding="utf-8")
+                    write_text_atomic(portable_dir / "note.md", markdown)
                     record_task_paths(task_id, [portable_dir, portable_dir / "note.md"])
                     # 便携副本的截图：把 gen/Assets/ 一并拷贝，保证相对引用 Assets/... 可读
                     assets_src = gen_dir / "Assets"
@@ -700,10 +698,7 @@ class NoteGenerator:
                     if not audio.file_path or not Path(audio.file_path).is_file():
                         audio.file_path = None
                         logger.info("媒体缓存未命中，audio_path 置空（%s）", video_url)
-                audio_cache_file.write_text(
-                    json.dumps(asdict(audio), ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+                write_json_atomic(audio_cache_file, asdict(audio))
                 logger.info(f"元信息提取完成 ({audio_cache_file})")
                 return audio
             except Exception as exc:
@@ -755,10 +750,7 @@ class NoteGenerator:
                 )
                 audio.file_path = _extract_audio_from_video(str(self.video_path), dl_dir)
                 audio.video_path = str(self.video_path)
-                audio_cache_file.write_text(
-                    json.dumps(asdict(audio), ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+                write_json_atomic(audio_cache_file, asdict(audio))
                 logger.info(f"视频下载完成，音频从视频提取（免二次下载）({audio_cache_file})")
                 return audio
             except Exception as exc:
@@ -774,7 +766,7 @@ class NoteGenerator:
                 output_dir=dl_dir,
                 need_video=need_video,
             )
-            audio_cache_file.write_text(json.dumps(asdict(audio), ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json_atomic(audio_cache_file, asdict(audio))
             logger.info(f"音频下载并缓存成功 ({audio_cache_file})")
             return audio
         except Exception as exc:
@@ -832,10 +824,7 @@ class NoteGenerator:
                     )
                     logger.info(f"成功获取平台字幕，共 {len(transcript.segments)} 段")
                     # 缓存结果（pipeline 返回的 asdict dict，与 asdict(transcript) 等价）
-                    transcript_cache_file.write_text(
-                        json.dumps(data, ensure_ascii=False, indent=2),
-                        encoding="utf-8"
-                    )
+                    write_json_atomic(transcript_cache_file, data)
                     self._transcript_engine = note_cache.SUBTITLE_KEY
                     return transcript
                 else:
@@ -887,7 +876,7 @@ class NoteGenerator:
             logger.info("开始转写音频")
             # 委托 pipeline 步骤层（返回 asdict dict，与 asdict(transcript) 写缓存等价）
             transcript_dict = pipeline.transcribe_audio(audio_file, transcriber=self.transcriber)
-            transcript_cache_file.write_text(json.dumps(transcript_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json_atomic(transcript_cache_file, transcript_dict)
             self._transcript_engine = note_cache.engine_key(self.transcriber_type, self.model_size)
             # 重建 TranscriptResult，保持返回类型一致（generate 下游仍按对象访问）
             transcript = TranscriptResult(
@@ -961,7 +950,7 @@ class NoteGenerator:
                 checkpoint_key=task_id,
                 cancel_event=cancel_event,
             )
-            markdown_cache_file.write_text(markdown, encoding="utf-8")
+            write_text_atomic(markdown_cache_file, markdown)
             logger.info(f"GPT 总结并缓存成功 ({markdown_cache_file})")
             return markdown
         except Exception as exc:

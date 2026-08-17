@@ -26,17 +26,37 @@ console_handler.setFormatter(formatter)
 
 # 文件输出：同样延迟到首次调用 get_logger() 时创建，此时 VIDEONOTE_DATA_DIR 已就绪
 _file_handler = None
+# root handler 只挂一次（幂等 guard）
+_root_file_handler_installed = False
+
+
+def _ensure_root_file_handler() -> logging.Handler:
+    """把文件 handler 挂到 root logger（一次性，#124 B16）。
+
+    第三方库（httpx / yt-dlp / openai 客户端等）不经 get_logger()，此前它们的
+    WARNING+ 只走 stderr lastResort，不进 app.log —— 依赖报错在日志文件里失明。
+    挂上后第三方 WARNING+ 也落盘。root level 保持 WARNING：第三方 INFO/DEBUG
+    洪泛不落盘（app.* 的 logger 自带 handler + propagate=False，不受影响）。
+    """
+    global _file_handler, _root_file_handler_installed
+    root = logging.getLogger()
+    if _file_handler is None:
+        _file_handler = logging.FileHandler(_log_dir() / "app.log", encoding="utf-8")
+        _file_handler.setFormatter(formatter)
+    if not _root_file_handler_installed:
+        if not any(h is _file_handler for h in root.handlers):
+            root.addHandler(_file_handler)
+        if root.level == logging.NOTSET:
+            root.setLevel(logging.WARNING)
+        _root_file_handler_installed = True
+    return _file_handler
 
 
 def get_logger(name: str) -> logging.Logger:
-    global _file_handler
     logger = logging.getLogger(name)
     if not logger.handlers:
         logger.setLevel(logging.INFO)
         logger.addHandler(console_handler)
-        if _file_handler is None:
-            _file_handler = logging.FileHandler(_log_dir() / "app.log", encoding="utf-8")
-            _file_handler.setFormatter(formatter)
-        logger.addHandler(_file_handler)
+        logger.addHandler(_ensure_root_file_handler())
         logger.propagate = False
     return logger

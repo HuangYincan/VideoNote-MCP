@@ -71,12 +71,10 @@ class KuaiShou:
             "query": "query visionVideoDetail($photoId: String, $type: String, $page: String, $webPageArea: String) {\n  visionVideoDetail(photoId: $photoId, type: $type, page: $page, webPageArea: $webPageArea) {\n    status\n    type\n    author {\n      id\n      name\n      following\n      headerUrl\n      __typename\n    }\n    photo {\n      id\n      duration\n      caption\n      likeCount\n      realLikeCount\n      coverUrl\n      photoUrl\n      liked\n      timestamp\n      expTag\n      llsid\n      viewCount\n      videoRatio\n      stereoType\n      croppedPhotoUrl\n      manifest {\n        mediaType\n        businessType\n        version\n        adaptationSet {\n          id\n          duration\n          representation {\n            id\n            defaultSelect\n            backupUrl\n            codecs\n            url\n            height\n            width\n            avgBitrate\n            maxBitrate\n            m3u8Slice\n            qualityType\n            qualityLabel\n            frameRate\n            featureP2sp\n            hidden\n            disableAdaptive\n            __typename\n          }\n          __typename\n        }\n        __typename\n      }\n      __typename\n    }\n    tags {\n      type\n      name\n      __typename\n    }\n    commentLimit {\n      canAddComment\n      __typename\n    }\n    llsid\n    danmakuSwitch\n    __typename\n  }\n}\n"
         }
         response = requests.post(url=KUAISHOU_API_BASE, headers=self.header, json=json_data, timeout=(5, 10))
-        if response.status_code == 200:
-            response.raise_for_status()
-
-            return response.json()
-        else:
-            return None
+        # 旧实现 raise_for_status 写在 200 分支内永不触发——非 200 静默返回 None，
+        # 外层只能报「详情解析失败」掩盖真实 HTTP 状态码（#124 B9）
+        response.raise_for_status()
+        return response.json()
 
     def run(self, url):
         real_url = self._extract_kuaishou_link(url)

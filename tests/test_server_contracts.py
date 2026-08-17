@@ -439,7 +439,7 @@ class DownloadModelDedupTest(unittest.TestCase):
     """download_transcriber_model：尺寸大小写宽容 + 进行中去重（#121 C10）。"""
 
     def test_size_case_insensitive_and_submits(self):
-        with mock.patch.object(server.dl_state, "is_downloading", return_value=False):
+        with mock.patch.object(server.dl_state, "try_mark", return_value=True):
             with mock.patch.object(server, "_dl_pool") as m_pool:
                 resp = json.loads(server.download_transcriber_model("  SMALL  "))
         self.assertTrue(resp["started"])
@@ -447,7 +447,7 @@ class DownloadModelDedupTest(unittest.TestCase):
         m_pool.submit.assert_called_once()
 
     def test_duplicate_download_skipped(self):
-        with mock.patch.object(server.dl_state, "is_downloading", return_value=True):
+        with mock.patch.object(server.dl_state, "try_mark", return_value=False):
             with mock.patch.object(server, "_dl_pool") as m_pool:
                 resp = json.loads(server.download_transcriber_model("small"))
         self.assertFalse(resp["started"])
@@ -538,11 +538,25 @@ class ProviderConfigToolsTest(unittest.TestCase):
     def test_add_model_success(self):
         with mock.patch.object(
             server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
-        ):
+        ), mock.patch.object(server, "get_model_by_provider_and_name", return_value=None):
             with mock.patch.object(server, "insert_model") as m_ins:
                 resp = json.loads(server.add_model("p1", "gpt-x"))
         self.assertTrue(resp["added"])
         m_ins.assert_called_once_with(provider_id="p1", model_name="gpt-x")
+
+    def test_add_model_duplicate_idempotent(self):
+        """重复 add 同一模型名 → added:false，不插重复行（向导写前查重、MCP 直插曾
+        产生重复行 → list_models 本地回退显示重名，#124 A3）。"""
+        with mock.patch.object(
+            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
+        ), mock.patch.object(
+            server, "get_model_by_provider_and_name", return_value={"id": 1, "model_name": "gpt-x"}
+        ):
+            with mock.patch.object(server, "insert_model") as m_ins:
+                resp = json.loads(server.add_model("p1", "gpt-x"))
+        self.assertFalse(resp["added"])
+        self.assertIn("已存在", resp["message"])
+        m_ins.assert_not_called()
 
     def test_delete_model_missing_raises(self):
         with mock.patch.object(server, "get_models_by_provider", return_value=[]):
@@ -599,6 +613,124 @@ class ProviderConfigToolsTest(unittest.TestCase):
         self.assertEqual(data["default_provider_id"], "p1")
         self.assertEqual(data["default_model:p1"], "gpt-4o")
         self.assertEqual(data["default_export_formats"], ["md", "pdf"])
+
+
+class ExportEmptyFormatsTest(unittest.TestCase):
+    """export_transcript(formats=[])：显式空列表 = 零导出假成功，入口报错（#124 A8）。"""
+
+    def tearDown(self):
+        shutil.rmtree(server.NOTE_OUTPUT_DIR / "exportempty001", ignore_errors=True)
+
+    def test_empty_formats_rejected(self):
+        tid = "exportempty001"
+        server._atomic_write_json(
+            server.NOTE_OUTPUT_DIR / tid / "result.json",
+            {
+                "transcript": {
+                    "language": "zh",
+                    "full_text": "hi",
+                    "segments": [{"start": 0.0, "end": 1.0, "text": "hi"}],
+                }
+            },
+        )
+        with self.assertRaises(ValueError) as cm:
+            server.export_transcript(tid, formats=[])
+        self.assertIn("空列表", str(cm.exception))
+
+    def test_omitted_formats_still_defaults(self):
+        """省略 formats 走缺省链（默认 ["srt"]），不因空列表报错拒绝。"""
+        tid = "exportempty002"
+        server._atomic_write_json(
+            server.NOTE_OUTPUT_DIR / tid / "result.json",
+            {
+                "transcript": {
+                    "language": "zh",
+                    "full_text": "hi",
+                    "segments": [{"start": 0.0, "end": 1.0, "text": "hi"}],
+                }
+            },
+        )
+        try:
+            resp = json.loads(server.export_transcript(tid))
+            self.assertTrue(resp["ok"])
+            self.assertIn("srt", resp["formats"])
+        finally:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+
+class ResultReadErrorTest(unittest.TestCase):
+    """get_task_status：SUCCESS 但 result.json 损坏 → result_error 显式提示（#124 A10）。
+
+    status.json 有 #118 内存快照回退，result.json 是唯一不可重建的文件——此前
+    result:null 让 Agent 向用户报「笔记已生成」而内容不可读。
+    """
+
+    def tearDown(self):
+        shutil.rmtree(server.NOTE_OUTPUT_DIR / "resultbad0001", ignore_errors=True)
+
+    def test_corrupt_result_reports_result_error(self):
+        tid = "resultbad0001"
+        task_dir = server.NOTE_OUTPUT_DIR / tid
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "result.json").write_text("{not-json", encoding="utf-8")
+        server._write_status(tid, "SUCCESS", message="完成")
+        resp = json.loads(server.get_task_status(tid))
+        self.assertEqual(resp["status"], "SUCCESS")
+        self.assertIsNone(resp["result"])
+        self.assertIn("result_error", resp)
+        self.assertIn("读取失败", resp["result_error"])
+
+    def test_healthy_result_has_no_result_error(self):
+        tid = "resultbad0002"
+        server._atomic_write_json(
+            server.NOTE_OUTPUT_DIR / tid / "result.json",
+            {"kind": "transcript", "transcript": {"full_text": "ok", "segments": []}},
+        )
+        try:
+            server._write_status(tid, "SUCCESS", message="完成")
+            resp = json.loads(server.get_task_status(tid))
+            self.assertNotIn("result_error", resp)
+            self.assertEqual(resp["result"]["kind"], "transcript")
+        finally:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+
+class PreflightNeedProviderTest(unittest.TestCase):
+    """preflight need_provider：material-only 流程跳过供应商检查（#124 A12）。
+
+    prepare_note_material 不调 LLM——默认开着的 provider 检查会给它报
+    「无已填 key 的供应商」误导结论。
+    """
+
+    def _mock_base_checks(self):
+        return mock.patch.object(server.shutil, "which", return_value="/usr/bin/ffmpeg"), mock.patch.object(
+            server.shutil, "disk_usage", return_value=mock.Mock(free=5 * 1024**3)
+        ), mock.patch.object(
+            server.TranscriberConfigManager,
+            "is_model_ready",
+            return_value={
+                "ready": True, "transcriber_type": "fast-whisper", "model_size": "small",
+                "downloading": False, "reason": "",
+            },
+        )
+
+    def test_default_includes_provider_check(self):
+        with mock.patch.object(server, "_preflight_provider", return_value=(False, "无已填 key 的供应商")) as m_p:
+            with self._mock_base_checks()[0], self._mock_base_checks()[1], self._mock_base_checks()[2]:
+                data = json.loads(server.preflight())
+        m_p.assert_called_once()
+        names = {c["name"] for c in data["checks"]}
+        self.assertIn("provider", names)
+        self.assertFalse(data["ok"])
+
+    def test_need_provider_false_skips_provider_check(self):
+        with mock.patch.object(server, "_preflight_provider") as m_p:
+            with self._mock_base_checks()[0], self._mock_base_checks()[1], self._mock_base_checks()[2]:
+                data = json.loads(server.preflight(need_provider=False))
+        m_p.assert_not_called()
+        names = {c["name"] for c in data["checks"]}
+        self.assertNotIn("provider", names)
+        self.assertTrue(data["ok"])  # 无 provider 依赖时其余检查全过
 
 
 class PreflightTest(unittest.TestCase):
@@ -1364,16 +1496,18 @@ class OutputDirFileUriTest(unittest.TestCase):
 
 class DefaultExportFormatsJunkTest(unittest.TestCase):
     """app_config.default_export_formats 非列表垃圾值曾遮蔽 env 回退链（truthy 短路 `or`）
-    或在工具入口炸 ValueError——打 warning 后回退，与 #104 缺省链口径一致（#107）。"""
+    或在工具入口炸 ValueError——打 warning 后回退，与 #104 缺省链口径一致（#107；
+    守卫在 #124 A4 迁到 videonote_mcp.config.resolve_default_export_formats，
+    CLI/MCP/自动导出三处同源，故 mock 目标从 server 改为 config_mod）。"""
 
     def test_tool_junk_config_falls_back_to_env(self):
         tid = ExportFormatsWhitelistTest._task_with_transcript()
         try:
             with mock.patch.object(
-                server, "get_app_config", return_value={"default_export_formats": "srt,vtt"}
+                config_mod, "get_app_config", return_value={"default_export_formats": "srt,vtt"}
             ), mock.patch.dict(
                 "os.environ", {"VIDEONOTE_DEFAULT_EXPORT_FORMATS": '["vtt"]'}, clear=False
-            ), mock.patch.object(server.logger, "warning") as w:
+            ), mock.patch.object(config_mod.logger, "warning") as w:
                 resp = json.loads(server.export_transcript(tid))
             self.assertTrue(resp["ok"])
             self.assertIn("vtt", resp["formats"])
@@ -1386,7 +1520,7 @@ class DefaultExportFormatsJunkTest(unittest.TestCase):
         tid = ExportFormatsWhitelistTest._task_with_transcript()
         try:
             with mock.patch.object(
-                server, "get_app_config", return_value={"default_export_formats": {"a": "b"}}
+                config_mod, "get_app_config", return_value={"default_export_formats": {"a": "b"}}
             ), mock.patch.dict("os.environ", {"VIDEONOTE_DEFAULT_EXPORT_FORMATS": ""}, clear=False):
                 resp = json.loads(server.export_transcript(tid))
             self.assertTrue(resp["ok"])
@@ -1396,11 +1530,11 @@ class DefaultExportFormatsJunkTest(unittest.TestCase):
 
     def test_auto_export_junk_config_falls_back_to_env(self):
         with mock.patch.object(
-            server, "get_app_config", return_value={"default_export_formats": "srt"}
+            config_mod, "get_app_config", return_value={"default_export_formats": "srt"}
         ), mock.patch.dict(
             "os.environ", {"VIDEONOTE_DEFAULT_EXPORT_FORMATS": '["vtt"]'}, clear=False
         ), mock.patch("videonote_mcp.export.export_transcript") as m, mock.patch.object(
-            server.logger, "warning"
+            config_mod.logger, "warning"
         ) as w:
             server._auto_export_transcript("junk-test", {"language": "zh"})
         self.assertEqual(m.call_args.kwargs["formats"], ["vtt"])
@@ -1857,25 +1991,24 @@ class StripMediaMarkersTest(unittest.TestCase):
 
 
 class ModelDownloadMarkTest(unittest.TestCase):
-    """#122 A7：download_transcriber_model 在 submit 前 mark_downloading（TOCTOU 防重）。
+    """#122 A7 + #124 A7：download_transcriber_model 的检查-标记必须原子（try_mark）。
 
     旧实现：is_downloading 检查在调用线程、mark 在 worker 内——两次连续提交
-    各起一个 worker 重下整个模型。
+    各起一个 worker 重下整个模型；再往前 mark 前移后，检查与标记仍是两步，
+    两个并发请求（FastMCP 每请求一线程）可同时通过检查。
     """
 
     def test_second_submit_immediately_detects(self):
         state = {"downloading": False}
 
-        def _is_downloading(key):
-            return state["downloading"]
-
-        def _mark_downloading(key):
+        def _try_mark(key):
+            if state["downloading"]:
+                return False
             state["downloading"] = True
+            return True
 
         with mock.patch(
-            "videonote_mcp.server.dl_state.is_downloading", side_effect=_is_downloading
-        ), mock.patch(
-            "videonote_mcp.server.dl_state.mark_downloading", side_effect=_mark_downloading
+            "videonote_mcp.server.dl_state.try_mark", side_effect=_try_mark
         ), mock.patch("videonote_mcp.server._dl_pool.submit"):
             first = json.loads(server.download_transcriber_model("tiny"))
             second = json.loads(server.download_transcriber_model("tiny"))
@@ -1883,9 +2016,40 @@ class ModelDownloadMarkTest(unittest.TestCase):
         self.assertFalse(second["started"])
         self.assertIn("跳过重复提交", second["message"])
 
+    def test_try_mark_atomic_wins_once(self):
+        """dl_state.try_mark 原子原语：同一 key 只赢一次，并发调用不双开（#124 A7）。"""
+        from app.transcriber import model_download_state as dl
+
+        try:
+            self.assertTrue(dl.try_mark("unit-test-key"))
+            self.assertFalse(dl.try_mark("unit-test-key"))
+            # 失败方不改状态（仍是 downloading）
+            self.assertTrue(dl.is_downloading("unit-test-key"))
+        finally:
+            dl.mark_done("unit-test-key")
+
     def test_invalid_size_rejected(self):
         with self.assertRaises(ValueError):
             server.download_transcriber_model("bogus-size")
+
+
+class ListTasksForwardTest(unittest.TestCase):
+    """list_tasks 把 limit/offset 透传给 DAO，不再全表拉回切片（#124 B14）。"""
+
+    def test_passes_limit_and_offset_to_dao(self):
+        with mock.patch("app.db.video_task_dao.list_tasks", return_value=[]) as m_list:
+            server.list_tasks(limit=2, offset=3)
+        m_list.assert_called_once_with(limit=2, offset=3)
+
+    def test_omitted_args_pass_through_as_defaults(self):
+        with mock.patch("app.db.video_task_dao.list_tasks", return_value=[]) as m_list:
+            server.list_tasks()
+        m_list.assert_called_once_with(limit=None, offset=0)
+
+    def test_negative_offset_clamped(self):
+        with mock.patch("app.db.video_task_dao.list_tasks", return_value=[]) as m_list:
+            server.list_tasks(offset=-5)
+        m_list.assert_called_once_with(limit=None, offset=0)
 
 
 if __name__ == "__main__":

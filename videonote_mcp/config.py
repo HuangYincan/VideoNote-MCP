@@ -81,12 +81,25 @@ def env_or(name: str) -> "str | None":
     return v
 
 
+_BOOL_TRUE = ("1", "true", "yes", "on")
+_BOOL_FALSE = ("0", "false", "no", "off")
+
+
 def env_bool(name: str, default: bool = False) -> bool:
-    """解析 env 布尔（'1'/'true'/'yes'/'on'，大小写不敏感）；未设置回 default。"""
+    """解析 env 布尔（'1'/'true'/'yes'/'on'，大小写不敏感）；未设置回 default。
+
+    垃圾值（非已知布尔词）也回退 default——与 env_int 的「解析失败回退」同语义；
+    旧实现把垃圾值一律当 False，default=True 的调用点会被手滑值静默翻反（#124 A5）。
+    """
     v = env_or(name)
     if v is None:
         return default
-    return v.strip().lower() in ("1", "true", "yes", "on")
+    v = v.strip().lower()
+    if v in _BOOL_TRUE:
+        return True
+    if v in _BOOL_FALSE:
+        return False
+    return default
 
 
 def env_int(name: str, default: int) -> int:
@@ -131,6 +144,19 @@ def env_json_list(name: str, default):
         return parsed if isinstance(parsed, list) else default
     except Exception:
         return default
+
+
+def resolve_default_export_formats() -> list:
+    """导出格式缺省链：app_config（须为列表）→ env（JSON 列表）→ []。
+
+    非列表垃圾配置会遮蔽 env 回退（truthy 值令 `or` 短路）→ 打 warning 后回退
+    （#107 口径；#124 A4：守卫从 server 抽到此处，CLI export / MCP export_transcript /
+    自动导出三处同源，不再各自实现）。"""
+    cfg = get_app_config().get("default_export_formats")
+    if cfg is not None and not isinstance(cfg, list):
+        logger.warning("app_config.default_export_formats 不是列表（%r），忽略改用环境/默认", cfg)
+        cfg = None
+    return cfg or env_json_list("VIDEONOTE_DEFAULT_EXPORT_FORMATS", [])
 
 
 def setup_environment() -> Path:

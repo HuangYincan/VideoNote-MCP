@@ -105,6 +105,21 @@ class TestProvidersCli:
         assert ei.value.code == 1
         assert "不存在" in capsys.readouterr().err
 
+    def test_add_duplicate_name_clean_exit(self, capsys):
+        """重名 add 此前裸 traceback（向导有捕获、CLI 无）——现在打印原因后退出，
+        不把堆栈甩给用户（#124 A2）。"""
+        cli._providers_cli(["add", "--name", "同名源", "--base-url", "https://a.com/v1", "--api-key", "sk-1"])
+        capsys.readouterr()
+        with pytest.raises(SystemExit) as ei:
+            cli._providers_cli(["add", "--name", "同名源", "--base-url", "https://b.com/v1", "--api-key", "sk-2"])
+        assert ei.value.code == 1
+        err = capsys.readouterr().err
+        assert "供应商名称已存在" in err
+        assert "Traceback" not in err
+        # 第二次 add 未落库：仍只有一条
+        rows = ProviderService.get_all_providers()
+        assert len(rows) == 1
+
 
 class TestTranscriberCli:
     def test_set_fast_whisper_and_list(self, capsys):
@@ -287,6 +302,36 @@ class TestExportCli:
         err = capsys.readouterr().err
         assert "结果文件损坏" in err
 
+    def test_export_garbage_default_formats_falls_back(self, capsys):
+        """app_config.default_export_formats 非列表（手滑写成字符串 "srt"）→ 回退默认
+        ["srt"] 正常导出——旧实现 `set("srt")` 把合法格式拆成字符报「未知导出格式
+        'r','s','t'」（#124 A4，与 MCP 端 #107 守卫同源）。"""
+        cli.set_app_config("default_export_formats", "srt")  # 垃圾配置：字符串非列表
+        try:
+            task_id = str(uuid.uuid4())
+            note_out = Path(os.environ["NOTE_OUTPUT_DIR"])
+            task_dir = note_out / task_id
+            task_dir.mkdir(parents=True, exist_ok=True)
+            (task_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "transcript": {
+                            "language": "zh",
+                            "full_text": "垃圾配置回退",
+                            "segments": [{"start": 0.0, "end": 1.0, "text": "垃圾配置回退"}],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cli._export_cli(["export", task_id])  # 无 --format → 走缺省链
+            out = _cli_out(capsys)
+            assert "✓ 已导出 1 个格式" in out
+            assert "未知导出格式" not in out
+            assert (task_dir / "gen" / "transcript.srt").is_file()
+        finally:
+            cli.remove_app_config("default_export_formats")
+
 
 class _InqResult:
     """InquirerPy prompt 的 .execute() 返回体。"""
@@ -402,6 +447,52 @@ class TestWizardProviderCli:
         cli._edit_provider(fake, pid)
         assert "✓ 已更新" in _cli_out(capsys)
         assert ProviderService.get_provider_by_id(pid)["api_key"] == "sk-new"
+
+
+class TestWizardTranscriberDefaults:
+    """转写引擎向导：#124 A1 当前引擎为 funasr 时默认光标位必须停在 funasr。
+
+    旧实现 default 元组漏 "funasr"——funasr 用户进向导只想回车确认时，光标落在
+    fast-whisper 上，多按一次回车就把引擎无意识切回 fast-whisper（配置被覆盖）。
+    """
+
+    def _capture_default(self, engine):
+        from app.services.transcriber_config_manager import TranscriberConfigManager
+
+        TranscriberConfigManager().update_config(engine)
+
+        class _CaptureInq:
+            def __init__(self):
+                self.select_defaults = []
+
+            def select(self, message, choices=None, keybindings=None, default=None):
+                self.select_defaults.append(default)
+                return _InqResult("back")  # 转写菜单的返回项 value 就是字符串 "back"
+
+            def confirm(self, message, default=False, keybindings=None):
+                return _InqResult(default)
+
+            def text(self, message, keybindings=None, default=""):
+                return _InqResult(default)
+
+            def secret(self, message, keybindings=None):
+                return _InqResult("")
+
+        inq = _CaptureInq()
+        cli._wizard_transcriber(inq)
+        return inq.select_defaults
+
+    def test_funasr_engine_default_is_funasr(self, capsys):
+        defaults = self._capture_default("funasr")
+        assert defaults and defaults[0] == "funasr"
+
+    def test_fast_whisper_engine_default_is_fast_whisper(self, capsys):
+        defaults = self._capture_default("fast-whisper")
+        assert defaults and defaults[0] == "fast-whisper"
+
+    def test_mlx_engine_default_is_mlx(self, capsys):
+        defaults = self._capture_default("mlx-whisper")
+        assert defaults and defaults[0] == "mlx-whisper"
 
 
 class TestWizardCleanupGuard:

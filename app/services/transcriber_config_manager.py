@@ -5,6 +5,23 @@ from typing import Optional, Dict, Any
 from app.utils.json_store import read_json, write_json_atomic
 
 
+def _config_bool(data: Dict[str, Any], key: str, env_name: str) -> bool:
+    """配置布尔解析：配置文件优先、env 兜底，字符串值按与 videonote_mcp.config.env_bool
+    相同的规则（'1'/'true'/'yes'/'on'，大小写不敏感）解析（#124 A6）。
+
+    两点旧坑：1) env 解析大小写敏感且不接受 yes/on，与 config.env_bool 规则分叉；
+    2) 配置文件里手滑的字符串 "false" 被 `bool("false")` 判成 True——预处理/说话人
+    分离被字符串垃圾值误开。此处不 import videonote_mcp（vendored 层单向依赖纪律），
+    规则内联同源。
+    """
+    v = data.get(key)
+    if v is None:
+        v = os.getenv(env_name, "0")
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
+
+
 class TranscriberConfigManager:
     """管理转写器配置，存储在 JSON 文件中，支持前端动态修改。"""
 
@@ -40,15 +57,8 @@ class TranscriberConfigManager:
                 "whisper_model_size",
                 os.getenv("WHISPER_MODEL_SIZE", "tiny"),
             ),
-            "enable_preprocess": bool(
-                data.get(
-                    "enable_preprocess",
-                    os.getenv("VIDEONOTE_ENABLE_PREPROCESS", "0") in ("1", "true", "True"),
-                )
-            ),
-            "diarization": bool(
-                data.get("diarization", os.getenv("VIDEONOTE_DIARIZATION", "0") in ("1", "true", "True"))
-            ),
+            "enable_preprocess": _config_bool(data, "enable_preprocess", "VIDEONOTE_ENABLE_PREPROCESS"),
+            "diarization": _config_bool(data, "diarization", "VIDEONOTE_DIARIZATION"),
             "diarization_speakers": data.get("diarization_speakers"),
         }
 

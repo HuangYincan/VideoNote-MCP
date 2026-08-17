@@ -329,6 +329,8 @@ class KuaishouVideoPathTest(unittest.TestCase):
             with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
                 resp = mock.Mock()
                 resp.status_code = 200
+                resp.__enter__ = mock.Mock(return_value=resp)  # B8 后 `with requests.get`
+                resp.__exit__ = mock.Mock(return_value=False)
                 resp.iter_content = mock.Mock(return_value=iter([b"x" * 10]))
                 m_get.return_value = resp
                 result = dl.download("https://v.kuaishou.com/x", output_dir=td, need_video=need_video)
@@ -353,6 +355,137 @@ class KuaishouVideoPathTest(unittest.TestCase):
             result, m_get = self._run_download(td)
             self.assertTrue(os.path.exists(result.video_path))
             m_get.assert_not_called()  # mp4 已在 → 不重复下载
+
+
+class DouyinDownloadBehaviorTest(unittest.TestCase):
+    """抖音 download() 修复行为（#124 B4/B5/B6）。"""
+
+    def _detail(self, duration_ms=15300, music_url="https://example.com/m.mp3"):
+        return {
+            "aweme_detail": {
+                "aweme_id": "7234567890",
+                "item_title": "测试视频",
+                "video": {
+                    "duration": duration_ms,
+                    "cover_original_scale": {"url_list": ["https://c.jpg"]},
+                },
+                "music": {"play_url": {"url_list": [music_url]}},
+            }
+        }
+
+    def _download(self, td, detail):
+        from app.downloaders.douyin_downloader import DouyinDownloader
+
+        dl = DouyinDownloader()
+        dl.fetch_video_info = mock.Mock(return_value=detail)
+        resp = mock.Mock()
+        resp.__enter__ = mock.Mock(return_value=resp)
+        resp.__exit__ = mock.Mock(return_value=False)
+        resp.raise_for_status = mock.Mock()
+        resp.iter_content = mock.Mock(return_value=iter([b"x" * 1024]))
+        with mock.patch("app.downloaders.douyin_downloader.requests.get", return_value=resp) as m_get:
+            return dl.download("https://v.douyin.com/abc/", output_dir=td), m_get
+
+    def test_fetch_failure_keeps_cause_chain(self):
+        """请求失败抛 ValueError 且保留原始异常链（#124 B4）——旧写法丢链且输出元组。"""
+        from app.downloaders.douyin_downloader import DouyinDownloader
+
+        dl = DouyinDownloader()
+        dl.extract_video_id = mock.Mock(return_value="v123")
+        dl.gen_real_msToken = mock.Mock(return_value="tok")
+        original = ConnectionError("dns down")
+        with mock.patch("app.downloaders.douyin_downloader.requests.get", side_effect=original):
+            with self.assertRaises(ValueError) as ctx:
+                dl.fetch_video_info("https://v.douyin.com/abc/")
+        self.assertIs(ctx.exception.__cause__, original)
+        # 不再是元组 repr（旧写法 str() 输出 ('请求失败:', ...)）
+        self.assertEqual(str(ctx.exception), "请求失败: dns down")
+
+    def test_audio_request_uses_instance_headers_with_cookie(self):
+        """音频下载请求必须带注入用户 cookie 的实例 headers（#124 B5）。"""
+        from app.downloaders.douyin_downloader import DouyinDownloader
+
+        # cfm 是模块级单例（import 时已构造），必须 patch 模块属性而非类
+        with mock.patch("app.downloaders.douyin_downloader.cfm") as m_cfm:
+            m_cfm.get.return_value = "SESSDATA=abc"
+            DouyinDownloader()  # 构造副作用：构造时读取 cfm.get 注入 headers
+            with tempfile.TemporaryDirectory() as td:
+                _, m_get = self._download(td, self._detail())
+            _, kwargs = m_get.call_args
+            self.assertEqual(kwargs["headers"].get("Cookie"), "SESSDATA=abc")
+
+    def test_duration_millis_normalized_to_seconds(self):
+        """duration 单位毫秒需归一为秒（#124 B6）——15300ms 应为 15.3s。"""
+        from app.downloaders.douyin_downloader import DouyinDownloader
+
+        DouyinDownloader()  # 构造副作用：同上，确保 headers 注入后请求链路一致
+        with tempfile.TemporaryDirectory() as td:
+            result, _ = self._download(td, self._detail(duration_ms=15300))
+        self.assertEqual(result.duration, 15.3)
+
+
+class KuaishouStaleMp3Test(unittest.TestCase):
+    """快手零字节/半成品 mp3 不被 exists 当成功产物（#124 B1）。"""
+
+    def _photo_info(self):
+        return {
+            "id": "ph1", "caption": "标题", "duration": 10,
+            "coverUrl": "https://x/c.jpg", "photoUrl": "https://x/v.mp4",
+        }
+
+    def test_zero_byte_mp3_not_trusted(self):
+        from app.downloaders.kuaishou_downloader import KuaiShouDownloader
+
+        with tempfile.TemporaryDirectory() as td:
+            with open(os.path.join(td, "ph1.mp3"), "wb") as f:
+                f.write(b"")  # 0 字节：ffmpeg 中断残留
+            dl = KuaiShouDownloader()
+            video_raw = {"visionVideoDetail": {"photo": self._photo_info()}, "tags": []}
+            with mock.patch("app.downloaders.kuaishou_downloader.KuaiShou") as m_ks:
+                m_ks.return_value.run.return_value = video_raw
+                with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
+                    resp = mock.Mock()
+                    resp.status_code = 200
+                    resp.__enter__ = mock.Mock(return_value=resp)
+                    resp.__exit__ = mock.Mock(return_value=False)
+                    resp.iter_content = mock.Mock(return_value=iter([b"x" * 10]))
+                    m_get.return_value = resp
+                    with mock.patch("app.downloaders.kuaishou_downloader.subprocess.run") as m_ffmpeg:
+                        result = dl.download("https://v.kuaishou.com/x", output_dir=td)
+            # 0 字节缓存不命中 → 重新转 mp3（ffmpeg 被调起）；预删已清掉残留半成品
+            m_ffmpeg.assert_called_once()
+            self.assertEqual(result.file_path, os.path.join(td, "ph1.mp3"))
+
+
+class KuaishouTitleCleanTest(unittest.TestCase):
+    """快手标题清洗统一：正常分支与 skip_download 分支同款（#124 B7）。"""
+
+    def _photo_info(self):
+        return {
+            "id": "ph1", "caption": "标题\n带 换行", "duration": 10,
+            "coverUrl": "https://x/c.jpg", "photoUrl": "https://x/v.mp4",
+        }
+
+    def test_normal_branch_title_cleaned(self):
+        from app.downloaders.kuaishou_downloader import KuaiShouDownloader
+
+        dl = KuaiShouDownloader()
+        video_raw = {"visionVideoDetail": {"photo": self._photo_info()}, "tags": []}
+        with mock.patch("app.downloaders.kuaishou_downloader.KuaiShou") as m_ks:
+            m_ks.return_value.run.return_value = video_raw
+            with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
+                resp = mock.Mock()
+                resp.status_code = 200
+                resp.__enter__ = mock.Mock(return_value=resp)
+                resp.__exit__ = mock.Mock(return_value=False)
+                resp.iter_content = mock.Mock(return_value=iter([b"x"]))
+                m_get.return_value = resp
+                with mock.patch("app.downloaders.kuaishou_downloader.subprocess.run"):
+                    with tempfile.TemporaryDirectory() as td:
+                        result = dl.download("https://v.kuaishou.com/x", output_dir=td)
+        # 换行/空格被清洗，不再把原始 caption 透传给 DB/prompt
+        self.assertNotIn("\n", result.title)
+        self.assertEqual(result.title, "标题带_换行")
 
 
 if __name__ == "__main__":

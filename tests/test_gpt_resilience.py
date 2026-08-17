@@ -94,5 +94,38 @@ class TemperatureFallbackTest(unittest.TestCase):
         )
 
 
+class CheckpointResilienceTest(unittest.TestCase):
+    """checkpoint 写失败绝不 raise（#124 B2）：它是恢复辅助，失败只 warning。
+
+    旧实现直接 write_text——磁盘满/权限错误把成功的 LLM 输出变成任务 FAILED；
+    在 except 处理器里保存时还会替换掉原始 LLM 异常。
+    """
+
+    def _gpt_with_failing_checkpoint(self):
+        gpt = _gpt()
+        path = mock.Mock()
+        path.with_suffix.return_value = path  # tmp_path 同 path
+        path.write_text.side_effect = OSError("磁盘已满")
+        gpt._checkpoint_path = mock.Mock(return_value=path)
+        return gpt
+
+    def test_checkpoint_write_failure_does_not_raise(self):
+        gpt = self._gpt_with_failing_checkpoint()
+        with mock.patch("app.gpt.universal_gpt.logger") as m_logger:
+            gpt._save_checkpoint("k", "sig", ["partial"], "summarize")
+        self.assertTrue(
+            any("保存 checkpoint 失败" in str(c) for c in m_logger.warning.call_args_list)
+        )
+
+    def test_checkpoint_success_still_writes(self):
+        gpt = _gpt()
+        path = mock.Mock()
+        path.with_suffix.return_value = mock.Mock()  # tmp 路径独立
+        gpt._checkpoint_path = mock.Mock(return_value=path)
+        gpt._save_checkpoint("k", "sig", ["partial"], "merge")
+        path.with_suffix.return_value.write_text.assert_called_once()
+        path.with_suffix.return_value.replace.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

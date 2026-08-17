@@ -61,6 +61,42 @@ class BatchGenerateTest(unittest.TestCase):
         self.assertEqual(out["submitted"], 1)
         self.assertEqual(gn.call_count, 1)
 
+    def test_single_success_shape_matches_multi(self):
+        """单集成功分支补齐 truncated/remaining/platform/kind——Agent 按一种形状
+        解析，不再因单集分支缺键 KeyError（#124 A11）。"""
+        with mock.patch("app.services.inspect.inspect_video", return_value={
+            "ok": True, "platform": "bilibili", "kind": "single",
+            "title": "单集", "total": 1, "truncated": False, "entries": [],
+        }), mock.patch.object(server, "generate_note", side_effect=_fake_generate_note):
+            out = json.loads(server.batch_generate_notes("https://b23.tv/BV1x"))
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["total"], 1)
+        self.assertEqual(out["submitted"], 1)
+        self.assertFalse(out["truncated"])
+        self.assertEqual(out["remaining"], 0)
+        self.assertEqual(out["platform"], "bilibili")
+        self.assertEqual(out["kind"], "single")
+
+    def test_single_failure_shape_matches_multi(self):
+        """单集失败分支同样带 platform/kind/truncated/remaining（inspect 失败分支有、
+        单集提交失败分支曾缺，#124 A11）。"""
+        def _fail(url, **kwargs):
+            raise ValueError("供应商无 key")
+
+        with mock.patch("app.services.inspect.inspect_video", return_value={
+            "ok": True, "platform": "bilibili", "kind": "single",
+            "title": "单集", "total": 1, "truncated": False, "entries": [],
+        }), mock.patch.object(server, "generate_note", side_effect=_fail):
+            out = json.loads(server.batch_generate_notes("https://b23.tv/BV1x"))
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["submitted"], 0)
+        self.assertFalse(out["truncated"])
+        self.assertEqual(out["remaining"], 0)
+        self.assertEqual(out["platform"], "bilibili")
+        self.assertEqual(out["kind"], "single")
+        self.assertEqual(len(out["errors"]), 1)
+        self.assertIn("供应商无 key", out["errors"][0]["error"])
+
     def test_inspect_failure_passes_through(self):
         # C6 归一化：inspect 失败也走统一 errors[] 形状（此前直接透传 {error: ...}，
         # Agent 要猜两种返回结构）
