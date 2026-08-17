@@ -22,8 +22,8 @@
 - `kind=multi` 时把每条 `entries[].url` 当独立视频，按单集流程（subagent）提交；用户只要一集就用对应那条 url。超过 200 条 `truncated=true`。
 - **批量**：多集要全出笔记用 `batch_generate_notes(url, max_entries=10)` 一次排队（服务端逐个提交），省去逐条 subagent。
 
-### `batch_generate_notes(video_url, max_entries=10, quality?, provider_id?, model_name?, format?, style?, screenshot?, extras?)`
-- **播放列表/合集/分 P 批量提交**：内部先 `inspect_video` 展开，再逐条提交笔记任务（同一并发门禁，超出 worker 数的排队等待）。
+### `batch_generate_notes(video_url, max_entries=10, quality?, provider_id?, model_name?, format?, style?, screenshot?, extras?, link?, video_understanding?, video_interval?, grid_size?, include_comments?, comments_limit?, notes_dir?)`
+- **播放列表/合集/分 P 批量提交**：内部先 `inspect_video` 展开，再逐条提交笔记任务（同一并发门禁，超出 worker 数的排队等待）。高级参数与 `generate_note` 一致（视频理解/弹幕/notes_dir 批量共享同一套设置）。
 - 返回 `{ok, total, submitted, truncated?, errors:[{p, title, url, error}], tasks:[{p, title, duration, url, task_id, status}]}`；单条失败不阻断其余。
 - 之后逐个 `get_task_status` 轮询（多任务逐个汇报进度，不要同时并行轮询过多）。
 
