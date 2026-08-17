@@ -299,8 +299,9 @@ def chunk_duration_guess(wav_path: str) -> float:
         d = probe_duration(wav_path)
         if d > 0:
             return d
-    except Exception:
-        pass
+        logger.warning("probe_duration 返回非正值 %r，分块时长回退 1800s（时间轴可能漂移）: %s", d, wav_path)
+    except Exception as exc:  # noqa: BLE001 —— 探测失败按默认分块时长兜底，但必须留痕
+        logger.warning("probe_duration 失败，分块时长回退 1800s（时间轴可能漂移）: %s: %s", wav_path, exc)
     return 1800.0  # 兜底：等于默认分块时长
 
 

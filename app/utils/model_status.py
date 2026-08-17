@@ -4,11 +4,14 @@
 把这两个检查函数 + 下载状态查询抽到这里，供 TranscriberConfigManager 做
 「开始转写前确认本地模型已下载」的门禁，也供 MCP 的 health_check / 模型管理工具复用。
 """
+import logging
 import os
 from pathlib import Path
 
 from app.transcriber import model_download_state as dl_state
 from app.utils.path_helper import get_model_dir
+
+logger = logging.getLogger(__name__)
 
 
 def check_whisper_model_exists(model_size: str, subdir: str = "whisper") -> bool:
@@ -20,7 +23,13 @@ def check_whisper_model_exists(model_size: str, subdir: str = "whisper") -> bool
     )
     try:
         target = resolve_whisper_model(model_size)
-    except Exception:
+    except ValueError as exc:
+        # 模型名无法解析（自定义映射里登记了坏 target / size 拼写错）——
+        # 不区分就返回 False 会被门禁谎报成「模型未下载」让用户反复重下
+        logger.warning("模型尺寸 %r 无法解析（这不是下载问题）: %s", model_size, exc)
+        return False
+    except Exception as exc:  # noqa: BLE001 —— 解析失败按未就绪处理，但必须留痕
+        logger.warning("解析模型尺寸 %r 失败: %s", model_size, exc)
         return False
     if is_local_target(target):
         return (Path(target) / "model.bin").exists()

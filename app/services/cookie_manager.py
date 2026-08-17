@@ -1,7 +1,8 @@
-import json
 import os
 from pathlib import Path
 from typing import Optional, Dict
+
+from app.utils.json_store import read_json, write_json_atomic
 
 
 class CookieConfigManager:
@@ -15,19 +16,10 @@ class CookieConfigManager:
             self._write({})
 
     def _read(self) -> Dict[str, Dict[str, str]]:
-        try:
-            with self.path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        return read_json(self.path)
 
     def _write(self, data: Dict[str, Dict[str, str]]):
-        with self.path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+        write_json_atomic(self.path, data)
 
     def get(self, platform: str) -> Optional[str]:
         data = self._read()

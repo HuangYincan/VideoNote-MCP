@@ -191,7 +191,9 @@ class UniversalGPT(GPT):
                 path.unlink(missing_ok=True)
                 return None
             return data
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 —— 损坏 checkpoint 弃用重跑，但必须留痕
+            # 静默 unlink 会让已消耗的 LLM 配额（前几个 chunk）白白浪费且无从察觉
+            logger.warning(f"checkpoint 损坏（{exc}），已删除从零重新总结——已消耗的 LLM 配额不可恢复")
             path.unlink(missing_ok=True)
             return None
 

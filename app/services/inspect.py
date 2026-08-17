@@ -200,6 +200,12 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
             if page_url and not str(page_url).startswith("http"):
                 # extract_flat 有时只给 id
                 page_url = _youtube_watch(vid) if platform == "youtube" and vid else page_url
+            if not page_url or not str(page_url).startswith("http"):
+                # 坏条目以成功形状返回会让 Agent 拿无效 URL 去下载阶段才失败——跳过并留痕
+                logger.warning(
+                    f"播放列表条目 {i}（title={e.get('title')!r}）无可用 http URL，已跳过"
+                )
+                continue
             entries.append(
                 {
                     "p": i,
@@ -209,6 +215,8 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
                     "video_id": vid,
                 }
             )
+        if not entries:
+            return {"ok": False, "platform": platform, "error": "播放列表无可用条目（URL 均无效）"}
         return {
             "ok": True,
             "platform": platform,

@@ -1,7 +1,8 @@
-import json
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from app.utils.json_store import read_json, write_json_atomic
 
 
 class ProxyConfigManager:
@@ -23,15 +24,10 @@ class ProxyConfigManager:
     def _read(self) -> Dict[str, Any]:
         if not self.path.exists():
             return {}
-        try:
-            with self.path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        return read_json(self.path)
 
     def _write(self, data: Dict[str, Any]):
-        with self.path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.path, data)
 
     def get_config(self) -> Dict[str, Any]:
         data = self._read()

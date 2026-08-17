@@ -535,8 +535,8 @@ class NoteGenerator:
                 old = json.loads(status_file.read_text(encoding="utf-8"))
                 if old.get("started_at"):
                     data["started_at"] = old["started_at"]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 —— 尽力而为，但失败必须留痕（elapsed 会失真）
+            logger.warning(f"读取旧 status.json 保留 started_at 失败: {exc}")
 
         # 同步全局索引（video_tasks.status）——尽力而为，失败不阻断
         try:
@@ -544,7 +544,8 @@ class NoteGenerator:
 
             update_task_status(task_id, data["status"], message=message or "")
         except Exception as e:
-            logger.debug(f"同步任务状态到全局索引失败: {e}")
+            # debug 会让「任务状态不进全局索引」静默——list_tasks 查不到、cleanup 找不到
+            logger.warning(f"同步任务状态到全局索引失败: {e}")
 
         try:
             # First create a temporary file
