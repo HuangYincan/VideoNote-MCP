@@ -33,6 +33,8 @@ dist/
 .claude/settings.local.json
 # 项目 CLAUDE.md（本机开发上下文，不提交）
 /CLAUDE.md
+# 项目开发专用 skills（只在本机开发用，不随插件分发/入库）
+.claude/skills/
 
 # LaTeX 编译产物（模板预览 main.pdf 除外，需入库）
 *.aux
