@@ -2,6 +2,13 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave F 批 20（2026-08-17 · 第 15 轮收敛验证 #131，667 tests）
+
+- **发布门禁修复（A1）**：`.github/workflows/release.yml` wheel 内容校验删掉已不存在的 `app/events/__init__.py`（#130 B2 整链删除的同波遗漏）——此前打 v* tag 发布必失败。
+- **blinker 死依赖（A2）**：pyproject.toml 删除「转写完成事件」注释与 `blinker>=1.9.0`（events 包已删、全仓零引用），`uv lock` 重新生成。
+- **docs/05 状态回写（A3）**：#128/#129/#130 标题 ⏳ → ✅（批 16-19 均已实施完成）。
+- **收敛判定**：第 15 轮双代理独立全库复扫——代理 B（app 流水线）无新增 finding、代理 A（工具面）仅上述 #130 同波遗漏；修复后**两代理一致「可停」**。长时任务收敛：19 轮扫描/批次共落地 200+ 项修复，667 tests + ruff F/I-clean 全绿。
+
 ## Wave F 批 19（2026-08-17 · 第 14 轮双代理扫描 #130，667 tests）
 
 - **bool truthy-swallow 收口（A1）**：`config.py` 新增 `resolve_bool_config`（bool 直通 / `1·true·yes·on / 0·false·no·off` 词表 / 垃圾值 warning 回退 env/默认），`generate_note` / `prepare_note_material` 的 `video_understanding` / `include_comments` / `screenshot` 五处接入——字符串 `"false"` 不再恒为 True 白开视频理解烧多模态 token（#116 int 系收口后 bool 系的最后一窝）。

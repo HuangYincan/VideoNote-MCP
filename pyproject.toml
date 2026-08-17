@@ -13,8 +13,6 @@ authors = [{ name = "HuangYincan" }]
 # （weasyprint/pdfkit/python-docx/markdown_pdf/PyMuPDF）、gmssl/pycryptodomex/bs4/lxml（下载器未用）。
 dependencies = [
     "fastmcp>=3,<4",  # 3.4.x 实测：progress/线程模型结论基于 3.4.5（docs/05 #67）
-    # 转写完成事件（app/events/，blinker 信号）
-    "blinker>=1.9.0",
     "yt-dlp>=2025.3.31",
     "openai>=1.70.0",
     "faster-whisper>=1.1.1",

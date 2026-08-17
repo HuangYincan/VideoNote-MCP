@@ -61,7 +61,6 @@ jobs:
               "videonote_mcp/server.py",
               "app/services/note.py",
               "app/services/constant.py",
-              "app/events/__init__.py",
               "skills/videonote/SKILL.md",
               "skills/videonote/reference/tools.md",
           ]
