@@ -19,8 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # 与会话级 conftest 同库（全量 pytest 时 conftest 已设 DATABASE_URL，这里 setdefault 不覆盖）；
 # 直接 `python tests/test_task_index.py` 时 conftest 不加载，setdefault 兜底自建同路径库。
-_DB = "/tmp/videonote_pytest/video_note.db"
-os.environ.setdefault("DATABASE_URL", f"sqlite:///{_DB}")
+# 注意：_DB 必须读回实际 DATABASE_URL（conftest 指向 pid 隔离库），不能写死默认路径——
+# 写死会在全新 CI runner 上连到从未创建的目录，报 sqlite3.OperationalError:
+# unable to open database file（docs/05 第 17 轮 CI 修复）。
+_DEFAULT_DB = "/tmp/videonote_pytest/video_note.db"
+os.environ.setdefault("DATABASE_URL", f"sqlite:///{_DEFAULT_DB}")
+_DB = os.environ["DATABASE_URL"].removeprefix("sqlite:///")
+# 兜底建父目录：独立跑本文件时 conftest 不加载，/tmp/videonote_pytest 需自建
+Path(_DB).parent.mkdir(parents=True, exist_ok=True)
 
 from app.db.init_db import init_db  # noqa: E402
 from app.db.video_task_dao import (  # noqa: E402

@@ -145,6 +145,10 @@ class FetchCommentsLimitTest(unittest.TestCase):
 class MlXModelSizeTest(unittest.TestCase):
     """C4：非法 mlx 尺寸同步 ValueError，而不是 started:true 后后台静默失败。"""
 
+    # mlx-whisper 仅 macOS 可用：CI 的 ubuntu 矩阵在尺寸校验前就抛
+    # 「mlx-whisper 仅在 macOS 可用」，这两个尺寸语义用例只对 darwin 有效。
+    # （test_mlx_model_map_importable_without_extras 全平台跑，验证元数据可导入）
+    @unittest.skipUnless(sys.platform == "darwin", "mlx-whisper 仅 macOS 可用")
     def test_unknown_mlx_size_rejected(self):
         # "myorg/custom-model" 对 whisper 合法（含 "/" 的 repo_id 直通），
         # 但不在 MLX_MODEL_MAP → 到达 mlx 分支的同步校验（#126 C4）
@@ -154,6 +158,7 @@ class MlXModelSizeTest(unittest.TestCase):
             )
         self.assertIn("未知 mlx-whisper 模型尺寸", str(cm.exception))
 
+    @unittest.skipUnless(sys.platform == "darwin", "mlx-whisper 仅 macOS 可用")
     def test_known_mlx_size_accepted(self):
         # 合法尺寸 → started:true（后台下载被 _dl_pool 排队；测试不等待）
         resp = json.loads(
