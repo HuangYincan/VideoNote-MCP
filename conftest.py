@@ -12,6 +12,8 @@ import glob
 import os
 from pathlib import Path
 
+import pytest
+
 # 固定 /tmp/videonote_pytest 会被并行 pytest / 多 checkout 撞库（docs/05 #66）：
 # 按 pid 隔离，同一进程内所有测试共享，跨进程互不干扰
 _TEST_ROOT = Path(f"/tmp/videonote_pytest_{os.getpid()}")
@@ -34,3 +36,18 @@ os.environ.setdefault("NOTE_OUTPUT_DIR", str(_NOTE_OUTPUT_DIR))
 # 数据目录也隔离：server 模块级会 open(DATA_DIR/logs/mcp_stderr.log) 并 dup2(2)，
 # 不隔离会把测试 stderr 写进仓库 data/ 并污染 git 工作区（docs 审计 P2-6）
 os.environ.setdefault("VIDEONOTE_DATA_DIR", str(_TEST_ROOT / "data"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clean_task_registry_at_exit():
+    """session 结束时清空 MCP 任务注册表。
+
+    若干契约测试 stub 掉 _pool.submit 后不 pop _task_futures/_task_events，
+    进程退出的 atexit 摘要会把这些 mock Future 误报成「进行中/排队任务 N 个」。
+    """
+    yield
+    import videonote_mcp.server as server
+
+    with server._tasks_lock:
+        server._task_futures.clear()
+        server._task_events.clear()
