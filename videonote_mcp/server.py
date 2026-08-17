@@ -1501,10 +1501,27 @@ def health_check() -> str:
 
     cfg = TranscriberConfigManager().get_config()
     ready = TranscriberConfigManager().is_model_ready()
+    # 每个模型行区分 downloaded / downloading / failed(+error) / missing：
+    # 首次下载大模型被超时/断网打断时，failed 原因不再被吞（docs/05 #34）。
+    # 保持历史字段名 size/downloaded，新增 downloading/failed/error（向后兼容）。
     models = [
-        {"size": s, "downloaded": check_whisper_model_exists(s, "whisper")}
+        {
+            **dl_state.status_row(s, check_whisper_model_exists(s, "whisper"), key=s),
+            "size": s,
+        }
         for s in WHISPER_MODEL_SIZES
     ]
+    # 引擎建议：fast-whisper 配 tiny/base 对中文/长视频质量不足（docs/05 #34/#39）。
+    # 不做语言自动切换（见 docs/05 #39 评估结论），改为显式提示。
+    engine_advice = ""
+    if cfg.get("transcriber_type") == "fast-whisper" and cfg.get(
+        "whisper_model_size"
+    ) in ("tiny", "base"):
+        engine_advice = (
+            "当前 fast-whisper 模型为 tiny/base，中文内容质量一般。"
+            "建议 set_transcriber(whisper_model_size='small')，"
+            "或中文优先场景 set_transcriber('funasr')（需安装 funasr 依赖）。"
+        )
     # 音频增强可选依赖就绪状态
     import importlib.util
 
@@ -1534,6 +1551,7 @@ def health_check() -> str:
                 "reason": ready["reason"],
             },
             "whisper_models": models,
+            "engine_advice": engine_advice,
             "audio_enhance": {
                 "enable_preprocess": bool(cfg.get("enable_preprocess")),
                 "diarization": bool(cfg.get("diarization")),
