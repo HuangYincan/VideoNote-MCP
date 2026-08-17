@@ -151,6 +151,24 @@ def _check_grid_size(grid_size) -> None:
     if not (len(grid_size) == 2 and all(isinstance(n, int) and n >= 1 for n in grid_size)):
         raise ValueError(f"grid_size 必须是两个正整数（如 [3,3]），收到: {grid_size!r}")
 
+
+def _resolve_int_config(key: str, env_name: str, default: int) -> int:
+    """解析 app_config 整数配置，垃圾值 warning 后回退 env/默认。
+
+    缺省链是 参数 → app_config → env → 默认（#107 口径）。`get(...) or env_int(...)`
+    的 truthy 短路有两处缺陷：垃圾值（手动编辑 app_config.json 写入 "abc"）让
+    int() 裸 ValueError 遮蔽回退链；0（显式关闭，如 video_interval=0 关视频理解）
+    被当 falsy 吞掉、app_config 优先级倒挂给 env。is not None 判断 + int() 防御
+    两处一起修（#116，与 #107 default_export_formats 同族）。
+    """
+    raw = get_app_config().get(key)
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            logger.warning("app_config.%s 非整数（%r），回退 env/默认", key, raw)
+    return env_int(env_name, default)
+
 # 确保数据库表存在（幂等，init_db 使用 create_all）；空库时预置内置供应商
 # （openai/deepseek/qwen/groq/ollama…，固定 id + 正确 base_url + 空 key，用 update_provider 填 key）
 init_db()
@@ -755,14 +773,14 @@ def generate_note(
     if video_understanding is None:
         video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
     if video_interval is None:
-        video_interval = int(get_app_config().get("video_interval") or env_int("VIDEONOTE_VIDEO_INTERVAL", 0))
+        video_interval = _resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 0)
     video_interval = max(0, int(video_interval or 0))  # 下限钳制，避免 0/负值进流水线
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
         include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
     if comments_limit is None:
-        comments_limit = int(get_app_config().get("comments_limit") or env_int("VIDEONOTE_COMMENTS_LIMIT", 20))
+        comments_limit = _resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
     comments_limit = max(1, int(comments_limit or 20))  # 下限钳制
 
     # 风格/截图默认：参数没传（None）时用 setup ③ 配置的默认（默认 detailed / 关）
@@ -852,14 +870,14 @@ def prepare_note_material(
     if video_understanding is None:
         video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
     if video_interval is None:
-        video_interval = int(get_app_config().get("video_interval") or env_int("VIDEONOTE_VIDEO_INTERVAL", 0))
+        video_interval = _resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 0)
     video_interval = max(0, int(video_interval or 0))  # 下限钳制，避免 0/负值进流水线
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
         include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
     if comments_limit is None:
-        comments_limit = int(get_app_config().get("comments_limit") or env_int("VIDEONOTE_COMMENTS_LIMIT", 20))
+        comments_limit = _resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
     comments_limit = max(1, int(comments_limit or 20))  # 下限钳制
 
     # 并发上限：与 generate_note 一致

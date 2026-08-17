@@ -1328,6 +1328,76 @@ class DefaultExportFormatsJunkTest(unittest.TestCase):
         self.assertTrue(any("不是列表" in str(c) for c in w.call_args_list))
 
 
+class IntConfigFallbackTest(unittest.TestCase):
+    """app_config 整数配置（video_interval/comments_limit）垃圾值遮蔽回退链 + falsy 0 优先级倒挂（#116）。
+
+    `get(...) or env_int(...)` 的 truthy 短路：垃圾值（"abc"）让 int() 裸 ValueError；
+    0（显式关闭）被当 falsy 吞掉、app_config 优先级倒挂给 env。is not None + 防御性
+    int() 两处一起修，与 #107 default_export_formats 同族。
+    """
+
+    def _resolve(self, cfg, env_value):
+        """env 用值或空串显式覆盖，防本机环境残留（env_or 空串→None→回退默认）。"""
+        with mock.patch.object(server, "get_app_config", return_value=cfg), mock.patch.dict(
+            "os.environ", {"VIDEONOTE_VIDEO_INTERVAL": env_value}, clear=False
+        ), mock.patch.object(server.logger, "warning") as w:
+            value = server._resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 0)
+        return value, w
+
+    def test_junk_config_falls_back_to_env(self):
+        value, w = self._resolve({"video_interval": "abc"}, "6")
+        self.assertEqual(value, 6)
+        self.assertTrue(any("非整数" in str(c) for c in w.call_args_list))
+
+    def test_junk_config_no_env_uses_default(self):
+        value, _ = self._resolve({"video_interval": {"a": 1}}, "")
+        self.assertEqual(value, 0)
+
+    def test_falsy_zero_not_shadowed_by_env(self):
+        # app_config 显式配 0（关闭视频理解）不能被 env 覆盖——旧 `or` 短路回归标志
+        value, w = self._resolve({"video_interval": 0}, "6")
+        self.assertEqual(value, 0)
+        self.assertEqual(w.call_count, 0)
+
+    def test_normal_int_and_str_passthrough(self):
+        for cfg, expected in ((6, 6), ("8", 8)):
+            with self.subTest(cfg=cfg):
+                value, _ = self._resolve({"video_interval": cfg}, "")
+                self.assertEqual(value, expected)
+
+    def test_generate_note_junk_comments_limit_falls_back_to_env(self):
+        # 契约级：垃圾配置不能遮蔽 env 回退（缺省链 参数 → app_config → env → 默认）
+        done = Future()
+        done.set_result(None)
+        with mock.patch.object(
+            server, "get_app_config", return_value={"comments_limit": "abc"}
+        ), mock.patch.dict(
+            "os.environ", {"VIDEONOTE_COMMENTS_LIMIT": "5"}, clear=False
+        ), mock.patch(
+            "videonote_mcp.server._resolve_default_provider_id", return_value="t-provider"
+        ), mock.patch(
+            "videonote_mcp.server.get_models_by_provider", return_value=[{"model_name": "t-model"}]
+        ), mock.patch("videonote_mcp.server._pool.submit", return_value=done) as m:
+            server.generate_note("https://example.com/v")
+        self.assertEqual(m.call_args.kwargs["comments_limit"], 5)
+
+    def test_generate_note_zero_interval_not_shadowed_by_env(self):
+        # 契约级：app_config video_interval=0（显式关视频理解）不能被 env=6 覆盖
+        done = Future()
+        done.set_result(None)
+        with mock.patch.object(
+            server, "get_app_config", return_value={"video_interval": 0}
+        ), mock.patch.dict(
+            "os.environ", {"VIDEONOTE_VIDEO_INTERVAL": "6"}, clear=False
+        ), mock.patch(
+            "videonote_mcp.server._resolve_default_provider_id", return_value="t-provider"
+        ), mock.patch(
+            "videonote_mcp.server.get_models_by_provider", return_value=[{"model_name": "t-model"}]
+        ), mock.patch("videonote_mcp.server._pool.submit", return_value=done) as m:
+            server.generate_note("https://example.com/v")
+        self.assertEqual(m.call_args.kwargs["video_interval"], 0)
+
+
 class CleanupRunningTaskGuardTest(unittest.TestCase):
     """cleanup_note / cleanup_all 对运行中（或排队中）任务拒绝清理——直接删会破坏
     下载器/转写器正在写的目录，任务中途失败或产生残留状态（#111）。"""
