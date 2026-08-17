@@ -91,6 +91,48 @@ class AssignSpeakersTest(unittest.TestCase):
         self.assertIsNone(segs[0].speaker)
 
 
+class NumSpeakersValidationTest(unittest.TestCase):
+    """num_speakers 无效值（0/负/非 int）此前静默回退自动检测（falsy → kwargs 省略）——
+    加 warning 提示；合法值正常透传（#101）。"""
+
+    def _run(self, num_speakers):
+        import types
+
+        fake_pipeline = mock.Mock()
+        fake_pipeline.return_value = fake_pipeline  # pipeline(wav) 调用自返回，itertracks 在实例上
+        fake_pipeline.itertracks.return_value = iter([])
+        fake_pkg = types.ModuleType("pyannote.audio")
+        fake_pkg.Pipeline = mock.Mock()
+        fake_pkg.Pipeline.from_pretrained = mock.Mock(return_value=fake_pipeline)
+        sys.modules["pyannote.audio"] = fake_pkg
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav") as f:
+                diarization.diarize_audio(f.name, hf_token="t", num_speakers=num_speakers)
+        finally:
+            sys.modules.pop("pyannote.audio", None)
+        return fake_pipeline
+
+    def test_zero_falls_back_with_warning(self):
+        with self.assertLogs("app.services.diarization", level="WARNING") as logs:
+            pipe = self._run(0)
+        self.assertTrue(any("回退自动检测" in m for m in logs.output))
+        self.assertEqual(pipe.call_args.kwargs, {})  # 不带 num_speakers
+
+    def test_negative_falls_back_with_warning(self):
+        with self.assertLogs("app.services.diarization", level="WARNING") as logs:
+            pipe = self._run(-3)
+        self.assertTrue(any("回退自动检测" in m for m in logs.output))
+        self.assertEqual(pipe.call_args.kwargs, {})
+
+    def test_none_passes_without_warning(self):
+        pipe = self._run(None)
+        self.assertEqual(pipe.call_args.kwargs, {})
+
+    def test_valid_passes_through(self):
+        pipe = self._run(2)
+        self.assertEqual(pipe.call_args.kwargs, {"num_speakers": 2})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

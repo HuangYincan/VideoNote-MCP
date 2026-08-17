@@ -70,6 +70,9 @@ def diarize_audio(
             f"pyannote 模型加载失败（可能需要先在 huggingface.co 同意模型授权）: {exc}"
         )
 
+    if num_speakers is not None and (not isinstance(num_speakers, int) or num_speakers < 1):
+        logger.warning(f"num_speakers={num_speakers!r} 无效（需 ≥1 的整数），回退自动检测")
+        num_speakers = None
     kwargs = {"num_speakers": num_speakers} if num_speakers else {}
     diarization = pipeline(wav_path, **kwargs)
 
