@@ -4,6 +4,7 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
+
 # 日志目录：落在 VIDEONOTE_DATA_DIR/logs（由 videonote_mcp.config 设置），避免依赖 CWD。
 # 必须延迟到首次 get_logger() 时才解析 —— 否则若本模块在 setup_environment() 之前被
 # import（如 cli.py → provider_probe → openai_client 的链路），环境变量尚未就绪，

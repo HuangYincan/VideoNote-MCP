@@ -3,12 +3,12 @@ from typing import Optional
 
 from app.db.models.providers import Provider
 from app.db.provider_dao import (
-    insert_provider,
-    get_all_providers,
-    get_provider_by_name,
-    get_provider_by_id,
-    update_provider,
     delete_provider,
+    get_all_providers,
+    get_provider_by_id,
+    get_provider_by_name,
+    insert_provider,
+    update_provider,
 )
 from app.utils.logger import get_logger
 
@@ -88,11 +88,15 @@ class ProviderService:
             logo = 'custom'
             return insert_provider(id, name, api_key, base_url, logo, type_, enabled)
         except Exception as  e:
-            print('创建模式失败',e)
+            # 走 logger 而非 print（#127 B8）：MCP 下 stdout 被劫持、CLI 打 stdout 无堆栈；
+            # 与同文件 update_provider 的 logger.error(..., exc_info=True) 同口径（#123 B8）
+            logger.error('创建模式失败 %s: %s', name, e, exc_info=True)
             raise
     @staticmethod
     def provider_to_dict(p: Provider):
-        from videonote_mcp.crypto import decrypt_value  # 惰性：vendored 层不强制依赖 videonote_mcp
+        from videonote_mcp.crypto import (
+            decrypt_value,  # 惰性：vendored 层不强制依赖 videonote_mcp
+        )
 
         return {
             "id": p.id,

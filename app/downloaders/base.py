@@ -5,6 +5,7 @@ from app.enmus.note_enums import DownloadQuality
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
 from app.utils.path_helper import get_data_dir
+
 QUALITY_MAP = {
     "fast": "32",
     "medium": "64",

@@ -1,7 +1,7 @@
 import os
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from app.utils.json_store import read_json, write_json_atomic
 
@@ -159,8 +159,8 @@ class TranscriberConfigManager:
         # 从 utils.model_status 取纯函数（本仓库已剥离 routers.config 的 Web 层）
         try:
             from app.utils.model_status import (
-                check_whisper_model_exists,
                 check_mlx_whisper_model_exists,
+                check_whisper_model_exists,
                 is_downloading,
             )
         except Exception as e:

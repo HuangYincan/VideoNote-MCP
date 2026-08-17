@@ -179,7 +179,8 @@ class GetTranscriptTest(unittest.TestCase):
         data = json.loads(server.get_task_transcript(self.task_id, "0-2"))
         self.assertTrue(data["ok"])
         self.assertEqual([s["text"] for s in data["segments"]], ["第一句", "第二句"])
-        self.assertEqual(data["full_text"], "第一句\n第二句")
+        # 切片与全量 full_text（缓存，空格分隔）同一分隔符（#127 A8）
+        self.assertEqual(data["full_text"], "第一句 第二句")
         self.assertTrue(data["meta"]["truncated"])
         self.assertEqual(data["meta"]["returned_segments"], 2)
 

@@ -11,9 +11,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import videonote_mcp.config as config_mod
 import videonote_mcp.server as server
 from videonote_mcp import __version__ as pkg_version
-import videonote_mcp.config as config_mod
 
 
 class CoerceLocalPathTest(unittest.TestCase):
@@ -518,6 +518,8 @@ class ProviderConfigToolsTest(unittest.TestCase):
 
     def test_delete_model_resolves_and_deletes(self):
         with mock.patch.object(
+            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
+        ), mock.patch.object(
             server, "get_models_by_provider", return_value=[{"id": 7, "model_name": "local-1"}]
         ):
             with mock.patch.object(server, "_dao_delete_model") as m_del:
@@ -559,14 +561,28 @@ class ProviderConfigToolsTest(unittest.TestCase):
         m_ins.assert_not_called()
 
     def test_delete_model_missing_raises(self):
-        with mock.patch.object(server, "get_models_by_provider", return_value=[]):
+        with mock.patch.object(
+            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
+        ), mock.patch.object(server, "get_models_by_provider", return_value=[]):
             with self.assertRaises(ValueError):
                 server.delete_model("p1", "nope")
+
+    def test_delete_model_missing_provider_raises(self):
+        """供应商不存在时 delete_model 先拒绝（与 add_model 同款，#127 A2）——
+        此前误报「模型不存在」，误导按模型名排查。"""
+        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=None):
+            with mock.patch.object(server, "get_models_by_provider") as m_rows:
+                with self.assertRaises(ValueError) as cm:
+                    server.delete_model("nosuch", "gpt-x")
+        self.assertIn("供应商不存在", str(cm.exception))
+        m_rows.assert_not_called()
 
     def test_delete_model_clears_default_only_when_matching(self):
         # 删「当前默认模型」→ 清 default_model；删非默认 → 保留（#121 C12）
         rows = [{"id": 7, "model_name": "local-1"}, {"id": 8, "model_name": "local-2"}]
-        with mock.patch.object(server, "get_models_by_provider", return_value=rows):
+        with mock.patch.object(
+            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
+        ), mock.patch.object(server, "get_models_by_provider", return_value=rows):
             with mock.patch.object(server, "_dao_delete_model"):
                 # 默认是别的模型：不得误清
                 with mock.patch.object(server, "get_app_config", return_value={"default_model:p1": "local-2"}):
@@ -1060,9 +1076,10 @@ class ListTasksPaginationTest(unittest.TestCase):
         paged = json.loads(server.list_tasks(offset=2))
         self.assertEqual(paged, all_tasks[2:])
 
-    def test_zero_limit_clamped_to_one(self):
+    def test_zero_limit_returns_empty(self):
+        # limit=0 显式「取 0 条」→ 空列表（不再被钳成 1、误导「没有任务」判断，#127 A6）
         tasks = json.loads(server.list_tasks(limit=0))
-        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks, [])
 
 
 class SetTranscriberValidationTest(unittest.TestCase):

@@ -24,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # 必须先 import server：其模块顶层 setup_environment() 会把 NOTE_OUTPUT_DIR 等
 # 环境变量设为数据目录的绝对路径，之后的 app.services.note 才会拿到绝对输出目录
 import videonote_mcp.server as server
-
 from app.models.audio_model import AudioDownloadResult
 from app.models.notes_model import NoteResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment

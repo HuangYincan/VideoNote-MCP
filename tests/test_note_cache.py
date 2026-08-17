@@ -25,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import videonote_mcp.server as server  # noqa: F401 —— 触发 setup_environment，隔离数据目录
 from app.models.audio_model import AudioDownloadResult
 from app.services import note_cache
-from app.services.note import NOTE_OUTPUT_DIR, NoteGenerator, pipeline as note_pipeline
+from app.services.note import NOTE_OUTPUT_DIR, NoteGenerator
+from app.services.note import pipeline as note_pipeline
 from app.services.transcriber_config_manager import TranscriberConfigManager
 
 

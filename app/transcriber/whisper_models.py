@@ -16,6 +16,7 @@
 """
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -64,6 +65,10 @@ def hf_cache_dirname(repo_id: str) -> str:
 
 class WhisperModelRegistry:
     """内置 + 用户自定义的 whisper 模型映射，自定义部分持久化到 JSON。"""
+
+    # class-level 写锁：add/remove 的 read-modify-write 并发互不覆盖（#127 B2，
+    # 同 cookie_manager #124 B15 / transcriber_config_manager #126 B9）
+    _write_lock = threading.RLock()
 
     def __init__(self, filepath: Optional[str] = None):
         # 默认落在 VIDEONOTE_CONFIG_DIR（setup_environment 设置），避免 CWD 相对路径
@@ -143,15 +148,17 @@ class WhisperModelRegistry:
             raise ValueError("模型名称与目标（HF repo_id 或本地路径）都不能为空")
         if name in BUILTIN_WHISPER_MODELS:
             raise ValueError(f"'{name}' 与内置模型重名，请换一个名称")
-        data = self._read_custom()
-        data[name] = target
-        self._write_custom(data)
+        with self._write_lock:
+            data = self._read_custom()
+            data[name] = target
+            self._write_custom(data)
         return data
 
     def remove_custom_model(self, name: str) -> Dict[str, str]:
-        data = self._read_custom()
-        data.pop((name or "").strip(), None)
-        self._write_custom(data)
+        with self._write_lock:
+            data = self._read_custom()
+            data.pop((name or "").strip(), None)
+            self._write_custom(data)
         return data
 
 

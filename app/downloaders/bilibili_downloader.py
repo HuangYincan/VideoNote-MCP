@@ -1,23 +1,23 @@
-import os
-import json
 import glob as _glob
+import json
 import logging
+import os
 import shutil
 import tempfile
 from abc import ABC
-from typing import Union, Optional, List
+from typing import List, Optional, Union
 
 import yt_dlp
 
-from app.downloaders.base import Downloader, DownloadQuality, QUALITY_MAP
-from app.downloaders.common import ytdlp_retry
+from app.downloaders.base import QUALITY_MAP, Downloader, DownloadQuality
 from app.downloaders.bilibili_dm_patch import apply_bilibili_dm_img_patch
 from app.downloaders.bilibili_subtitle import BilibiliSubtitleFetcher
+from app.downloaders.common import ytdlp_retry
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
-from app.utils.path_helper import get_data_dir
-from app.utils.url_parser import extract_video_id, extract_bilibili_p_number
 from app.services.cookie_manager import CookieConfigManager
+from app.utils.path_helper import get_data_dir
+from app.utils.url_parser import extract_bilibili_p_number, extract_video_id
 
 logger = logging.getLogger(__name__)
 

@@ -101,10 +101,10 @@ class BilibiliDmPatchTest(unittest.TestCase):
             self.assertGreater(len(params["dm_img_str"]), 8)
 
     def test_patch_idempotent_and_injects_query(self):
-        from app.downloaders import bilibili_dm_patch
-
         # 直接 patch 真实 yt-dlp 模块的类（环境已装 yt_dlp）
         import yt_dlp.extractor.bilibili as bili_mod
+
+        from app.downloaders import bilibili_dm_patch
 
         fake_ie = mock.Mock()
         orig = mock.Mock()

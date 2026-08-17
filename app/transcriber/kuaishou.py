@@ -1,11 +1,12 @@
-import requests
 import os
 
+import requests
+
 from app.decorators.timeit import timeit
-from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.events import transcription_finished
+from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
-from app.events import transcription_finished
 
 logger = get_logger(__name__)
 
@@ -17,28 +18,24 @@ class KuaishouTranscriber(Transcriber):
     def __init__(self):
         pass
 
-    def _load_file(self, file_path: str) -> bytes:
-        """读取文件内容"""
-        with open(file_path, 'rb') as f:
-            return f.read()
-
     def _submit(self, file_path: str) -> dict:
         """提交识别请求"""
         try:
-            file_binary = self._load_file(file_path)
-            
+            # 流式上传文件对象（#127 B4）：不再 _load_file 整文件 read() 进内存
+            #（长音频峰值 ~2× 文件大小），requests 内部按块读取 multipart
             payload = {
                 "typeId": "1"
             }
-            
+
             # 使用文件名作为上传文件名
             file_name = os.path.basename(file_path)
-            files = [('file', (file_name, file_binary, 'audio/mpeg'))]
-            
+
             logger.info(f"开始向快手API提交请求，文件: {file_name}")
-            response = requests.post(self.API_URL, data=payload, files=files, timeout=300)
+            with open(file_path, 'rb') as f:
+                files = [('file', (file_name, f, 'audio/mpeg'))]
+                response = requests.post(self.API_URL, data=payload, files=files, timeout=300)
             response.raise_for_status()  # 检查HTTP错误
-            
+
             result = response.json()
 
             # 检查快手API返回是否包含错误

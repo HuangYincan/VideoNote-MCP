@@ -3,10 +3,10 @@ import platform
 import threading
 from enum import Enum
 
-from app.transcriber.groq import GroqTranscriber
-from app.transcriber.whisper import WhisperTranscriber
 from app.transcriber.bcut import BcutTranscriber
+from app.transcriber.groq import GroqTranscriber
 from app.transcriber.kuaishou import KuaishouTranscriber
+from app.transcriber.whisper import WhisperTranscriber
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

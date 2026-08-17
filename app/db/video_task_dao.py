@@ -1,7 +1,7 @@
 from typing import Optional
 
-from app.db.models.video_tasks import VideoTask
 from app.db.engine import get_db
+from app.db.models.video_tasks import VideoTask
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

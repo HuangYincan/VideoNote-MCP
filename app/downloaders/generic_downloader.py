@@ -7,10 +7,10 @@ og:video / video 标签 / m3u8 等）。本类不指定 `ie_key`，让 yt-dlp �
 对应 `detect_platform` 返回 `"generic"` 的平台（见 pipeline.py）。若 yt-dlp 也
 解析失败（登录墙 / JS 难题），上游 server 层会回退到 `handoff_result` 让 Agent 接手。
 """
-import os
 import logging
+import os
 from abc import ABC
-from typing import Union, Optional
+from typing import Optional, Union
 
 import yt_dlp
 

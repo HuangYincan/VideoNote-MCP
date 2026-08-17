@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from typing import List, Optional
 
+
 @dataclass
 class TranscriptSegment:
     start: float               # 开始时间（秒）

@@ -17,7 +17,7 @@ import logging
 import threading
 from typing import List
 
-from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.path_helper import get_model_dir
 
@@ -35,12 +35,33 @@ class FunASRTranscriber(Transcriber):
     """FunASR Paraformer-zh（中文 ASR + VAD + 标点）。"""
 
     def __init__(self, device: str = "cpu"):
-        self.device = device or "cpu"
+        # cuda 探测回退（#127 B1）：transcriber_provider 默认传 device="cuda"，
+        # 无 CUDA 机器（Mac 全系/无 N 卡 Linux）构造 AutoModel 即崩——与 whisper 同款兜底
+        self.device = self._resolve_device(device or "cpu")
         # 共享单例上的转写锁：funasr 模型并发调用需串行化
         self._lock = threading.Lock()
         self._model = None
         # 模型下载缓存目录：<数据目录>/models/funasr
         self._cache_dir = get_model_dir("funasr")
+
+    @staticmethod
+    def _resolve_device(requested: str) -> str:
+        """请求 cuda 但探测不到 → 回退 cpu（其余设备名按原样透传）。"""
+        if requested == "cuda":
+            try:
+                from app.utils.env_checker import is_cuda_available
+
+                if is_cuda_available():
+                    return "cuda"
+                logger.warning("FunASR 请求 cuda 但 CUDA 不可用，回退 cpu")
+            except ImportError:
+                logger.warning("FunASR 请求 cuda 但 torch 不可用，回退 cpu")
+            return "cpu"
+        return requested
+
+    def close(self) -> None:
+        """释放模型引用（#127 B3）：切换引擎时 transcriber_provider 调 close 触发 GC。"""
+        self._model = None
 
     def _ensure_model(self):
         """惰性加载 AutoModel（VAD + ASR + 标点 一个 pipeline）。"""

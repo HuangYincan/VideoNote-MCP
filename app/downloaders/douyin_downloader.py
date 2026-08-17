@@ -2,7 +2,7 @@ import datetime
 import json
 import os
 import re
-from typing import Union, Optional
+from typing import Optional, Union
 from urllib.parse import quote, urlencode
 
 import httpx
@@ -292,10 +292,18 @@ class DouyinDownloader(Downloader):
             # 直接 Path 拼接（#123 B10）：旧实现 output_path % {...} 对整个字符串做
             # %-格式化——output_dir 含字面 %（如 /tmp/100%off/）→ ValueError 下载失败。
             video_data = self.fetch_video_info(video_url)
-            aweme_id = video_data['aweme_detail']['aweme_id']
+            detail = video_data.get('aweme_detail') or {}
+            aweme_id = detail.get('aweme_id') or ''
+            if not aweme_id:
+                raise ValueError(f"抖音接口未返回 aweme_id: {video_url}")
             output_path = os.path.join(output_dir, f"{aweme_id}.mp4")
 
-            url=video_data['aweme_detail']['video']['download_addr']['url_list'][0]
+            # 与 download() 同口径：.get() 链 + 显式错误（#127 B6），
+            # 截图/视频理解路径上 API 异常不再多层裸索引天书
+            url_list = ((detail.get('video') or {}).get('download_addr') or {}).get('url_list') or []
+            if not url_list:
+                raise RuntimeError("抖音接口未返回视频下载地址")
+            url = url_list[0]
             with requests.get(url, allow_redirects=True, headers=self.headers_config, timeout=30, stream=True) as _data:
                 _data.raise_for_status()
                 with open(output_path, 'wb') as f:

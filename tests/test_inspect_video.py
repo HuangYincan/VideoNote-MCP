@@ -8,7 +8,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services import inspect as inspect_mod
 
-
 VIEW_MULTI = {
     "code": 0,
     "message": "0",

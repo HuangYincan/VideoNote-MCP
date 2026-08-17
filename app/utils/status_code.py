@@ -1,5 +1,6 @@
 from enum import IntEnum
 
+
 class StatusCode(IntEnum):
     SUCCESS = 0
     FAIL = 1

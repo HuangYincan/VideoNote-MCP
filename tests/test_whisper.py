@@ -3,10 +3,10 @@
 不碰真实模型下载/加载——只测异常分类与「本地路径模型绝不删除」的守卫。
 """
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
-import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

@@ -7,17 +7,17 @@ import shutil
 import threading
 from dataclasses import asdict
 from pathlib import Path
-from typing import List, Optional, Tuple, Union, Any
+from typing import Any, List, Optional, Tuple, Union
 from uuid import uuid4
 
-from pydantic import HttpUrl
 from dotenv import load_dotenv
+from pydantic import HttpUrl
 
-from app.downloaders.base import Downloader
 from app.db.video_task_dao import delete_task_by_video, insert_video_task
+from app.downloaders.base import Downloader
 from app.enmus.exception import NoteErrorEnum, ProviderErrorEnum
-from app.enmus.task_status_enums import TaskStatus
 from app.enmus.note_enums import DownloadQuality
+from app.enmus.task_status_enums import TaskStatus
 from app.exceptions.note import NoteError
 from app.exceptions.provider import ProviderError
 from app.gpt.base import GPT
@@ -26,14 +26,13 @@ from app.models.audio_model import AudioDownloadResult
 from app.models.model_config import ModelConfig
 from app.models.notes_model import NoteResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
-from app.services import note_cache
-from app.services import pipeline
+from app.services import note_cache, pipeline
 from app.services.constant import get_downloader as _new_downloader
 from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
-from app.transcriber.transcriber_provider import get_transcriber, _transcribers
+from app.transcriber.transcriber_provider import _transcribers, get_transcriber
 from app.utils.json_store import write_json_atomic, write_text_atomic
-from app.utils.note_helper import replace_content_markers, prepend_source_link
+from app.utils.note_helper import prepend_source_link, replace_content_markers
 from app.utils.screenshot_marker import extract_screenshot_timestamps
 from app.utils.task_manifest import record_task_paths
 from app.utils.video_helper import generate_screenshot
@@ -90,7 +89,8 @@ def _extract_audio_from_video(video_path: str, out_dir: Union[str, Path]) -> str
     return str(out)
 
 
-from app.exceptions.task import TaskCancelledError, check_cancel as _check_cancel
+from app.exceptions.task import TaskCancelledError
+from app.exceptions.task import check_cancel as _check_cancel
 
 
 def task_dirs(task_id: str):
@@ -1126,6 +1126,7 @@ class NoteGenerator:
                 summary=summary,
                 note_dir=note_dir,
             )
-            logger.info(f"已保存任务记录到数据库 (video_id={video_id}, platform={platform}, task_id={task_id}, title={title[:40]!r})")
+            # title 可能是 None（无标题视频）——裸切片 TypeError 被 except 吞、误报「保存失败」（#127 B10）
+            logger.info(f"已保存任务记录到数据库 (video_id={video_id}, platform={platform}, task_id={task_id}, title={(title or '')[:40]!r})")
         except Exception as e:
             logger.error(f"保存任务记录失败：{e}")

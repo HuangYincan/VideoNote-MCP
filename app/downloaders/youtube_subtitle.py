@@ -3,7 +3,7 @@
 优先人工字幕，其次自动生成字幕。不依赖 yt_dlp，无需下载任何文件。
 """
 
-from typing import Optional, List
+from typing import List, Optional
 
 from youtube_transcript_api import YouTubeTranscriptApi
 

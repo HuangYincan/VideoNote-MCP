@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models.transcriber_model import TranscriptSegment
 from app.services import pipeline
-
 from videonote_mcp.export import export_transcript
 from videonote_mcp.export.json import to_json
 from videonote_mcp.export.srt import to_srt

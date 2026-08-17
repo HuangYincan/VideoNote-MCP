@@ -15,14 +15,12 @@ Changes Made:
 1. Changed the ua_code to compatible with the current config file User-Agent string in https://github.com/Evil0ctal/Douyin_TikTok_Download_API/blob/main/crawlers/douyin/web/config.yaml
 """
 
-from random import choice
-from random import randint
-from random import random
+from random import choice, randint, random
 from re import compile
 from time import time
-from urllib.parse import urlencode
-from urllib.parse import quote
-from gmssl import sm3, func
+from urllib.parse import quote, urlencode
+
+from gmssl import func, sm3
 
 __all__ = ["ABogus", ]
 

@@ -98,9 +98,10 @@ def _tqdm_bar():
 
 def _download_whisper(size: str) -> None:
     """在终端下载 fast-whisper 模型（阻塞，带进度条）。"""
+    from huggingface_hub import snapshot_download
+
     from app.transcriber.whisper_models import is_local_target, resolve_whisper_model
     from app.utils.path_helper import get_model_dir
-    from huggingface_hub import snapshot_download
 
     target = resolve_whisper_model(size)
     model_dir = get_model_dir("whisper")
@@ -122,9 +123,10 @@ def _download_mlx_model(size: str) -> None:
     下载只需 huggingface_hub，**不 import mlx_whisper** —— 其依赖链（numba 等）
     有循环导入风险，且下载模型根本不需要 mlx 运行时。
     """
+    from huggingface_hub import snapshot_download
+
     from app.utils.model_status import MLX_REPO_MAP
     from app.utils.path_helper import get_model_dir
-    from huggingface_hub import snapshot_download
 
     repo_id = MLX_REPO_MAP.get(size)
     if not repo_id:
@@ -147,7 +149,11 @@ def _model_dir(engine: str, size: str) -> "str | None":
 
         repo = MLX_REPO_MAP.get(size)
         return os.path.join(get_model_dir("mlx-whisper"), repo) if repo else None
-    from app.transcriber.whisper_models import hf_cache_dirname, is_local_target, resolve_whisper_model
+    from app.transcriber.whisper_models import (
+        hf_cache_dirname,
+        is_local_target,
+        resolve_whisper_model,
+    )
 
     try:
         target = resolve_whisper_model(size)
@@ -165,6 +171,7 @@ def _show_uninstall_option(inq, pick: str, size: str, label: str) -> None:
         print(f"  位置：{model_path}", file=sys.stdout)
         if inq.confirm(message="卸载该模型？", default=False, keybindings=_KB).execute():
             import shutil
+
             from app.utils.path_helper import get_model_dir
 
             shutil.rmtree(model_path, ignore_errors=True)
@@ -508,7 +515,10 @@ def _wizard_transcriber(inq) -> None:
                 print(f"{_GREEN}✓ 已切换 {pick} / {size}{_RESET}", file=sys.stdout)
                 print(f"{_DIM}（检查模型是否已下载…）{_RESET}", file=sys.stdout)
                 # 本地引擎：检查模型是否已下载，未下载则询问是否现在下载
-                from app.utils.model_status import check_mlx_whisper_model_exists, check_whisper_model_exists
+                from app.utils.model_status import (
+                    check_mlx_whisper_model_exists,
+                    check_whisper_model_exists,
+                )
 
                 if pick == "fast-whisper":
                     downloaded = check_whisper_model_exists(size, "whisper")
@@ -1196,7 +1206,7 @@ def _providers_cli(argv) -> None:
     p_add.add_argument("--name", required=True)
     p_add.add_argument("--api-key", help="API key（缺省交互输入，不落 shell history / 进程列表）")
     p_add.add_argument("--base-url", required=True)
-    p_add.add_argument("--type", default="custom")
+    p_add.add_argument("--type", default="custom", help="恒为 custom（服务端强制，传其他值被忽略，#127 A4）")
     p_test = sub.add_parser("test", help="检测连接并列出可用模型（--default 设为默认模型）")
     p_test.add_argument("provider_id")
     p_test.add_argument("--default", help="把某个模型设为该供应商的默认模型")
@@ -1376,6 +1386,7 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
         sys.exit(2)
     import time
     import urllib.parse
+
     import requests
 
     try:

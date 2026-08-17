@@ -1,7 +1,7 @@
 import os
 import threading
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Dict, Optional
 
 from app.utils.json_store import read_json, write_json_atomic
 

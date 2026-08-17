@@ -1,5 +1,6 @@
-import time
 import functools
+import time
+
 
 def timeit(func):
     @functools.wraps(func)

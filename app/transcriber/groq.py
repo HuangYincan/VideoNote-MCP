@@ -1,5 +1,5 @@
-from abc import ABC
 import os
+from abc import ABC
 
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
@@ -9,9 +9,11 @@ from app.utils.logger import get_logger
 from app.utils.openai_client import build_openai_client
 
 logger = get_logger(__name__)
-import ffmpeg
 import tempfile
+
+import ffmpeg
 from dotenv import load_dotenv
+
 if not os.environ.get("VIDEONOTE_DATA_DIR"):
     load_dotenv()
 MAX_SIZE_MB = 18

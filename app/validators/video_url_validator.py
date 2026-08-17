@@ -1,6 +1,7 @@
-from pydantic import AnyUrl, BaseModel, field_validator
 import re
 from urllib.parse import urlparse
+
+from pydantic import AnyUrl, BaseModel, field_validator
 
 SUPPORTED_PLATFORMS = {
     "bilibili": r"(https?://)?(www\.)?bilibili\.com/video/[a-zA-Z0-9]+",

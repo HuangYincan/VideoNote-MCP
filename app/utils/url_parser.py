@@ -1,6 +1,7 @@
 import functools
 import re
 from typing import Optional
+
 import requests
 
 from app.utils.logger import get_logger

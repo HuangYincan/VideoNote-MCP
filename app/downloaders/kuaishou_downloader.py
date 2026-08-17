@@ -1,7 +1,7 @@
 import os
 import subprocess
 from abc import ABC
-from typing import Union, Optional
+from typing import Optional, Union
 
 import requests
 
@@ -47,7 +47,8 @@ class KuaiShouDownloader(Downloader, ABC):
         logger.debug("快手视频原始信息已获取")
         photo_info = video_raw_info['visionVideoDetail']['photo']
         video_id = photo_info['id']
-        title = photo_info['caption'].strip().replace('\n', '').replace(' ', '_')[:50]
+        # caption 可为 null（无文案/草稿）——裸 strip 会在下载开始前 AttributeError（#127 B5）
+        title = (photo_info.get('caption') or '').strip().replace('\n', '').replace(' ', '_')[:50]
         mp4_path = os.path.join(output_dir, f"{video_id}.mp4")
         mp3_path = os.path.join(output_dir, f"{video_id}.mp3")
 

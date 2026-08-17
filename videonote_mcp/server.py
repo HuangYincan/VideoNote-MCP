@@ -23,6 +23,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional
 
+from videonote_mcp import __version__ as _SERVER_VERSION
 from videonote_mcp.config import (
     env_bool,
     env_int,
@@ -33,7 +34,6 @@ from videonote_mcp.config import (
     resolve_int_config,
     setup_environment,
 )
-from videonote_mcp import __version__ as _SERVER_VERSION
 
 DATA_DIR = setup_environment()
 
@@ -86,21 +86,24 @@ except Exception:
 
 # app.* 相关导入必须在 setup_environment() 之后 —— 否则 VIDEONOTE_DATA_DIR/CONFIG_DIR 未设置，
 # logger/配置会用 CWD 相对路径建 config/logs（在笔记目录里出现多余文件夹）。
-from app.exceptions.task import TaskCancelledError, check_cancel as _check_cancel
-from videonote_mcp.provider_probe import probe_models
+from mcp.server.fastmcp import FastMCP
 
 # vendored 核心流水线
 from app.db.engine import get_engine
 from app.db.init_db import init_db
 from app.db.model_dao import (
+    delete_model as _dao_delete_model,
+)
+from app.db.model_dao import (
     get_model_by_provider_and_name,
     get_models_by_provider,
     insert_model,
-    delete_model as _dao_delete_model,
 )
 from app.db.provider_dao import seed_default_providers
 from app.enmus.note_enums import DownloadQuality
 from app.enmus.task_status_enums import TaskStatus
+from app.exceptions.task import TaskCancelledError
+from app.exceptions.task import check_cancel as _check_cancel
 from app.services import pipeline
 from app.services.note import NOTE_OUTPUT_DIR, NoteGenerator
 from app.services.provider import ProviderService
@@ -117,8 +120,7 @@ from app.utils.task_manifest import (
     list_task_files,
     record_task_paths,
 )
-
-from mcp.server.fastmcp import FastMCP
+from videonote_mcp.provider_probe import probe_models
 
 logger = get_logger(__name__)
 
@@ -569,11 +571,13 @@ def _index_step_task(task_id: str, kind: str, title: str = "") -> None:
 
 
 def _submit_step_task(kind: str, step_fn: Callable, title: str = "", **params) -> str:
-    """并发门禁 + 写 PENDING + 入索引 + 提交线程池。"""
+    """并发门禁 + 入索引 + 写 PENDING + 提交线程池。"""
     _guard_concurrency()
     task_id = uuid.uuid4().hex
-    _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
+    # 先入索引再写状态（#127 A1）：_write_status 每次同步全局索引，
+    # 顺序反了首写会对不存在的行打「不在全局索引」warning
     _index_step_task(task_id, kind, title=title)
+    _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
     cancel_event = threading.Event()
     future = _pool.submit(_run_step_task, task_id, cancel_event, step_fn=step_fn, **params)
     with _tasks_lock:
@@ -869,6 +873,9 @@ def generate_note(
     _guard_concurrency()
 
     task_id = uuid.uuid4().hex
+    # 提交时先入全局索引（#127 A1）：note 任务运行期/失败后 list_tasks 可见，
+    # 不再每次 _write_status 刷「不在全局索引」warning；SUCCESS 时 _save_metadata 再更新 title
+    _index_step_task(task_id, platform or "generic")
     _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
     notes_dir_out = notes_dir or get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or None
     # 输出目录与输入文件同口径：file:// URI 先规整，否则 Path("file:///…") 会在 CWD 下建字面 `file:` 目录
@@ -968,6 +975,8 @@ def prepare_note_material(
     _guard_concurrency()
 
     task_id = uuid.uuid4().hex
+    # 提交时先入全局索引（#127 A1）：material 任务运行期/失败后 list_tasks 可见
+    _index_step_task(task_id, platform or "generic")
     _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
     params = dict(
         video_url=video_url,
@@ -1255,7 +1264,9 @@ def get_task_transcript(task_id: str, segment_range: str = "") -> str:
         out_text = full_text
     else:
         out_segments = segments[lo:hi]
-        out_text = "\n".join(seg.get("text", "") for seg in out_segments)
+        # 与全量 full_text（缓存，空格分隔）同一分隔符（#127 A8）：切片不再 \n 重拼，
+        # Agent 对比「all」与「0-N」的字节数/分词时不失真
+        out_text = " ".join(seg.get("text", "") for seg in out_segments)
 
     return json.dumps(
         {
@@ -1354,6 +1365,9 @@ def list_tasks(limit: Optional[int] = None, offset: int = 0) -> str:
     from app.db.video_task_dao import list_tasks as _list
 
     offset = _coerce_int(offset or 0, 0, clamp_min=0)
+    # limit==0 显式「取 0 条」→ 空列表（不再被钳成 1、误导「没有任务」的判断，#127 A6）
+    if limit == 0:
+        return json.dumps([], ensure_ascii=False)
     limit = _coerce_int(limit, 1, clamp_min=1) if limit is not None else None
     tasks = _list(limit=limit, offset=offset)
     return json.dumps(tasks, ensure_ascii=False)
@@ -1370,7 +1384,11 @@ def get_task_files(task_id: str) -> str:
     清理前先用它查看该任务占了哪些存储。
     """
     task_id = _validate_task_id(task_id)
-    return json.dumps(list_task_files(task_id), ensure_ascii=False)
+    data = list_task_files(task_id)
+    # 与 cleanup/export/get_task_transcript 同形状（#127 A7）：Agent 统一按 ok 判读
+    if isinstance(data, dict) and "ok" not in data:
+        data["ok"] = True
+    return json.dumps(data, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -1695,6 +1713,8 @@ def add_provider(name: str, api_key: str = "", base_url: str = "", type: str = "
     或对已有供应商 `! videonote providers set <id> --api-key '...'`。
 
     本工具只接受 name / base_url / type，api_key 必须留空；传了非空 key 会直接拒绝。
+    **type 参数恒为 custom**：服务端强制（MCP 创建的供应商一律 custom，避免伪 built-in
+    脏数据），传其他值会被静默忽略——无需为 type 传值（#127 A4）。
     """
     if api_key:
         raise ValueError(_SENSITIVE_VIA_MCP)
@@ -1809,6 +1829,10 @@ def delete_model(provider_id: str, model_name: str) -> str:
     """删除某供应商手动添加的模型名（list_models 里 database 来源的模型）。"""
     if not model_name:
         raise ValueError("model_name 必填")
+    # 先校验供应商（与 add_model 同款，#127 A2）：provider_id 拼错时不再误报「模型不存在」
+    provider = ProviderService.get_provider_by_id(provider_id)
+    if not provider:
+        raise ValueError(f"供应商不存在: {provider_id}（先 list_providers 确认）")
     rows = get_models_by_provider(provider_id) or []
     target = next((r for r in rows if r.get("model_name") == model_name), None)
     if target is None:
@@ -1977,8 +2001,9 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
 
         def _dl():
             try:
-                from app.transcriber.whisper_models import resolve_whisper_model
                 from faster_whisper import WhisperModel
+
+                from app.transcriber.whisper_models import resolve_whisper_model
 
                 target = resolve_whisper_model(size)
                 WhisperModel(
@@ -2195,7 +2220,8 @@ def validate_url(url: str) -> str:
             ensure_ascii=False,
         )
     except ValueError as e:
-        return json.dumps({"supported": False, "reason": str(e)}, ensure_ascii=False)
+        # 失败分支与本地缺失分支同形状（都带 platform，#127 A5）：Agent 统一按 r["platform"] 判读
+        return json.dumps({"supported": False, "platform": "unknown", "reason": str(e)}, ensure_ascii=False)
 
 
 _PREFLIGHT_MIN_DISK_GB = 1.0
@@ -2550,7 +2576,8 @@ def export_transcript(
     只做确定性机械渲染（时间轴换算），不调用 LLM。返回
     {task_id, formats: {fmt: "file://绝对路径"}, errors: {}}，供 Agent 直接 Read。
     """
-    from videonote_mcp.export import FORMATS, export_transcript as _export
+    from videonote_mcp.export import FORMATS
+    from videonote_mcp.export import export_transcript as _export
 
     task_id = _validate_task_id(task_id)
 
@@ -2595,19 +2622,20 @@ def export_transcript(
             },
             ensure_ascii=False,
         )
-    result_json = task_dir / "result.json"
+    # gen/transcript.json 是转写规范来源（#122 A2），result.json 兜底——
+    # 与 _load_task_transcript / CLI export 同口径（#127 A3，此前 server 出口反了）
+    cache = task_dir / "gen" / "transcript.json"
     transcript = None
-    if result_json.exists():
+    if cache.exists():
         try:
-            transcript = json.loads(result_json.read_text(encoding="utf-8")).get("transcript")
+            transcript = json.loads(cache.read_text(encoding="utf-8"))
         except Exception:
             transcript = None
     if transcript is None:
-        # fallback：{task_dir}/gen/transcript.json 缓存
-        cache = task_dir / "gen" / "transcript.json"
-        if cache.exists():
+        result_json = task_dir / "result.json"
+        if result_json.exists():
             try:
-                transcript = json.loads(cache.read_text(encoding="utf-8"))
+                transcript = json.loads(result_json.read_text(encoding="utf-8")).get("transcript")
             except Exception:
                 transcript = None
     if transcript is None:
@@ -2688,7 +2716,10 @@ def diarize_media(
         raise ValueError(_SENSITIVE_VIA_MCP)
     try:
         from app.services.diarization import diarize_audio
-        from app.transcriber.audio_preprocess import cleanup_preprocess_files, normalize_to_wav
+        from app.transcriber.audio_preprocess import (
+            cleanup_preprocess_files,
+            normalize_to_wav,
+        )
 
         p = _coerce_local_path(audio_file)
         if not p.is_file():

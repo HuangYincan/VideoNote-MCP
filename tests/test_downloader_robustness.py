@@ -12,8 +12,8 @@
 """
 import json
 import os
-import sys
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -254,6 +254,7 @@ class DownloaderWeakRegistryTest(unittest.TestCase):
     def test_scope_end_gc_collects_instance(self):
         """WeakSet 不持有强引用：唯一强引用释放后实例立即从注册表消失（__del__ 可触发）。"""
         import gc
+
         from app.services import constant
 
         with self._patch_factory():

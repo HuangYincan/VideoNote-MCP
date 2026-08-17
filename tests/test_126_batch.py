@@ -438,8 +438,9 @@ class DmPatchFatalFallbackTest(unittest.TestCase):
     """B3：yt-dlp 版本无 fatal kwarg 时 TypeError 降级重调，不挂掉所有 B 站下载。"""
 
     def test_fatal_typeerror_falls_back_without_fatal(self):
-        from app.downloaders import bilibili_dm_patch
         import yt_dlp.extractor.bilibili as bili_mod
+
+        from app.downloaders import bilibili_dm_patch
 
         fake_ie = mock.Mock()
         orig = mock.Mock()
@@ -461,8 +462,9 @@ class DmPatchFatalFallbackTest(unittest.TestCase):
         self.assertIsNotNone(result)
 
     def test_new_signature_fatal_passthrough(self):
-        from app.downloaders import bilibili_dm_patch
         import yt_dlp.extractor.bilibili as bili_mod
+
+        from app.downloaders import bilibili_dm_patch
 
         fake_ie = mock.Mock()
         orig = mock.Mock()
@@ -665,6 +667,126 @@ class UpdateConfigConcurrentTest(unittest.TestCase):
             # 无锁时后写者覆盖先写者，其中一个字段必丢
             self.assertTrue(cfg["enable_preprocess"])
             self.assertTrue(cfg["diarization"])
+
+
+# ---------------- #127 A1：note/material 提交即入全局索引 ----------------
+
+class NoteTaskIndexingTest(unittest.TestCase):
+    """#127 A1：generate_note / prepare_note_material 提交时即入索引——
+    运行期每次 _write_status 不再刷「不在全局索引」warning，FAILED 任务也可见。"""
+
+    def test_generate_note_indexes_on_submit(self):
+        done = mock.Mock()
+        with mock.patch(
+            "videonote_mcp.server._resolve_default_provider_id", return_value="t-provider"
+        ), mock.patch(
+            "videonote_mcp.server.get_models_by_provider", return_value=[{"model_name": "t-model"}]
+        ), mock.patch("videonote_mcp.server._pool.submit", return_value=done):
+            with mock.patch("videonote_mcp.server._index_step_task") as m_idx:
+                server.generate_note("https://example.com/v")
+        m_idx.assert_called_once()
+        # example.com 未匹配内置平台 → generic
+        self.assertEqual(m_idx.call_args.args[1], "generic")
+
+    def test_prepare_material_indexes_on_submit(self):
+        done = mock.Mock()
+        with mock.patch("videonote_mcp.server._pool.submit", return_value=done):
+            with mock.patch("videonote_mcp.server._index_step_task") as m_idx:
+                server.prepare_note_material("https://example.com/v")
+        m_idx.assert_called_once()
+        self.assertEqual(m_idx.call_args.args[1], "generic")
+
+
+# ---------------- #127 A3：export 转写来源 gen 优先 ----------------
+
+class ExportGenPriorityTest(unittest.TestCase):
+    """#127 A3：gen/transcript.json 是规范来源（#122 A2），result.json 兜底——
+    server export 与 CLI / _load_task_transcript 同口径。"""
+
+    def test_gen_wins_when_both_present(self):
+        tid = "c1export_genpri"
+        tdir = server.NOTE_OUTPUT_DIR / tid
+        (tdir / "gen").mkdir(parents=True, exist_ok=True)
+        (tdir / "status.json").write_text(
+            json.dumps({"status": "SUCCESS"}, ensure_ascii=False), encoding="utf-8"
+        )
+        gen_tr = {
+            "language": "zh",
+            "full_text": "来自 gen 规范来源",
+            "segments": [{"start": 0.0, "end": 1.0, "text": "来自 gen 规范来源"}],
+        }
+        result_tr = {
+            "language": "zh",
+            "full_text": "来自 result 兜底",
+            "segments": [{"start": 0.0, "end": 1.0, "text": "来自 result 兜底"}],
+        }
+        (tdir / "gen" / "transcript.json").write_text(
+            json.dumps(gen_tr, ensure_ascii=False), encoding="utf-8"
+        )
+        (tdir / "result.json").write_text(
+            json.dumps({"title": "t", "transcript": result_tr}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        try:
+            out_dir = tdir / "export_out"
+            resp = json.loads(server.export_transcript(tid, formats=["srt"], out_dir=str(out_dir)))
+            self.assertTrue(resp["ok"])
+            self.assertIn("来自 gen", (out_dir / "transcript.srt").read_text(encoding="utf-8"))
+        finally:
+            shutil.rmtree(tdir, ignore_errors=True)
+
+
+# ---------------- #127 A5：validate_url 失败形状对称 ----------------
+
+class ValidateUrlShapeTest(unittest.TestCase):
+    """#127 A5：ValueError 分支与本地缺失分支都带 platform 键。"""
+
+    def test_empty_url_valueerror_has_platform(self):
+        resp = json.loads(server.validate_url(""))
+        self.assertFalse(resp["supported"])
+        self.assertEqual(resp["platform"], "unknown")
+        self.assertTrue(resp["reason"])
+
+    def test_local_missing_has_platform(self):
+        resp = json.loads(server.validate_url("/nonexistent/nope_12345.mp4"))
+        self.assertFalse(resp["supported"])
+        self.assertEqual(resp["platform"], "local")
+
+
+# ---------------- #127 A7：get_task_files 带 ok ----------------
+
+class GetTaskFilesOkTest(unittest.TestCase):
+    """#127 A7：成功路径带 ok:true，与 cleanup/export/get_task_transcript 同形状。"""
+
+    def test_success_has_ok(self):
+        tid = "c1files_ok01"
+        tdir = _make_task(tid)
+        try:
+            resp = json.loads(server.get_task_files(tid))
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["task_id"], tid)
+        finally:
+            shutil.rmtree(tdir, ignore_errors=True)
+
+
+# ---------------- #127 A8：get_task_transcript 切片分隔符一致 ----------------
+
+class TranscriptSliceSeparatorTest(unittest.TestCase):
+    """#127 A8：切片路径 full_text 与全量（缓存空格分隔）同分隔符，
+    Agent 对比「all」与「0-N」字节数时不失真。"""
+
+    def test_slice_uses_space_join(self):
+        tid = "c1slice_sep01"
+        tdir = _make_task(tid)
+        try:
+            resp = json.loads(server.get_task_transcript(tid, segment_range="0-1"))
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["full_text"], "第一句")
+            # 全量与切片同分隔符：全量是「第一句 第二句」（空格分隔），切片 0-1 只含前段
+            full = json.loads(server.get_task_transcript(tid, segment_range="all"))
+            self.assertEqual(full["full_text"], "第一句 第二句")
+        finally:
+            shutil.rmtree(tdir, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,6 @@ from typing import Optional
 from app.downloaders.base import Downloader
 from app.enmus.note_enums import DownloadQuality
 from app.models.audio_model import AudioDownloadResult
-
 from app.utils.logger import get_logger
 from app.utils.video_helper import save_cover_to_static
 
@@ -76,8 +75,12 @@ class LocalDownloader(Downloader, ABC):
             raise FileNotFoundError(f"输入文件不存在: {input_path}")
 
         if output_path is None:
-            base, _ = os.path.splitext(input_path)
-            output_path = base + ".mp3"
+            # 缺省落数据目录而非源文件同目录（#127 B9）：源目录不污染、归 cleanup 管；
+            # note.py 主路径总传 output_dir，此分支仅外部直接调用时生效
+            from app.utils.path_helper import get_data_dir
+
+            base_name = os.path.splitext(os.path.basename(input_path))[0]
+            output_path = os.path.join(get_data_dir(), f"{base_name}.mp3")
         try:
         # 调用 ffmpeg 转换
             command = [

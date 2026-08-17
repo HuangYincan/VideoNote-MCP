@@ -2,6 +2,17 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave F 批 16（2026-08-17 · 第 11 轮双代理扫描 #127，666 tests）
+
+- **任务索引时序（A1）**：note/material 任务提交时先 `insert_video_task(PENDING)` 再写状态——运行期每次 `_write_status` 不再刷「不在全局索引」warning，**FAILED 任务也进 list_tasks**（不再重启后孤儿目录）；`_submit_step_task` 顺序同步修正。
+- **工具校验/形状补齐（A2/A5/A7）**：`delete_model` 先校验供应商（provider_id 拼错不再误报「模型不存在」）；`validate_url` ValueError 分支补 `platform: "unknown"`；`get_task_files` 成功路径补 `ok: true`（与 cleanup/export 同形状）。
+- **转写来源统一（A3/A8）**：`export_transcript` 改 gen/transcript.json 优先、result.json 兜底——与 CLI 和 `_load_task_transcript` 同口径（#122 A2 漏掉的 server 出口）；`get_task_transcript` 切片 full_text 统一空格分隔（与全量一致，Agent 对比字节数不失真）。
+- **Agent DX（A4/A6）**：`add_provider` docstring + CLI help 标注 type 恒为 custom（不再有永不生效的死参数）；`list_tasks(limit=0)` 返回空列表（不再钳成 1、误导「没有任务」）。
+- **FunASR 设备兜底（B1）**：`device="cuda"` 请求加 CUDA 探测——无 CUDA 机器（Mac 全系/无 N 卡 Linux）回退 cpu，构造 AutoModel 不再崩、无「请用 cpu」提示。
+- **并发互毁关闭（B2）**：`WhisperModelRegistry` add/remove_custom_model 加 class-level RLock——并发 RMW 不再互抹（cookie_manager #124 B15 / transcriber_config_manager #126 B9 的漏网兄弟）。
+- **close 生效（B3）**：whisper/funasr/mlx 三个转写器实现 `close()`——transcriber_provider 的「防御性释放」不再静默 no-op，切模型尺寸时旧 large-v3（~3GB）不再双驻留。
+- **内存/None/异常长尾（B4-B10）**：kuaishou 转写器流式上传文件对象（不再整文件 read() 进内存）；kuaishou caption null 守卫；douyin `download_video` `.get()` 链 + 显式错误；universal_gpt env 数值防御式解析；`add_provider` 失败改 `logger.error`（不再 print）；`convert_to_mp3` 缺省落数据目录；note.py 日志 `(title or '')[:40]`。
+
 ## Wave F 批 15（2026-08-17 · 第 10 轮双代理扫描 #126，643 tests）
 
 - **导出门禁（C1）**：`export_transcript` 非 SUCCESS 任务返回 `{ok:false}`——FAILED/运行中不再导出成功；CLI `export` 同口径，两个读转写工具给 Agent 的结论不再相反。

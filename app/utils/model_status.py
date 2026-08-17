@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 def check_whisper_model_exists(model_size: str, subdir: str = "whisper") -> bool:
     """检查指定 fast-whisper 模型是否已下载完整到本地。"""
     from app.transcriber.whisper_models import (
-        resolve_whisper_model,
-        is_local_target,
         hf_cache_dirname,
+        is_local_target,
+        resolve_whisper_model,
     )
     try:
         target = resolve_whisper_model(model_size)

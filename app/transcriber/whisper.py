@@ -1,22 +1,21 @@
+import shutil
+import threading
+from pathlib import Path
+
 from faster_whisper import WhisperModel
 
 from app.decorators.timeit import timeit
-from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.events import transcription_finished
+from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.transcriber.whisper_models import (
-    resolve_whisper_model,
-    is_local_target,
     hf_cache_dirname,
+    is_local_target,
+    resolve_whisper_model,
 )
 from app.utils.env_checker import is_cuda_available, is_torch_installed
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_model_dir
-
-from app.events import transcription_finished
-from pathlib import Path
-import shutil
-import threading
-
 
 '''
  Size of the model to use (tiny, tiny.en, base, base.en, small, small.en, distil-small.en, medium, medium.en, distil-medium.en, large-v1, large-v2, large-v3, large, distil-large-v2, distil-large-v3, large-v3-turbo, or turbo
@@ -185,6 +184,11 @@ full_text=" ".join(seg.text for seg in segments).strip(),
                 logger.error(f"转写失败：{e}")
                 raise
 
+
+    def close(self) -> None:
+        """释放底层模型引用（#127 B3）：切换模型尺寸时 transcriber_provider 调
+        close 让旧 large-v3（~3GB）尽快 GC，不再双驻留撑内存。"""
+        self.model = None
 
     def on_finish(self,video_path:str,result: TranscriptResult)->None:
         logger.info("转写完成")

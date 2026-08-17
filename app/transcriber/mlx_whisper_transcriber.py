@@ -129,8 +129,16 @@ full_text=" ".join(seg.text for seg in segments).strip(),
                 logger.error(f"MLX Whisper 转写失败：{e}")
                 raise e
 
+    def close(self) -> None:
+        """释放模型引用（#127 B3）。
+
+        mlx_whisper 每次 transcribe 都重新加载模型、无驻留实例，close 仅对齐
+        transcriber_provider 的防御性释放接口（getattr(old, "close") 不再是 no-op）。
+        """
+        self.model_path = None
+
     def on_finish(self, video_path: str, result: TranscriptResult) -> None:
         logger.info("MLX Whisper 转写完成")
         transcription_finished.send({
             "file_path": video_path,
-        }) 
+        })

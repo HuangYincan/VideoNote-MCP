@@ -1,4 +1,4 @@
-from app.db.engine import get_engine, Base
+from app.db.engine import Base, get_engine
 
 # video_tasks 表在数据层重构中新增的列（SQLite ALTER 幂等迁移用）
 _VIDEO_TASK_MIGRATIONS = [

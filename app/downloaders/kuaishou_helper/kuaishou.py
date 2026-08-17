@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
+
 KUAISHOU_API_BASE = 'https://www.kuaishou.com/graphql'
 KUAISHOU_URL = "https://www.kuaishou.com/"
 if not os.environ.get("VIDEONOTE_DATA_DIR"):

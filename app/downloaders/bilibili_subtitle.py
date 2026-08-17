@@ -21,7 +21,11 @@ import requests
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
-from app.utils.url_parser import extract_video_id, extract_bilibili_p_number, resolve_bilibili_short_url
+from app.utils.url_parser import (
+    extract_bilibili_p_number,
+    extract_video_id,
+    resolve_bilibili_short_url,
+)
 
 logger = get_logger(__name__)
 

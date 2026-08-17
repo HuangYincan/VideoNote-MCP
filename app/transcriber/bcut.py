@@ -1,15 +1,15 @@
 import json
 import os
 import time
-from typing import Optional, List
+from typing import List, Optional
 
 import requests
 
 from app.decorators.timeit import timeit
-from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.events import transcription_finished
+from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
-from app.events import transcription_finished
 
 __version__ = "0.0.3"
 
