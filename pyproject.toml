@@ -12,7 +12,10 @@ authors = [{ name = "HuangYincan" }]
 # 已去掉：FastAPI/uvicorn/starlette、chromadb（无 RAG）、celery/kombu/redis、导出栈
 # （weasyprint/pdfkit/python-docx/markdown_pdf/PyMuPDF）、gmssl/pycryptodomex/bs4/lxml（下载器未用）。
 dependencies = [
-    "fastmcp>=3,<4",  # 3.4.x 实测：progress/线程模型结论基于 3.4.5（docs/05 #67）
+    # MCP SDK：FastMCP 是 mcp 包自带的 mcp.server.fastmcp 子模块（#133 C1）。
+    # 曾误声明独立 fastmcp 包（3.4.x）——全仓零 import，uvx 安装不读 lock 时
+    # 若其放开 mcp 上界/移除 server.fastmcp 会直接挂；改为直接声明实际使用的 mcp。
+    "mcp>=1.29.0",
     "yt-dlp>=2025.3.31",
     "openai>=1.70.0",
     "faster-whisper>=1.1.1",

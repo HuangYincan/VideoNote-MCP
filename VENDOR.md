@@ -13,17 +13,17 @@
 
 | 子包 | 内容 |
 |------|------|
-| `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, **bilibili_comment**, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, **generic_downloader**（xiaoyuzhoufm_download **已删除** 2026-08-17：未接入且 yt-dlp 通用提取已覆盖小宇宙） |
+| `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, **bilibili_comment**, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, **generic_downloader** + 子包 `douyin_helper/`、`kuaishou_helper/`（xiaoyuzhoufm_download **已删除** 2026-08-17：未接入且 yt-dlp 通用提取已覆盖小宇宙） |
 | `app/transcriber/` | base, transcriber_provider, whisper, groq, bcut, kuaishou, mlx_whisper_transcriber, **funasr_transcriber**, **audio_preprocess**, model_download_state, whisper_models |
 | `app/gpt/` | base, gpt_factory, universal_gpt, prompt, prompt_builder, request_chunker + `app/gpt/provider/OpenAI_compatible_provider.py`（gpt_factory 依赖）（openai_gpt / deepseek_gpt / qwen_gpt / utils / tools **已删除** 2026-08-17：全仓零引用——gpt_factory 走 OpenAICompatibleProvider 直连，上游直连类死代码） |
 | `app/db/` | engine, init_db, provider_dao, model_dao, video_task_dao + `app/db/models/`（models, providers, video_tasks）（sqlite_client **已删除** 2026-08-17：全仓零引用 + CWD 相对 DB 路径死引信） |
-| `app/models/` | audio_model, gpt_model, model_config, notes_model, provide_model, transcriber_model, video_record |
+| `app/models/` | audio_model, gpt_model, model_config, notes_model, transcriber_model（provide_model / video_record **已删除** 2026-08-17 #132 C10：全库零引用死模块） |
 | `app/enmus/` | exception, note_enums, task_status_enums |
 | `app/exceptions/` | biz_exception, note, provider, **task**（**不含** exception_handlers —— 仅 FastAPI 用） |
 | `app/decorators/` | timeit |
 | `app/validators/` | video_url_validator |
-| `app/services/` | note, constant, provider, cookie_manager, transcriber_config_manager, proxy_config_manager, **pipeline**, **merge**, **diarization**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用；**task_serial_executor 已删** —— 2026-08-17 全仓零引用死模块，MCP 用自己的线程池） |
-| `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, status_code, logger, path_helper, url_parser, openai_client, env_checker, **task_manifest** + **本仓库新增** `model_status.py`（见下）（**不含** response / export / ppt_generator / minio_client） |
+| `app/services/` | note, constant, provider, cookie_manager, transcriber_config_manager, proxy_config_manager, **pipeline**, **merge**, **diarization**, **note_cache**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用；**task_serial_executor 已删** —— 2026-08-17 全仓零引用死模块，MCP 用自己的线程池） |
+| `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, logger, path_helper, url_parser, openai_client, env_checker, **task_manifest**, **json_store**, **url_safety** + **本仓库新增** `model_status.py`（见下）（status_code **已删除** 2026-08-17 #132 C10：全库零引用死模块；**不含** response / export / ppt_generator / minio_client） |
 | `videonote_mcp/export/` | SRT/VTT/JSON 确定性导出（不在上游 `utils/export.py`） |
 | `events/` | **整个子包已删除**（2026-08-17，#130 B2）：signals（blinker `transcription_finished`）+ handlers（转写完成后临时文件清理）是死链——4 个转写器 `on_finish` 调用全部注释、`transcription_finished` 永不触发，server 的 register_handler 纯空转。整链（server 注册点 + events 包 + 4 个 on_finish 方法）已删；若上游恢复该机制需重新引入 |
 
@@ -52,7 +52,7 @@
 - `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py`
 - `app/transcriber/transcriber_provider.py`（funasr / mlx）
 - `app/gpt/universal_gpt.py`（checkpoint 损坏弃用时打 warning 留痕，#106）
-- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`task_manifest.py`
+- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`
 
 ## 如何同步上游更新
 
