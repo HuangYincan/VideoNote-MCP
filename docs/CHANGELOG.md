@@ -28,6 +28,14 @@
 - **E1 可观测性收口（1ced97a）**：stderr 日志超限轮转（`VIDEONOTE_STDERR_LOG_MAX_MB` 默认 50MB → `.log.1`，防长跑体积失控）；`_open_stderr_log` 打开失败不再静默（原因打到原始 stderr）；atexit 退出摘要记录进行中/排队任务数（排查孤儿 ffmpeg/whisper 子进程）。新测试 tests/test_stderr_log.py 7 项。
 - 文档：docs/06 新增 Wave E 章节；docs/05 #39/#44 标注更新。
 
+## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）
+
+- **G2 收尾（06f011c）**：video_tasks 表 note 任务列 `note_dir` 改指 `gen/`（与 get_task_status 的 result.note_dir 一致），list_tasks 与 get_task_status 口径统一；NoteDirContractTest 2 项。
+- **extract_frames 参数校验（1d5088b）**：interval 钳制 ≥1（非法值回退 6）；grid_size 必须两个正整数；3 项契约测试。
+- **G5 退出取消 + YouTube cookie（90a6011）**：_exit_summary set 全部任务 cancel_event（提前终止 ffmpeg/whisper 子进程残留窗口，摘要注明已发送取消）；youtube_downloader 读 setup ③ 填的 youtube cookie → Netscape 临时文件（.youtube.com 域名、0600、__del__ 清理）→ `ydl_opts["cookiefile"]`（download / download_video 两路径）。
+- **Assets/ absolutize 修复闭环（781e991）**：H4 修的 `_absolutize_images` 只匹配 `static/screenshots/` 旧全局模式，数据层重构后截图走 `gen/Assets/` + `Assets/xxx.jpg` 相对引用——旧正则不命中，Agent 拿到死路径。加 `base_dir` 参数 + 第二正则（resolve + 目录内校验防穿越），get_task_status 传 `base_dir=result.note_dir`；旧路径保留兼容旧任务；+3 测试。
+- 文档：docs/04 get_task_status 补 G3 例外（素材包/transcribe 任务转写是主产物默认返回，仅 note 任务剥）；docs/05 登记 #89；docs/06 Wave E 追加。
+
 ## Wave E 批 2（2026-08-17 · E3 扫描 + F1-F9/G1-G4/H 组，225 tests）
 
 - **E3 扫描**：4 并行代理对 Wave D/E 引入代码 + 全仓一致性做第三轮审计，4 个 P0 全部当场修复：
