@@ -4473,7 +4473,7 @@ requires-dist = [
     { name = "av", specifier = ">=14.2.0" },
     { name = "blinker", specifier = ">=1.9.0" },
     { name = "faster-whisper", specifier = ">=1.1.1" },
-    { name = "fastmcp", specifier = ">=2.0" },
+    { name = "fastmcp", specifier = ">=3,<4" },
     { name = "ffmpeg-python", specifier = ">=0.2.0" },
     { name = "funasr", marker = "extra == 'funasr'" },
     { name = "gmssl", specifier = ">=3.2.2" },

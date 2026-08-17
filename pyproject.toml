@@ -12,8 +12,8 @@ authors = [{ name = "HuangYincan" }]
 # 已去掉：FastAPI/uvicorn/starlette、chromadb（无 RAG）、celery/kombu/redis、导出栈
 # （weasyprint/pdfkit/python-docx/markdown_pdf/PyMuPDF）、gmssl/pycryptodomex/bs4/lxml（下载器未用）。
 dependencies = [
-    "fastmcp>=2.0",
-    # 转写完成事件（events/，blinker 信号）
+    "fastmcp>=3,<4",  # 3.4.x 实测：progress/线程模型结论基于 3.4.5（docs/05 #67）
+    # 转写完成事件（app/events/，blinker 信号）
     "blinker>=1.9.0",
     "yt-dlp>=2025.3.31",
     "openai>=1.70.0",
@@ -61,4 +61,4 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 # 用显式 glob 而非 packages：hatchling 的 packages 递归会漏掉 vendored 的深层子包
 # （如 app/db/models），glob 确保 app/、events/、videonote_mcp/ 全部被打进 wheel
-include = ["videonote_mcp/**", "app/**", "events/**"]
+include = ["videonote_mcp/**", "app/**"]
