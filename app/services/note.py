@@ -60,6 +60,34 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+def _extract_audio_from_video(video_path: str, out_dir: Union[str, Path]) -> str:
+    """从本地视频文件提取音频轨（mp3），供「视频已下载」场景复用（docs/05 #33）。
+
+    截图/视频理解模式已经下载了完整视频，转写不再第二次网络下载音频，
+    直接从视频提取。失败抛 RuntimeError（调用方回退常规音频下载）。
+    """
+    import subprocess
+
+    src = Path(video_path)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{src.stem}_audio.mp3"
+    cmd = [
+        "ffmpeg", "-y", "-i", str(src), "-vn",
+        "-acodec", "libmp3lame", "-q:a", "4", str(out),
+        "-hide_banner", "-loglevel", "error",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"从视频提取音频超时: {src.name}") from exc
+    if proc.returncode != 0 or not out.exists():
+        raise RuntimeError(
+            f"从视频提取音频失败: {src.name}（{proc.stderr.strip()[:300]}）"
+        )
+    return str(out)
+
+
 from app.exceptions.task import TaskCancelledError, check_cancel as _check_cancel
 
 
@@ -656,6 +684,30 @@ class NoteGenerator:
                 logger.error(f"视频下载失败：{exc}")
                 self._handle_exception(task_id, exc)
                 raise
+
+        # 视频已在本地时（screenshot/视频理解模式）从视频提取音频，不再第二次网络下载
+        # （docs/05 #33：旧实现 download_video + download 各下载一次）。
+        # skip_download=True 只做轻量 extract_info（metadata），拿到 title/duration/cover。
+        if getattr(self, "video_path", None) and self.video_path and self.video_path.exists():
+            try:
+                audio = downloader.download(
+                    video_url=video_url,
+                    quality=quality,
+                    output_dir=dl_dir,
+                    need_video=True,
+                    skip_download=True,
+                )
+                audio.file_path = _extract_audio_from_video(str(self.video_path), dl_dir)
+                audio.video_path = str(self.video_path)
+                audio_cache_file.write_text(
+                    json.dumps(asdict(audio), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                logger.info(f"视频下载完成，音频从视频提取（免二次下载）({audio_cache_file})")
+                return audio
+            except Exception as exc:
+                logger.warning(f"从视频提取音频失败，回退常规音频下载：{exc}")
+                # 不 raise：回退到下方常规下载
 
         # 下载音频
         try:

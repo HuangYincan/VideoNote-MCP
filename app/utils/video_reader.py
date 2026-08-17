@@ -12,6 +12,29 @@ from PIL import Image, ImageDraw, ImageFont
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def effective_frame_interval(duration: float, video_interval: int, grid_cells: int, max_groups: int = 24) -> int:
+    """把网格图组数封顶：超限时自适应拉大截帧间隔（docs/05 #33）。
+
+    1 小时视频 6s 间隔 = 600 帧 ≈ 67 组 3×3 网格图，全组进 LLM 上下文太贵。
+    目标 ≤ max_groups 组：间隔 = ceil(duration / (max_groups * grid_cells))。
+    duration 未知/异常时原样返回，不干预。
+    """
+    interval = video_interval or 6
+    try:
+        if duration <= 0 or grid_cells <= 0:
+            return interval
+    except TypeError:
+        return interval
+    max_frames = max_groups * grid_cells
+    if duration / interval <= max_frames:
+        return interval
+    import math
+
+    return max(1, math.ceil(duration / max_frames))
+
+
 class VideoReader:
     def __init__(self,
                  video_path: str,
@@ -76,6 +99,9 @@ class VideoReader:
         try:
             os.makedirs(self.frame_dir, exist_ok=True)
             duration = float(ffmpeg.probe(self.video_path)["format"]["duration"])
+            # 帧组数封顶：超限时自适应拉大间隔，而不是截断视频尾部（docs/05 #33）
+            cells = self.grid_size[0] * self.grid_size[1]
+            self.frame_interval = effective_frame_interval(duration, self.frame_interval, cells)
             timestamps = [i for i in range(0, int(duration), self.frame_interval)][:max_frames]
 
             # 并行提取帧；len(timestamps)==0（极短/损坏视频）时也要 ≥1，否则 ThreadPoolExecutor(0) 崩溃
