@@ -2157,8 +2157,21 @@ def batch_generate_notes(
         return {**entry, "task_id": r.get("task_id"), "status": r.get("status")}
 
     if parsed.get("kind") == "single" or not entries:
-        # 单集链接：退化为单任务，不引入条目语义
-        task = _submit({"p": 1, "title": parsed.get("title"), "url": video_url, "duration": None})
+        # 单集链接：退化为单任务，不引入条目语义；失败与多条目同形状（#109：
+        # 此前 raise 裸传，Agent 拿不到结构化 errors）
+        try:
+            task = _submit({"p": 1, "title": parsed.get("title"), "url": video_url, "duration": None})
+        except Exception as exc:  # noqa: BLE001 —— 与多条目收集口径一致
+            return json.dumps(
+                {
+                    "ok": False,
+                    "total": 1,
+                    "submitted": 0,
+                    "errors": [{"p": 1, "title": parsed.get("title"), "url": video_url, "error": str(exc)}],
+                    "tasks": [],
+                },
+                ensure_ascii=False,
+            )
         return json.dumps(
             {"ok": True, "total": 1, "submitted": 1, "errors": [], "tasks": [task]},
             ensure_ascii=False,
@@ -2293,8 +2306,16 @@ def merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
             logger.warning("merge_audio 输出到数据目录外: %s", out_dir)
         # 与 transcribe_media/extract_frames 同口径：file:// URI 先规整（app 层只认普通路径，
         # 直接传 file:// 会误报「文件不存在」）
-        files = [str(_coerce_local_path(f)) for f in files]
-        merged = _merge(files, out_dir=out)
+        paths = [_coerce_local_path(f) for f in files]
+        # 目录输入穿透（merge.py 用 os.path.exists 对目录为 True）会到 ffmpeg 深处才炸
+        # 「转换失败」泛化错误——与 diarize_media 同口径入口 is_file（#109）
+        not_files = [str(p) for p in paths if not p.is_file()]
+        if not_files:
+            return json.dumps(
+                {"ok": False, "error": f"文件不存在或不是文件: {', '.join(not_files)}"},
+                ensure_ascii=False,
+            )
+        merged = _merge([str(p) for p in paths], out_dir=out)
         return json.dumps({"ok": True, "path": Path(merged).as_uri()}, ensure_ascii=False)
     except Exception as exc:
         logger.warning(f"merge_audio 失败: {exc}")

@@ -1094,6 +1094,67 @@ class MergeAudioFileUriTest(unittest.TestCase):
             self.assertEqual(m.call_args.args[0], [str(a), str(b)])
 
 
+class MergeAudioInputValidationTest(unittest.TestCase):
+    """merge_audio 的目录/不存在输入：merge.py 用 os.path.exists（目录为 True）穿透
+    到 ffmpeg 深处才炸「转换失败」泛化错误——入口 is_file 与 diarize_media 同口径（#109）。"""
+
+    def test_directory_input_rejected_clearly(self):
+        with tempfile.TemporaryDirectory() as td:
+            b = Path(td) / "b.mp3"
+            b.write_bytes(b"x")
+            resp = json.loads(server.merge_audio([td, str(b)]))
+        self.assertFalse(resp["ok"])
+        self.assertIn("不是文件", resp["error"])
+        self.assertNotIn("ffmpeg", resp["error"])
+
+    def test_missing_input_rejected_clearly(self):
+        with tempfile.TemporaryDirectory() as td:
+            b = Path(td) / "b.mp3"
+            b.write_bytes(b"x")
+            resp = json.loads(server.merge_audio([str(Path(td) / "nope.mp3"), str(b)]))
+        self.assertFalse(resp["ok"])
+        self.assertIn("不存在", resp["error"])
+
+    def test_file_uri_directory_rejected(self):
+        # 目录经 file:// 规整后仍应按 is_file 拦截（#107 规整 + #109 is_file 叠加）
+        with tempfile.TemporaryDirectory() as td:
+            b = Path(td) / "b.mp3"
+            b.write_bytes(b"x")
+            resp = json.loads(server.merge_audio([Path(td).as_uri(), str(b)]))
+        self.assertFalse(resp["ok"])
+        self.assertIn("不是文件", resp["error"])
+
+
+class BatchSingleEntryErrorTest(unittest.TestCase):
+    """batch_generate_notes 单集退化路径：_submit raise 曾裸传中断调用（与多条目
+    「收集继续」契约不符）——收进 errors 返回同形状（#109）。"""
+
+    def test_single_entry_submit_failure_collected(self):
+        with mock.patch(
+            "app.services.inspect.inspect_video",
+            return_value={"ok": True, "kind": "single", "title": "t", "platform": "bilibili"},
+        ), mock.patch.object(
+            server, "generate_note", side_effect=ValueError("供应商还没有可用模型")
+        ):
+            resp = json.loads(server.batch_generate_notes("https://example.com/v"))
+        self.assertFalse(resp["ok"])
+        self.assertEqual(resp["submitted"], 0)
+        self.assertEqual(len(resp["errors"]), 1)
+        self.assertIn("还没有可用模型", resp["errors"][0]["error"])
+
+    def test_single_entry_success_shape(self):
+        with mock.patch(
+            "app.services.inspect.inspect_video",
+            return_value={"ok": True, "kind": "single", "title": "t", "platform": "bilibili"},
+        ), mock.patch.object(
+            server, "generate_note", return_value='{"task_id": "x", "status": "PENDING"}'
+        ):
+            resp = json.loads(server.batch_generate_notes("https://example.com/v"))
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["submitted"], 1)
+        self.assertEqual(resp["tasks"][0]["task_id"], "x")
+
+
 class DiarizeMediaIsFileTest(unittest.TestCase):
     """diarize_media 目录输入：.exists() 对目录为 True，曾穿透到 ffmpeg 深处炸泛化错误；
     与 transcribe_media/extract_frames 同口径改 is_file（#105）。"""
