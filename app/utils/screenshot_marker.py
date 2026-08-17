@@ -3,7 +3,7 @@ from typing import List, Tuple
 
 
 def extract_screenshot_timestamps(markdown: str) -> List[Tuple[str, int]]:
-    pattern = r"(\*?Screenshot-(?:\[(\d{2}):(\d{2})\]|(\d{2}):(\d{2})))"
+    pattern = r"(\*?Screenshot-(?:\[(\d+):(\d+)\]|(\d+):(\d+)))"
     results: List[Tuple[str, int]] = []
     for match in re.finditer(pattern, markdown):
         mm = match.group(2) or match.group(4)

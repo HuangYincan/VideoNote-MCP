@@ -169,8 +169,10 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
         cookiefile = None
 
     try:
+        from app.downloaders.common import ytdlp_retry
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ytdlp_retry(ydl.extract_info, url, download=False)
     finally:
         if cookiefile:
             try:

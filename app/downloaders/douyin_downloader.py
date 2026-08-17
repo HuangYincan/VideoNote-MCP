@@ -226,6 +226,8 @@ class DouyinDownloader(Downloader):
             video_data = self.fetch_video_info(video_url)
             detail = video_data.get('aweme_detail') or {}
             aweme_id = detail.get('aweme_id') or ''
+            if not aweme_id:
+                raise ValueError(f"抖音接口未返回 aweme_id: {video_url}")
             title = detail.get('item_title') or '抖音视频'
             duration = (detail.get('video') or {}).get('duration', 0)
             tags = [t.get('tag_name') for t in (detail.get('video_tag') or []) if t.get('tag_name')]
@@ -238,10 +240,11 @@ class DouyinDownloader(Downloader):
                 url = (music.get('url_list') or [None])[0] or music.get('uri')
                 if not url:
                     raise RuntimeError("抖音接口未返回音频播放地址")
-                audio_data = requests.get(url, headers=DouyinConfig.HEADERS, timeout=30)
-                audio_data.raise_for_status()
-                with open(output_path, 'wb') as f:
-                    f.write(audio_data.content)
+                with requests.get(url, headers=DouyinConfig.HEADERS, timeout=30, stream=True) as audio_data:
+                    audio_data.raise_for_status()
+                    with open(output_path, 'wb') as f:
+                        for chunk in audio_data.iter_content(1024 * 1024):
+                            f.write(chunk)
 
             # 封面：优先 cover_original_scale → cover → dynamic_cover；
             # 旧代码的 else 分支引用了不存在的顶层 video_data['video']，会 KeyError
@@ -293,10 +296,11 @@ class DouyinDownloader(Downloader):
             }
 
             url=video_data['aweme_detail']['video']['download_addr']['url_list'][0]
-            _data = requests.get(url, allow_redirects=True, headers=self.headers_config, timeout=30)
-
-            with open(output_path, 'wb') as f:
-                f.write(_data.content)
+            with requests.get(url, allow_redirects=True, headers=self.headers_config, timeout=30, stream=True) as _data:
+                _data.raise_for_status()
+                with open(output_path, 'wb') as f:
+                    for chunk in _data.iter_content(1024 * 1024):
+                        f.write(chunk)
 
             return output_path
         except Exception as e:

@@ -36,7 +36,7 @@ def replace_content_markers(markdown: str, video_id: str, platform: str = 'bilib
     替换 *Content-04:16*、Content-04:16 或 Content-[04:16] 为超链接，跳转到对应平台视频的时间位置
     """
     # 匹配三种形式：*Content-04:16*、Content-04:16、Content-[04:16]
-    pattern = r"(?:\*?)Content-(?:\[(\d{2}):(\d{2})\]|(\d{2}):(\d{2}))"
+    pattern = r"(?:\*?)Content-(?:\[(\d+):(\d+)\]|(\d+):(\d+))"
 
     def replacer(match):
         mm = match.group(1) or match.group(3)

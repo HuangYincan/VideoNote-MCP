@@ -31,10 +31,15 @@ def generate_screenshot(video_path: str, output_dir: str, timestamp: int, index:
     ]
 
     logger.debug("Running command: %s", command)
-    result = subprocess.run(command, capture_output=True, text=True)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg 截图超时（>120s）: {video_path} @ {timestamp}s")
 
     if result.returncode != 0:
-        logger.warning("ffmpeg failed: %s", result.stderr)
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg 截图失败: {result.stderr[:500]}")
 
     return str(output_path)
 

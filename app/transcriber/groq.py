@@ -19,7 +19,9 @@ MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
 def compress_audio(input_path: str, target_bitrate='64k') -> str:
     output_fd, output_path = tempfile.mkstemp(suffix=".mp3")  # 临时输出文件
     os.close(output_fd)  # 关闭文件描述符，ffmpeg 会用路径操作
-    ffmpeg.input(input_path).output(output_path, audio_bitrate=target_bitrate).run(quiet=True, overwrite_output=True)
+    ffmpeg.input(input_path).output(output_path, audio_bitrate=target_bitrate).run(
+        quiet=True, overwrite_output=True, timeout=600
+    )
     return output_path
 
 class GroqTranscriber(Transcriber, ABC):

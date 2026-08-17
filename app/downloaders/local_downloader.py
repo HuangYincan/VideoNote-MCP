@@ -30,7 +30,10 @@ class LocalDownloader(Downloader, ABC):
             raise FileNotFoundError(f"输入文件不存在: {input_path}")
 
         if output_dir is None:
-            output_dir = os.path.dirname(input_path)
+            # 封面是中间产物，写数据目录而非用户媒体目录（避免源目录污染）
+            from app.utils.path_helper import get_data_dir
+
+            output_dir = os.path.join(get_data_dir(), "covers")
 
         base_name = os.path.splitext(os.path.basename(input_path))[0]
         output_path = os.path.join(output_dir, f"{base_name}_cover.jpg")
@@ -45,13 +48,13 @@ class LocalDownloader(Downloader, ABC):
                 '-y',  # 覆盖
                 output_path
             ]
-            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=600)
 
             if not os.path.exists(output_path):
                 raise RuntimeError(f"封面图片生成失败: {output_path}")
 
             return output_path
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             raise RuntimeError(f"提取封面失败: {output_path}") from e
 
     def convert_to_mp3(self,input_path: str, output_path: str = None) -> str:
@@ -78,13 +81,13 @@ class LocalDownloader(Downloader, ABC):
                 output_path
             ]
 
-            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=600)
 
             if not os.path.exists(output_path):
                 raise RuntimeError(f"mp3 文件生成失败: {output_path}")
 
             return output_path
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             raise RuntimeError(f"mp3 文件生成失败: {output_path}") from e
     def download_video(self, video_url: str, output_dir: str = None) -> str:
         """

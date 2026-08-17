@@ -44,6 +44,16 @@ SUBTITLE_KEY = "subtitle"
 _LOCAL_ENGINES = {"fast-whisper", "whisper", "mlx-whisper", "funasr"}
 
 
+def _fs_safe(s: str) -> str:
+    """Windows 文件名安全化：冒号/斜杠等非法字符替换为 '-'。
+
+    身份键（platform:video_id）与引擎分键可能含冒号，Windows 上 mkdir/写入会抛
+    OSError 被吞掉，缓存静默永不命中（docs/05 #60）。改键后旧缓存（冒号形式）
+    miss 一次重新转写，可接受。
+    """
+    return re.sub(r"[:/\\<>*?|]", "-", s)
+
+
 def cache_root() -> Path:
     """跨任务缓存根：<note_results 的父目录>/note_cache。
 
@@ -59,7 +69,7 @@ def engine_key(transcriber_type: str, model_size: str) -> str:
     """转写来源分键。本地引擎拼 model_size（tiny/small/base…），云端引擎只按类型。"""
     size = (model_size or "").strip()
     if transcriber_type in _LOCAL_ENGINES and size:
-        return f"{transcriber_type}:{size}"
+        return _fs_safe(f"{transcriber_type}:{size}")
     return transcriber_type
 
 
@@ -124,15 +134,15 @@ def identity_for(url: str, platform: str, audio_video_id: Optional[str] = None) 
     if platform == "bilibili":
         url_id = derive_video_id(url, "bilibili")
         if url_id:
-            return f"bilibili:{url_id}"
+            return _fs_safe(f"bilibili:{url_id}")
         if audio_video_id:
-            return f"bilibili:{_normalize_bili_video_id(audio_video_id)}"
+            return _fs_safe(f"bilibili:{_normalize_bili_video_id(audio_video_id)}")
         return None
     vid = derive_video_id(url, platform)
     if vid:
-        return f"{platform}:{vid}"
+        return _fs_safe(f"{platform}:{vid}")
     if audio_video_id and platform != "local":
-        return f"{platform}:{audio_video_id}"
+        return _fs_safe(f"{platform}:{audio_video_id}")
     return None
 
 
@@ -219,6 +229,18 @@ def promote_media(
         return
     src = Path(src_path)
     if not src.exists():
+        return
+    # 抖音/快手/generic 的「音频」实际是完整 mp4（数百 MB）：超过阈值只缓存转写，
+    # 避免磁盘无界增长（docs/05 #59）
+    MAX_MEDIA_CACHE_MB = 100
+    try:
+        if src.stat().st_size > MAX_MEDIA_CACHE_MB * 1024 * 1024:
+            logger.info(
+                "媒体超过 %dMB 不缓存（只缓存转写）: %s (%.1fMB)",
+                MAX_MEDIA_CACHE_MB, src.name, src.stat().st_size / 1024 / 1024,
+            )
+            return
+    except OSError:
         return
     ident = identity_for(url, platform, audio_video_id)
     if not ident:

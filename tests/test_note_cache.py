@@ -95,7 +95,7 @@ class IdentityTest(unittest.TestCase):
         self.assertIsNone(note_cache.derive_video_id("https://example.com/x", "generic"))
 
     def test_engine_key_local_pins_size_cloud_does_not(self):
-        self.assertEqual(note_cache.engine_key("fast-whisper", "small"), "fast-whisper:small")
+        self.assertEqual(note_cache.engine_key("fast-whisper", "small"), "fast-whisper-small")
         self.assertEqual(note_cache.engine_key("fast-whisper", ""), "fast-whisper")
         self.assertEqual(note_cache.engine_key("groq", "small"), "groq")
         self.assertEqual(note_cache.engine_key("funasr", ""), "funasr")
@@ -124,7 +124,7 @@ class CacheRoundTripTest(unittest.TestCase):
         self.assertFalse(dest.exists())
 
     def test_hit_copies_to_dest(self):
-        _cache_entry("youtube:abcDEF12345", "fast-whisper:small",
+        _cache_entry("youtube-abcDEF12345", "fast-whisper-small",
                      '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
         dest = self._dest("t2")
         src = note_cache.lookup_transcript(
@@ -134,7 +134,7 @@ class CacheRoundTripTest(unittest.TestCase):
         self.assertEqual(json.loads(dest.read_text(encoding="utf-8"))["full_text"], "hi")
 
     def test_engine_change_misses_but_subtitle_is_bonus(self):
-        _cache_entry("youtube:abcDEF12345", "fast-whisper:small",
+        _cache_entry("youtube-abcDEF12345", "fast-whisper-small",
                      '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
         dest = self._dest("t3")
         # 换引擎（funasr）→ 不命中 fast-whisper:small，避免误用旧引擎结果
@@ -144,7 +144,7 @@ class CacheRoundTripTest(unittest.TestCase):
             )
         )
         # 平台字幕键引擎无关：引擎键未命中后作为兜底
-        _cache_entry("youtube:abcDEF12345", note_cache.SUBTITLE_KEY,
+        _cache_entry("youtube-abcDEF12345", note_cache.SUBTITLE_KEY,
                      '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
         self.assertIsNotNone(
             note_cache.lookup_transcript(
@@ -160,7 +160,7 @@ class CacheRoundTripTest(unittest.TestCase):
         )
         note_cache.promote_transcript(
             "youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345",
-            "fast-whisper:small", src,
+            "fast-whisper-small", src,
         )
         dest = self._dest("t5")
         self.assertIsNotNone(
@@ -170,7 +170,7 @@ class CacheRoundTripTest(unittest.TestCase):
         )
 
     def test_bili_multi_p_identity_is_distinct(self):
-        _cache_entry("bilibili:BV1xx411c7mD:p2", note_cache.SUBTITLE_KEY, "{}")
+        _cache_entry("bilibili-BV1xx411c7mD-p2", note_cache.SUBTITLE_KEY, "{}")
         dest = self._dest("t6")
         # p=1 与 p=2 身份不同 → 不互相污染
         self.assertIsNone(
@@ -192,7 +192,7 @@ class CacheRoundTripTest(unittest.TestCase):
         )
         # 身份是单个冒号组件（platform:video_id），不是嵌套目录
         self.assertTrue(
-            (note_cache.cache_root() / "bilibili:BV1xx411c7mD:p2" / "transcript_subtitle.json").exists()
+            (note_cache.cache_root() / "bilibili-BV1xx411c7mD-p2" / "transcript_subtitle.json").exists()
         )
 
     def test_normalize_bili_video_id(self):
@@ -215,7 +215,7 @@ class CacheRoundTripTest(unittest.TestCase):
             note_cache.promote_media(
                 "youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345", str(src)
             )
-            media_dir = self.root / "youtube:abcDEF12345" / "media"
+            media_dir = self.root / "youtube-abcDEF12345" / "media"
             self.assertTrue((media_dir / "audio.mp3").exists())
             dest = NOTE_OUTPUT_DIR / "t10" / "raw"
             copied = note_cache.lookup_media("https://www.youtube.com/watch?v=abcDEF12345", "youtube", dest)
@@ -236,12 +236,12 @@ class CacheRoundTripTest(unittest.TestCase):
         src.write_text(json.dumps({"language": "zh", "full_text": "", "segments": []}), encoding="utf-8")
         note_cache.promote_transcript(
             "youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345",
-            "fast-whisper:small", src,
+            "fast-whisper-small", src,
         )
-        self.assertFalse((self.root / "youtube:abcDEF12345").exists())
+        self.assertFalse((self.root / "youtube-abcDEF12345").exists())
 
     def test_empty_cached_transcript_not_hit(self):
-        _cache_entry("youtube:abcDEF12345", "fast-whisper:small",
+        _cache_entry("youtube-abcDEF12345", "fast-whisper-small",
                      json.dumps({"language": "zh", "full_text": "", "segments": []}))
         dest = self._dest("t13")
         self.assertIsNone(
@@ -273,7 +273,7 @@ class GenerateIntegrationTest(unittest.TestCase):
 
     def test_hit_skips_download_and_transcribe(self):
         key = _current_engine_key()
-        _cache_entry("youtube:abcDEF12345", key, json.dumps({
+        _cache_entry("youtube-abcDEF12345", key, json.dumps({
             "language": "zh", "full_text": "缓存转写",
             "segments": [{"start": 0, "end": 1, "text": "缓存转写"}],
         }, ensure_ascii=False))
@@ -314,7 +314,7 @@ class GenerateIntegrationTest(unittest.TestCase):
         self.assertEqual(result.transcript.full_text, "fresh")
         # promote 进缓存：再跑一次就能命中
         key = _current_engine_key()
-        entry = note_cache.cache_root() / "youtube:abcDEF12345" / f"transcript_{key}.json"
+        entry = note_cache.cache_root() / "youtube-abcDEF12345" / f"transcript_{key}.json"
         self.assertTrue(entry.exists())
         self.assertEqual(json.loads(entry.read_text(encoding="utf-8"))["full_text"], "fresh")
 
@@ -342,7 +342,7 @@ class GenerateIntegrationTest(unittest.TestCase):
                                 video_url=self.YT_URL, platform="youtube",
                                 task_id="media000001", material_only=True,
                             )
-            media_dir = self.cache / "youtube:abcDEF12345" / "media"
+            media_dir = self.cache / "youtube-abcDEF12345" / "media"
             self.assertTrue((media_dir / "abcDEF12345.mp3").exists())
 
             gen2 = self._gen()

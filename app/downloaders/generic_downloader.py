@@ -141,4 +141,7 @@ class GenericDownloader(Downloader, ABC):
         _apply_proxy(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ytdlp_retry(ydl.extract_info, video_url, download=True)
-        return os.path.join(output_dir, f"{info.get('id')}.mp4")
+        output_path = os.path.join(output_dir, f"{info.get('id')}.mp4")
+        if not os.path.exists(output_path):
+            raise RuntimeError(f"下载完成但未找到视频文件: {output_path}")
+        return output_path

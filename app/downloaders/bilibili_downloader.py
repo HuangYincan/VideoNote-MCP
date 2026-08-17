@@ -226,7 +226,7 @@ class BilibiliDownloader(Downloader, ABC):
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=True)
+                info = ytdlp_retry(ydl.extract_info, video_url, download=True)
 
                 # 查找下载的字幕文件
                 subtitles = info.get('requested_subtitles') or {}
@@ -290,6 +290,8 @@ class BilibiliDownloader(Downloader, ABC):
         import re
         try:
             segments = []
+            # 部分工具产出的 SRT 是 CRLF 行尾，正则按 \n 匹配会整段失配
+            srt_content = srt_content.replace("\r\n", "\n")
             # SRT 格式: 序号\n时间戳\n文本\n\n
             pattern = r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})\n(.*?)(?=\n\n|\n\d+\n|$)'
             matches = re.findall(pattern, srt_content, re.DOTALL)
