@@ -1061,5 +1061,108 @@ class DiarizeMediaIsFileTest(unittest.TestCase):
         self.assertIn("本地文件不存在", resp["error"])
 
 
+class OutputDirFileUriTest(unittest.TestCase):
+    """输出目录类参数（notes_dir / out_dir）的 file:// 规整：URI 直传曾按字面
+    `file:` 相对目录创建垃圾目录，且「数据目录外」检查基于未规整值误报（#107）。"""
+
+    @staticmethod
+    def _submit_generate_capture(notes_dir):
+        """stub provider/模型/线程池，捕获 _pool.submit 的 kwargs（校验 notes_dir 规整结果）。"""
+        done = Future()
+        done.set_result(None)
+        with mock.patch(
+            "videonote_mcp.server._resolve_default_provider_id", return_value="t-provider"
+        ), mock.patch(
+            "videonote_mcp.server.get_models_by_provider", return_value=[{"model_name": "t-model"}]
+        ), mock.patch("videonote_mcp.server._pool.submit", return_value=done) as m:
+            server.generate_note("https://example.com/v", notes_dir=notes_dir)
+        return m.call_args.kwargs
+
+    def test_generate_note_file_uri_notes_dir_coerced(self):
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td) / "my notes"  # 空格 → URI 编码 %20，必须 unquote
+            kwargs = self._submit_generate_capture(out_dir.as_uri())
+        self.assertEqual(kwargs["notes_dir"], str(out_dir))
+        self.assertFalse(Path("file:").exists(), "字面 file: 目录不应存在（URI 未规整的回归标志）")
+
+    def test_generate_note_plain_notes_dir_unchanged(self):
+        with tempfile.TemporaryDirectory() as td:
+            kwargs = self._submit_generate_capture(td)
+        self.assertEqual(kwargs["notes_dir"], td)
+
+    def test_merge_audio_file_uri_out_dir_coerced(self):
+        with tempfile.TemporaryDirectory() as td:
+            a = Path(td) / "a.mp3"
+            b = Path(td) / "b.mp3"
+            a.write_bytes(b"x")
+            b.write_bytes(b"x")
+            out_dir = Path(td) / "out dir"
+            with mock.patch(
+                "app.services.merge.merge_audio", return_value=str(Path(td) / "merged.wav")
+            ) as m:
+                resp = json.loads(server.merge_audio([str(a), str(b)], out_dir=out_dir.as_uri()))
+            self.assertTrue(resp["ok"])
+            self.assertEqual(m.call_args.kwargs["out_dir"], str(out_dir))
+
+    def test_export_transcript_file_uri_out_dir_coerced(self):
+        tid = ExportFormatsWhitelistTest._task_with_transcript()
+        td = tempfile.mkdtemp(prefix="vn_out_uri_")
+        try:
+            out_dir = Path(td) / "sub dir"
+            resp = json.loads(server.export_transcript(tid, formats=["srt"], out_dir=out_dir.as_uri()))
+            self.assertTrue(resp["ok"])
+            # 输出落在规整后的目录（export 文件名是 transcript.srt），而不是 CWD 下字面 file: 目录
+            self.assertTrue((out_dir / "transcript.srt").exists())
+            self.assertFalse(Path("file:").exists(), "字面 file: 目录不应存在（URI 未规整的回归标志）")
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+
+class DefaultExportFormatsJunkTest(unittest.TestCase):
+    """app_config.default_export_formats 非列表垃圾值曾遮蔽 env 回退链（truthy 短路 `or`）
+    或在工具入口炸 ValueError——打 warning 后回退，与 #104 缺省链口径一致（#107）。"""
+
+    def test_tool_junk_config_falls_back_to_env(self):
+        tid = ExportFormatsWhitelistTest._task_with_transcript()
+        try:
+            with mock.patch.object(
+                server, "get_app_config", return_value={"default_export_formats": "srt,vtt"}
+            ), mock.patch.dict(
+                "os.environ", {"VIDEONOTE_DEFAULT_EXPORT_FORMATS": '["vtt"]'}, clear=False
+            ), mock.patch.object(server.logger, "warning") as w:
+                resp = json.loads(server.export_transcript(tid))
+            self.assertTrue(resp["ok"])
+            self.assertIn("vtt", resp["formats"])
+            self.assertTrue(any("不是列表" in str(c) for c in w.call_args_list))
+        finally:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def test_tool_junk_config_no_env_uses_default_srt(self):
+        # 无 env 兜底时收敛到 ["srt"] 默认，而不是把垃圾值当格式炸掉
+        tid = ExportFormatsWhitelistTest._task_with_transcript()
+        try:
+            with mock.patch.object(
+                server, "get_app_config", return_value={"default_export_formats": {"a": "b"}}
+            ), mock.patch.dict("os.environ", {"VIDEONOTE_DEFAULT_EXPORT_FORMATS": ""}, clear=False):
+                resp = json.loads(server.export_transcript(tid))
+            self.assertTrue(resp["ok"])
+            self.assertIn("srt", resp["formats"])
+        finally:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def test_auto_export_junk_config_falls_back_to_env(self):
+        with mock.patch.object(
+            server, "get_app_config", return_value={"default_export_formats": "srt"}
+        ), mock.patch.dict(
+            "os.environ", {"VIDEONOTE_DEFAULT_EXPORT_FORMATS": '["vtt"]'}, clear=False
+        ), mock.patch("videonote_mcp.export.export_transcript") as m, mock.patch.object(
+            server.logger, "warning"
+        ) as w:
+            server._auto_export_transcript("junk-test", {"language": "zh"})
+        self.assertEqual(m.call_args.kwargs["formats"], ["vtt"])
+        self.assertTrue(any("不是列表" in str(c) for c in w.call_args_list))
+
+
 if __name__ == "__main__":
     unittest.main()

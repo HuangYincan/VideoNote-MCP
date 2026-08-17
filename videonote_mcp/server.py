@@ -358,6 +358,18 @@ def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None,
             _task_events.pop(task_id, None)
 
 
+def _resolve_default_export_formats() -> list:
+    """导出格式缺省链：app_config（须为列表）→ env。非列表垃圾配置会遮蔽 env 回退
+    （truthy 值令 `or` 短路）→ 打 warning 后回退（#107，与 #104 缺省链口径一致）。"""
+    from videonote_mcp.config import env_json_list
+
+    cfg = get_app_config().get("default_export_formats")
+    if cfg is not None and not isinstance(cfg, list):
+        logger.warning("app_config.default_export_formats 不是列表（%r），忽略改用环境/默认", cfg)
+        cfg = None
+    return cfg or env_json_list("VIDEONOTE_DEFAULT_EXPORT_FORMATS", [])
+
+
 def _auto_export_transcript(task_id: str, transcript) -> None:
     """笔记任务成功后按 `default_export_formats` 自动导出纯格式（srt/vtt/json）。
 
@@ -365,10 +377,9 @@ def _auto_export_transcript(task_id: str, transcript) -> None:
     不涉及 LLM/网络；导出文件自动记入 manifest（供 cleanup_note 清理）。
     """
     try:
-        from videonote_mcp.config import env_json_list, get_app_config
         from videonote_mcp.export import export_transcript
 
-        default_formats = get_app_config().get("default_export_formats") or env_json_list("VIDEONOTE_DEFAULT_EXPORT_FORMATS", [])
+        default_formats = _resolve_default_export_formats()
         if not default_formats or not transcript:
             return
         export_transcript(
@@ -674,7 +685,7 @@ def generate_note(
     - include_comments / comments_limit: 是否抓取 B 站弹幕+热门评论作为参考注入 prompt（仅 B 站视频生效）；不传时用 setup 默认（默认关 / 20 条）；显式传入始终覆盖；
     - video_understanding / video_interval / grid_size: 视频理解（需多模态模型）；不传时用 setup ③ 配置的默认（默认关 / 6s）；显式传入始终覆盖；
     - screenshot + format 含 "screenshot": 插入图片，产出便携笔记 note.md + Assets/（相对引用）；不传时用 setup ③ 配置的默认（默认关）；显式传入始终覆盖；
-    - notes_dir: 便携笔记的输出目录（可选；缺省 VIDEONOTE_NOTES_DIR 环境变量，再缺省 note_results/{task_id}/）。
+    - notes_dir: 便携笔记的输出目录（可选；缺省 VIDEONOTE_NOTES_DIR 环境变量，再缺省 note_results/{task_id}/；支持 file:// URI）。
 
     返回 {task_id, status, platform}。之后用 get_task_status 轮询（不要用 wait_for_note，
     会卡住 MCP 事件循环）。SUCCESS 时 result.note_dir 指向 note.md 所在目录（{task_id}/gen/，
@@ -746,6 +757,9 @@ def generate_note(
     task_id = uuid.uuid4().hex
     _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
     notes_dir_out = notes_dir or get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or None
+    # 输出目录与输入文件同口径：file:// URI 先规整，否则 Path("file:///…") 会在 CWD 下建字面 `file:` 目录
+    if notes_dir_out is not None:
+        notes_dir_out = str(_coerce_local_path(notes_dir_out))
     # 便携笔记可写数据目录外（用户显式意图），只提示不拦截（与 export/merge 同口径，docs/05 #45）
     if notes_dir_out and not Path(notes_dir_out).resolve().is_relative_to(DATA_DIR.resolve()):
         logger.warning("generate_note 便携笔记输出到数据目录外: %s", notes_dir_out)
@@ -2189,7 +2203,7 @@ def export_transcript(
 
     - task_id: 必填，已完成任务的 task_id（generate_note / prepare_note_material 返回）；
     - formats: 可选，要导出的格式列表（srt/vtt/json），缺省取 setup 配置的「导出格式默认」；
-    - out_dir: 可选，输出目录（缺省为 note_results/{task_id}/）。
+    - out_dir: 可选，输出目录（缺省为 note_results/{task_id}/；支持 file:// URI）。
 
     只做确定性机械渲染（时间轴换算），不调用 LLM。返回
     {task_id, formats: {fmt: "file://绝对路径"}, errors: {}}，供 Agent 直接 Read。
@@ -2220,11 +2234,7 @@ def export_transcript(
         )
 
     if formats is None:
-        from videonote_mcp.config import env_json_list, get_app_config
-
-        formats = get_app_config().get("default_export_formats") or env_json_list(
-            "VIDEONOTE_DEFAULT_EXPORT_FORMATS", []
-        )
+        formats = _resolve_default_export_formats()
         if not formats:
             formats = ["srt"]
     if not isinstance(formats, list):
@@ -2234,9 +2244,12 @@ def export_transcript(
         # 未知格式曾只写 stderr 警告后静默丢弃——Agent 以为导出成功实际缺文件
         raise ValueError(f"formats 只支持 {' / '.join(FORMATS)}，收到未知格式: {unknown!r}")
 
+    if out_dir is not None:
+        # 输出目录同输入文件：file:// URI 先规整，否则 Path("file:///…") 建字面 `file:` 目录（#107）
+        out_dir = str(_coerce_local_path(out_dir))
     out = out_dir or str(task_dir / "gen")
     # 数据目录外输出只提示不拦截：显式导出到别处是用户意图（docs/05 #45）
-    if not Path(out).resolve().is_relative_to(DATA_DIR.resolve()):
+    if out_dir and not Path(out).resolve().is_relative_to(DATA_DIR.resolve()):
         logger.warning("export_transcript 输出到数据目录外: %s", out)
     written = _export(transcript, formats=formats, out_dir=out, task_id=task_id)
     errors = written.pop("_errors", {}) if isinstance(written, dict) else {}
@@ -2251,7 +2264,7 @@ def merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
     """把多个音频/视频文件合并为一个 16kHz mono wav（FFmpeg concat）。
 
     - files: 必填，至少 2 个本地文件路径（mp3/wav/m4a/mp4 等，编码可不同——自动统一转 16kHz mono）；
-    - out_dir: 可选，输出目录（缺省数据目录 note_results/merged/），输出为 merged.wav。
+    - out_dir: 可选，输出目录（缺省数据目录 note_results/merged/；支持 file:// URI），输出为 merged.wav。
 
     用途：多段录音/会议分段/多个本地视频拼成一段再转写。返回
     {ok, path: "file://绝对路径"} 或 {ok: false, error}。
@@ -2259,6 +2272,9 @@ def merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
     from app.services.merge import merge_audio as _merge
 
     try:
+        if out_dir is not None:
+            # 输出目录同输入文件：file:// URI 先规整，否则 Path("file:///…") 建字面 `file:` 目录（#107）
+            out_dir = str(_coerce_local_path(out_dir))
         out = out_dir or str(NOTE_OUTPUT_DIR / "merged")
         if out_dir and not Path(out_dir).resolve().is_relative_to(DATA_DIR.resolve()):
             logger.warning("merge_audio 输出到数据目录外: %s", out_dir)

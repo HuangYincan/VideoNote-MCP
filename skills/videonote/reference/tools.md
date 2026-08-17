@@ -13,7 +13,7 @@
 - `video_understanding=True` + `video_interval`（默认 6）+ `grid_size`（默认 [3,3]）：视频理解，**需多模态模型**。
 - `include_comments=True` + `comments_limit`（默认 20）：整合 B 站弹幕+评论（需 SESSDATA；失败不阻断）。
 - `screenshot=True` + `format=["screenshot"]`：插单张截图，产出便携笔记 note.md + Assets/（相对引用）。
-- `notes_dir`: 便携笔记目录（指定即写 note.md，即使不插图片）。
+- `notes_dir`: 便携笔记目录（指定即写 note.md，即使不插图片；支持 `file://` URI）。
 - **并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：超限会拒绝。不要在同一条消息里并行塞多个 `generate_note`（客户端不稳）。`provider_id` 可省略。
 
 ### `inspect_video(url, platform?)`
@@ -102,6 +102,7 @@
 ### `export_transcript(task_id, formats?, out_dir?)`
 - 把已完成任务的转写导出为**确定性格式**（srt/vtt/json），**不耗 LLM**。同步返回。
 - `formats` 缺省取 setup 配置的「导出格式默认」（任务成功后也会自动导出这些格式）。
+- `out_dir` 缺省 `{task_id}/gen/`；支持 `file://` URI。
 - 返回 `{task_id, formats: {fmt: "file://绝对路径"}, errors}`，文件可 Read 直接使用。
 - 适用：字幕文件（SRT/VTT）、结构化转写（JSON）、下游程序消费。
 - **创意格式**（思维导图/闪卡/LaTeX/typst/用户自定义模板）不在这里——由 Agent 基于
@@ -111,7 +112,7 @@
 
 ### `merge_audio(files, out_dir?)`
 - 把多个音频/视频文件合并为一个 16kHz mono wav（FFmpeg concat，自动统一转码）。
-- `files`: 至少 2 个本地路径；返回 `{ok, path: "file://绝对路径"}`。
+- `files`: 至少 2 个本地路径；`out_dir` 缺省数据目录 `note_results/merged/`，均支持 `file://` URI；返回 `{ok, path: "file://绝对路径"}`。
 - 适用：多段录音 / 会议分段 / 多个本地视频拼成一段再转写。
 
 ### 音频预处理（setup ② 或 `transcriber preprocess on`）

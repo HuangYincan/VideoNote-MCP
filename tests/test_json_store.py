@@ -1,11 +1,9 @@
 """app/utils/json_store 安全读写 + 三个配置管理器加固（docs/05 #106 扫描 1 号）。"""
 import json
-import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
