@@ -372,13 +372,16 @@ def cleanup_all_files(include_config: bool = False, include_models: bool = False
     # 且日志不属于任务产物。保留并记录到 kept。
     result["kept"].append(f"logs（{get_logs_dir()}）")
     _empty(get_cache_dir(), "note_cache")
-    # 同步清空全局任务索引（尽力而为；#125 B12 单条 DELETE 替代 N+1 循环）
+    # 同步清空全局任务索引（尽力而为；#125 B12 单条 DELETE 替代 N+1 循环）。
+    # 失败不能静默：目录已清但索引残留 → list_tasks 出现 note_dir 悬空的任务
+    # 且零痕迹（DAO 契约是抛给调用方显式处理，#126 B7）
     try:
         from app.db.video_task_dao import delete_all_tasks
 
         delete_all_tasks()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(f"清空全局任务索引失败（目录已清理，索引可能残留）: {exc}")
+        result["index_error"] = str(exc)
 
     if include_config:
         _empty(get_config_dir(), "config")

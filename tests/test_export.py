@@ -206,6 +206,10 @@ class ExporterTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        # C1 门禁（#126）：非 SUCCESS 任务拒绝导出——测试任务补 SUCCESS 状态
+        (task_dir / "status.json").write_text(
+            json.dumps({"status": "SUCCESS"}, ensure_ascii=False), encoding="utf-8"
+        )
         try:
             with mock.patch(
                 "videonote_mcp.export.exporter.Path.write_text",
@@ -237,6 +241,10 @@ class ExporterTest(unittest.TestCase):
                 }
             ),
             encoding="utf-8",
+        )
+        # C1 门禁（#126）：非 SUCCESS 任务拒绝导出——测试任务补 SUCCESS 状态
+        (task_dir / "status.json").write_text(
+            json.dumps({"status": "SUCCESS"}, ensure_ascii=False), encoding="utf-8"
         )
         try:
             data = json.loads(srv.export_transcript(tid, formats=["srt"]))

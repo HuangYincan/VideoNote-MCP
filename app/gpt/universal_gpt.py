@@ -465,7 +465,10 @@ class UniversalGPT(GPT):
 
             content = self._first_choice_content(response)
             if not content:
-                raise ValueError("模型返回空内容（可能被拒绝/内容过滤）")
+                raise ValueError(
+                    "模型返回空内容（可能被拒绝/内容过滤），finish_reason="
+                    + str(getattr(response.choices[0], "finish_reason", "?"))
+                )
             partials.append(content)
             if checkpoint_key and source_signature:
                 self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")

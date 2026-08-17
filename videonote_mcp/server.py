@@ -191,7 +191,9 @@ def _coerce_int(value, default: int, clamp_min: Optional[int] = None) -> int:
     except (TypeError, ValueError):
         logger.warning(f"数值参数 {value!r} 无法解析，回退默认 {default}")
         n = default
-    if clamp_min is not None:
+    # default 可为 None（可空参数如 diarization_speakers=自动检测）：
+    # 解析失败回退 None 时不再 clamp（#126 C5）
+    if clamp_min is not None and n is not None:
         n = max(clamp_min, n)
     return n
 
@@ -1445,7 +1447,9 @@ def cleanup_all(include_config: bool = False, include_models: bool = False) -> s
                 },
                 ensure_ascii=False,
             )
-    return json.dumps(cleanup_all_files(include_config=include_config, include_models=include_models), ensure_ascii=False)
+    result = cleanup_all_files(include_config=include_config, include_models=include_models)
+    result["ok"] = True  # 与拒绝路径 {ok:false} 对称（#125 A11 同口径，C2）
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -1458,7 +1462,7 @@ def fetch_comments(video_url: str, limit: int = 20) -> str:
     try:
         from app.downloaders.bilibili_comment import BilibiliCommentFetcher
 
-        limit = max(1, int(limit))  # limit<=0 会让 fetcher 的 `len(seen) >= limit` 恒真，静默返回空
+        limit = _coerce_int(limit, 20, clamp_min=1)  # 垃圾值 warning 回退 20；limit<=0 会让 fetcher 的 `len(seen) >= limit` 恒真
         result = BilibiliCommentFetcher().fetch_comments(video_url, limit=limit)
     except Exception as exc:
         logger.warning(f"fetch_comments 失败: {exc}")
@@ -1917,6 +1921,9 @@ def set_transcriber(
                 f"未知 whisper 模型尺寸: {whisper_model_size!r}（可选: {', '.join(WHISPER_MODEL_SIZES)}"
                 "，或自定义模型名 / HF repo_id / 本地目录）"
             )
+    if diarization_speakers is not None:
+        # 垃圾值回退 None=自动检测（与其它数值参数同口径，_coerce_int；#126 C5）
+        diarization_speakers = _coerce_int(diarization_speakers, None, clamp_min=1)
     mgr = TranscriberConfigManager()
     cfg = mgr.update_config(
         transcriber_type,
@@ -1995,6 +2002,14 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
     if transcriber_type == "mlx-whisper":
         if not (sys.platform == "darwin"):
             raise ValueError("mlx-whisper 仅在 macOS 可用，请改用 fast-whisper")
+        # 尺寸前置校验：非法尺寸同步拒绝，而不是 started:true 后后台静默失败
+        # （CLI 同场景同步报错；#126 C4）
+        from app.transcriber.mlx_whisper_transcriber import MLX_MODEL_MAP
+
+        if size not in MLX_MODEL_MAP:
+            raise ValueError(
+                f"未知 mlx-whisper 模型尺寸: {model_size}（可选: {', '.join(MLX_MODEL_MAP)}）"
+            )
         # 进行中去重：try_mark 原子抢占（#121 C10 / #122 A7 / #124 A7，与 fast-whisper 同原语）
         if not dl_state.try_mark(f"mlx-{size}"):
             return json.dumps(
@@ -2005,12 +2020,9 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
 
         def _dl_mlx():
             try:
-                from app.transcriber.mlx_whisper_transcriber import MLX_MODEL_MAP
                 from huggingface_hub import snapshot_download
 
-                repo_id = MLX_MODEL_MAP.get(size)
-                if not repo_id:
-                    raise ValueError(f"未找到 mlx 模型映射: {size}")
+                repo_id = MLX_MODEL_MAP[size]  # 前置已校验（#126 C4）
                 snapshot_download(
                     repo_id=repo_id,
                     local_dir=os.path.join(get_model_dir("mlx-whisper"), repo_id),
@@ -2165,6 +2177,14 @@ def validate_url(url: str) -> str:
     """
     try:
         platform = _detect_platform(url)
+        if platform == "local":
+            # 本地路径存在性前置校验：validate_url 给绿灯后 generate_note 却拒绝，
+            # SKILL 流程（validate_url → generate_note）多一轮无效往返（#126 C9）
+            if not _local_video_exists(url):
+                return json.dumps(
+                    {"supported": False, "platform": "local", "reason": "本地文件不存在"},
+                    ensure_ascii=False,
+                )
         reason = (
             "识别为 generic：将尝试 yt-dlp 通用提取（可能需登录/代理）"
             if platform == "generic"
@@ -2533,7 +2553,48 @@ def export_transcript(
     from videonote_mcp.export import FORMATS, export_transcript as _export
 
     task_id = _validate_task_id(task_id)
+
+    if formats is None:
+        formats = resolve_default_export_formats()
+        if not formats:
+            formats = ["srt"]
+    if formats == []:
+        # 显式空列表：零导出还报 ok:true 与 #122 A1「任何格式没导出必须 ok:false」矛盾
+        # （CLI 版对 not written 显式退出报错）——入口显式报错，省略参数才走默认（#124 A8）
+        raise ValueError("formats 为空列表，未导出任何格式（省略该参数以用默认格式）")
+    if not isinstance(formats, list):
+        raise ValueError(f"formats 必须是字符串列表（支持 {' / '.join(FORMATS)}），收到: {formats!r}")
+    unknown = sorted({f for f in formats if f not in FORMATS})
+    if unknown:
+        # 未知格式曾只写 stderr 警告后静默丢弃——Agent 以为导出成功实际缺文件
+        raise ValueError(f"formats 只支持 {' / '.join(FORMATS)}，收到未知格式: {unknown!r}")
+
     task_dir = NOTE_OUTPUT_DIR / str(task_id)
+    if out_dir is not None:
+        # 输出目录同输入文件：file:// URI 先规整，否则 Path("file:///…") 建字面 `file:` 目录（#107）
+        out_dir = str(_coerce_local_path(out_dir))
+    out = out_dir or str(task_dir / "gen")
+    # 数据目录外输出只提示不拦截：显式导出到别处是用户意图（docs/05 #45）
+    if out_dir and not Path(out).resolve().is_relative_to(DATA_DIR.resolve()):
+        logger.warning("export_transcript 输出到数据目录外: %s", out)
+
+    # SUCCESS 门禁（#126 C1）：转写在 SUMMARIZING 前已落盘缓存，运行中/FAILED 任务
+    # 也能读出转写——不设门禁会与 get_task_transcript（#122 A3）同任务给 Agent 相反
+    # 结论（export ok:true vs get ok:false）。与 #122 A3 同口径，非 SUCCESS 一律拒绝。
+    # 位置：参数校验之后（可修复的参数错误优先报，见 #124 A8 契约）；读转写之前。
+    # UNKNOWN（任务不存在/状态不可读）不在此拦截——转写读不到时由下方
+    # 「找不到转写」路径带准确原因（"任务状态不可读"）报错，而不是误报「任务未成功」。
+    status = _read_task_status(task_id)
+    if status not in ("SUCCESS", "UNKNOWN"):
+        return json.dumps(
+            {
+                "ok": False,
+                "task_id": task_id,
+                "error": f"任务未成功（当前状态 {status}）：只有 SUCCESS 任务能导出转写"
+                f"（{_transcript_unavailable_reason(task_id)}）",
+            },
+            ensure_ascii=False,
+        )
     result_json = task_dir / "result.json"
     transcript = None
     if result_json.exists():
@@ -2558,29 +2619,6 @@ def export_transcript(
             },
             ensure_ascii=False,
         )
-
-    if formats is None:
-        formats = resolve_default_export_formats()
-        if not formats:
-            formats = ["srt"]
-    if formats == []:
-        # 显式空列表：零导出还报 ok:true 与 #122 A1「任何格式没导出必须 ok:false」矛盾
-        # （CLI 版对 not written 显式退出报错）——入口显式报错，省略参数才走默认（#124 A8）
-        raise ValueError("formats 为空列表，未导出任何格式（省略该参数以用默认格式）")
-    if not isinstance(formats, list):
-        raise ValueError(f"formats 必须是字符串列表（支持 {' / '.join(FORMATS)}），收到: {formats!r}")
-    unknown = sorted({f for f in formats if f not in FORMATS})
-    if unknown:
-        # 未知格式曾只写 stderr 警告后静默丢弃——Agent 以为导出成功实际缺文件
-        raise ValueError(f"formats 只支持 {' / '.join(FORMATS)}，收到未知格式: {unknown!r}")
-
-    if out_dir is not None:
-        # 输出目录同输入文件：file:// URI 先规整，否则 Path("file:///…") 建字面 `file:` 目录（#107）
-        out_dir = str(_coerce_local_path(out_dir))
-    out = out_dir or str(task_dir / "gen")
-    # 数据目录外输出只提示不拦截：显式导出到别处是用户意图（docs/05 #45）
-    if out_dir and not Path(out).resolve().is_relative_to(DATA_DIR.resolve()):
-        logger.warning("export_transcript 输出到数据目录外: %s", out)
     written = _export(transcript, formats=formats, out_dir=out, task_id=task_id)
     errors = written.pop("_errors", {}) if isinstance(written, dict) else {}
     # 任一格式落盘失败 → ok:False（此前全部失败仍 ok:True + formats:{}，

@@ -228,14 +228,18 @@ def get_app_config() -> dict:
                 pass
             logger.warning("app_config.json 损坏（已备份到 %s，按空配置处理，避免后续写入抹掉其余配置）: %s", backup, exc)
             return {}
-        try:
-            for k in _SENSITIVE_CONFIG_KEYS:
-                if k in cfg:
-                    cfg[k] = decrypt_value(cfg[k])
-            return cfg
-        except Exception:
-            logger.warning("app_config.json 敏感字段解密失败，按缺失处理")
-            return {}
+        for k in _SENSITIVE_CONFIG_KEYS:
+            if k not in cfg:
+                continue
+            # per-key 容错（#126 C6）：手改 JSON 把敏感字段写成非字符串（如 123）时
+            # 只 drop 该 key，不再整包返回 {}——否则下一次 set_app_config 读 {} 写回
+            # 会把 default_model/notes_dir 等全部抹掉（#125 C1 只兜了 JSON 损坏）
+            try:
+                cfg[k] = decrypt_value(cfg[k])
+            except Exception:
+                logger.warning("app_config.%s 解密失败（值类型异常），按缺失处理", k)
+                cfg.pop(k, None)
+        return cfg
     return {}
 
 

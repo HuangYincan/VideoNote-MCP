@@ -153,15 +153,18 @@ class BcutChunkedReadTest(unittest.TestCase):
         self.assertEqual(tr._BcutTranscriber__etags, ["e", "e", "e"])
 
     def test_empty_clips_no_upload(self):
+        """clips=0（服务端异常分片参数）→ 前置报错而非静默跳过/上传空块（#126 B5）。"""
         from app.transcriber.bcut import BcutTranscriber
 
         tr = BcutTranscriber()
         tr._BcutTranscriber__clips = 0
+        tr._BcutTranscriber__per_size = 1024
         with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
             f.write(b"x")
             f.flush()
             with mock.patch.object(tr.session, "put") as m_put:
-                tr._BcutTranscriber__upload_part(f.name)
+                with self.assertRaises(RuntimeError):
+                    tr._BcutTranscriber__upload_part(f.name)
         m_put.assert_not_called()
 
 

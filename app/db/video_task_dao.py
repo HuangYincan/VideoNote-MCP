@@ -44,7 +44,9 @@ def insert_video_task(
                 )
             )
         db.commit()
-        logger.info(f"Video task saved. task_id={task_id}, title={title[:40]!r}")
+        # title 可能是 None（无标题视频/平台），f-string 里切片会 TypeError——
+        # 行已入库却被记成「插入失败」，排查指向错误方向（#126 B8）
+        logger.info(f"Video task saved. task_id={task_id}, title={(title or '')[:40]!r}")
     except Exception as e:
         logger.error(f"Failed to insert video task: {e}")
     finally:

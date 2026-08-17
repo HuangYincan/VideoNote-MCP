@@ -117,6 +117,11 @@ class BcutTranscriber(Transcriber):
     def __upload_part(self, file_path: str) -> None:
         """上传音频数据（按分片从文件分段读，#125 B15：不再整文件载入 + 切片复制，
         多 GB 音频峰值内存从 ~2× 文件大小降到 per_size）"""
+        if not self.__per_size or not self.__clips:
+            # per_size=0 时 f.read(0) 上传空块，报错是晦涩的 HTTP 400（#126 B5）
+            raise RuntimeError(
+                f"必剪返回异常分片参数（per_size={self.__per_size}, clips={self.__clips}），无法上传"
+            )
         with open(file_path, "rb") as f:
             for clip in range(self.__clips):
                 start_range = clip * self.__per_size
@@ -244,7 +249,7 @@ class BcutTranscriber(Transcriber):
             segments = []
             
             for u in result_json.get("utterances", []):
-                text = u.get("transcript", "").strip()
+                text = (u.get("transcript") or "").strip()  # API 返回 null 不裸崩（#126 B5）
                 # B站ASR返回的时间戳是毫秒，需要转换为秒
                 start_time = float(u.get("start_time", 0)) / 1000.0
                 end_time = float(u.get("end_time", 0)) / 1000.0

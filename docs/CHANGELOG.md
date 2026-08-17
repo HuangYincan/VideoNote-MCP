@@ -2,6 +2,19 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave F 批 15（2026-08-17 · 第 10 轮双代理扫描 #126，643 tests）
+
+- **导出门禁（C1）**：`export_transcript` 非 SUCCESS 任务返回 `{ok:false}`——FAILED/运行中不再导出成功；CLI `export` 同口径，两个读转写工具给 Agent 的结论不再相反。
+- **cleanup 形状对齐（C2）**：`cleanup_all` 成功路径补 `ok: true`。
+- **数值参数长尾（C3/C5）**：`fetch_comments` limit、`set_transcriber` diarization_speakers 统一 `_coerce_int`——垃圾值回退默认/None，不再裸 int 天书错误。
+- **mlx 预校验可达（C4）**：`download_transcriber_model` mlx 分支提交前校验尺寸；`mlx_whisper` 顶层 import 改惰性——未装 extras 也能 import MLX_MODEL_MAP 做前置校验，缺依赖时给安装提示而非 ModuleNotFoundError。
+- **配置解密边界（C6）**：`get_app_config` 解密 per-key try/except——手改 JSON 里的坏值只 drop 该 key，不再整包 `{}`（下一次 set 不再抹掉其余配置）。
+- **CLI 口径（C7/C8）**：`transcriber set --size` help 补全 large-v3-turbo（自定义尺寸不再被 argparse 拒）；`export --out-dir` 规整 file:// URI，不再建字面 `file:` 目录。
+- **validate 语义（C9）**：`validate_url` 本地路径加存在性检查——不存在返回 supported:false，不再与 generate_note 的拒绝矛盾。
+- **并发互毁关闭（B1）**：预处理临时产物落独立 `vn_prep_`/`vn_dia_` 临时目录——两个并发任务处理同一本地文件时互不覆盖、互不误删。
+- **资源与兼容（B2/B3/B4）**：youtube_subtitle Session try/finally close；dm_img patch 遇 TypeError 降级无 fatal 重调（旧版 yt-dlp 兼容）；b23.tv/v.douyin.com 短链解析 lru_cache（单任务 3-5 次 HEAD → 1 次）。
+- **None/异常长尾（B5-B9）**：bcut/kuaishou 段文本 None 守卫 + per_size=0 拒绝上传空块；`_first_choice_content` 空内容错误同口径；`cleanup_all` 索引失败不再静默吞（warning + `index_error`）；`insert_video_task` 日志 `(title or "")[:40]`；`update_config` class-level RLock 补无锁 RMW。
+
 ## Wave F 批 14（2026-08-17 · 第 9 轮双代理扫描 #125，612 tests）
 
 - **损坏配置不再抹掉其余配置（A1）**：`get_app_config` 遇损坏 JSON 打 warning + `.corrupt` 备份 + 按空配置处理——`set_app_config` 读 `{}` 写回把 default_model/notes_dir 全抹掉的窗口关闭。

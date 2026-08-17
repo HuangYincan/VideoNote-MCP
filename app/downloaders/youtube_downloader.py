@@ -174,4 +174,9 @@ class YoutubeDownloader(Downloader, ABC):
         video_id = extract_video_id(video_url, "youtube")
         fetcher = YouTubeSubtitleFetcher()
         logger.info("尝试获取字幕，video_id=%s, langs=%s", video_id, langs)
-        return fetcher.fetch_subtitles(video_id, langs)
+        try:
+            return fetcher.fetch_subtitles(video_id, langs)
+        finally:
+            # 显式释放代理 Session（#125 B16 定义了 close 但唯一生产调用路径
+            # 直接 return 没调——MCP 长驻进程 GC 不保证及时，连接池泄漏仍在，#126 B2）
+            fetcher.close()

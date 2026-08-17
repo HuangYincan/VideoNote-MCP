@@ -1,3 +1,4 @@
+import functools
 import re
 from typing import Optional
 import requests
@@ -45,6 +46,7 @@ def extract_video_id(url: str, platform: str) -> Optional[str]:
     return None
 
 
+@functools.lru_cache(maxsize=64)
 def resolve_bilibili_short_url(short_url: str) -> Optional[str]:
     """
     解析哔哩哔哩短链接以获取真实视频链接
@@ -60,6 +62,7 @@ def resolve_bilibili_short_url(short_url: str) -> Optional[str]:
         return None
 
 
+@functools.lru_cache(maxsize=64)
 def resolve_douyin_short_url(short_url: str) -> Optional[str]:
     """解析抖音短链接（v.douyin.com/xxx，App 分享默认形态）以获取真实视频链接。
 

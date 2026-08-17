@@ -76,7 +76,7 @@ class KuaishouTranscriber(Transcriber):
             # 解析快手API返回的文本段
             texts = result_data.get('data', {}).get('text', [])
             for u in texts:
-                text = u.get('text', '').strip()
+                text = (u.get('text') or '').strip()  # API 返回 null 不裸崩（#126 B5）
                 start_time = float(u.get('start_time', 0))
                 end_time = float(u.get('end_time', 0))
                 

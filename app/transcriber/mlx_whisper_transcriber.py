@@ -1,16 +1,16 @@
-import mlx_whisper
-from pathlib import Path
 import os
 import platform
 import threading
+from pathlib import Path
+
 from huggingface_hub import snapshot_download
 
 from app.decorators.timeit import timeit
-from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.events import transcription_finished
+from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_model_dir
-from app.events import transcription_finished
 
 logger = get_logger(__name__)
 
@@ -84,6 +84,16 @@ class MLXWhisperTranscriber(Transcriber):
     @timeit
     def transcript(self, file_path: str) -> TranscriptResult:
         with self._lock:
+            # 惰性导入：mlx-whisper 是可选 extras（pyproject `mlx`），未装时给安装提示
+            # 而非 ModuleNotFoundError 天书（与 diarization 的可选依赖模式同款）。
+            # 同时保证 MLX_MODEL_MAP 等元数据在未装时仍可 import（#126 C4 前置校验）。
+            try:
+                import mlx_whisper
+            except ImportError:
+                raise RuntimeError(
+                    "mlx-whisper 未安装：请用 `uvx --with mlx-whisper --from "
+                    "git+https://github.com/HuangYincan/VideoNote-MCP videonote ...` 安装"
+                )
             try:
                 # 使用 MLX Whisper 进行转录
                 # 必须传本地模型目录（__init__ 已 snapshot_download 到 model_path）：

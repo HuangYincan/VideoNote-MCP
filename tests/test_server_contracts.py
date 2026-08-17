@@ -650,6 +650,10 @@ class ExportEmptyFormatsTest(unittest.TestCase):
                 }
             },
         )
+        # C1 门禁（#126）：非 SUCCESS 任务拒绝导出——测试任务补 SUCCESS 状态
+        server._atomic_write_json(
+            server.NOTE_OUTPUT_DIR / tid / "status.json", {"status": "SUCCESS"}
+        )
         try:
             resp = json.loads(server.export_transcript(tid))
             self.assertTrue(resp["ok"])
@@ -1237,6 +1241,10 @@ class ExportFormatsWhitelistTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        # C1 门禁（#126）：非 SUCCESS 任务拒绝导出——测试任务补 SUCCESS 状态
+        (task_dir / "status.json").write_text(
+            json.dumps({"status": "SUCCESS"}, ensure_ascii=False), encoding="utf-8"
+        )
         return tid
 
     def test_unknown_format_rejected(self):
@@ -1749,7 +1757,7 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
             with mock.patch.object(server, "cleanup_all_files",
                                    return_value={"cleaned": [], "kept": []}) as m:
                 resp = json.loads(server.cleanup_all())
-            self.assertNotIn("ok", resp)  # 正常全局清理形状无 ok 字段
+            self.assertTrue(resp["ok"])  # 成功路径带 ok:true，与拒绝路径 {ok:false} 对称（#126 C2）
             m.assert_called_once_with(include_config=False, include_models=False)
         finally:
             self._restore(old)
@@ -1776,7 +1784,7 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
                                    return_value={"cleaned": [], "kept": []}) as m, \
                  mock.patch.object(server.dl_state, "downloading_keys", return_value=[]):
                 resp = json.loads(server.cleanup_all(include_models=True))
-            self.assertNotIn("ok", resp)
+            self.assertTrue(resp["ok"])  # 成功路径带 ok:true（#126 C2）
             m.assert_called_once_with(include_config=False, include_models=True)
         finally:
             self._restore(old)

@@ -1,4 +1,5 @@
 import os
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -24,6 +25,11 @@ def _config_bool(data: Dict[str, Any], key: str, env_name: str) -> bool:
 
 class TranscriberConfigManager:
     """管理转写器配置，存储在 JSON 文件中，支持前端动态修改。"""
+
+    # class-level 锁（#126 B9，与 cookie_manager #124 B15 同款）：update_config 是
+    # read-modify-write 整文件，并发 set_transcriber 会互相抹掉对方刚写的字段；
+    # 锁上整个 RMW 区间。get_config 只读不锁（json 读取是原子的文件级操作）。
+    _lock = threading.RLock()
 
     def __init__(self, filepath: str = None):
         # 默认落在 VIDEONOTE_CONFIG_DIR（由 videonote_mcp.config 设置），避免依赖 CWD
@@ -70,17 +76,18 @@ class TranscriberConfigManager:
         diarization_speakers: Optional[int] = None,
     ) -> Dict[str, Any]:
         """更新转写器配置并持久化。"""
-        data = self._read()
-        data["transcriber_type"] = transcriber_type
-        if whisper_model_size is not None:
-            data["whisper_model_size"] = whisper_model_size
-        if enable_preprocess is not None:
-            data["enable_preprocess"] = bool(enable_preprocess)
-        if diarization is not None:
-            data["diarization"] = bool(diarization)
-        if diarization_speakers is not None:
-            data["diarization_speakers"] = int(diarization_speakers)
-        self._write(data)
+        with self._lock:
+            data = self._read()
+            data["transcriber_type"] = transcriber_type
+            if whisper_model_size is not None:
+                data["whisper_model_size"] = whisper_model_size
+            if enable_preprocess is not None:
+                data["enable_preprocess"] = bool(enable_preprocess)
+            if diarization is not None:
+                data["diarization"] = bool(diarization)
+            if diarization_speakers is not None:
+                data["diarization_speakers"] = int(diarization_speakers)
+            self._write(data)
         return self.get_config()
 
     def get_transcriber_type(self) -> str:

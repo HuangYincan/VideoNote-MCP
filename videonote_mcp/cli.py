@@ -1279,7 +1279,7 @@ def _transcriber_cli(argv) -> None:
     sub.add_parser("list", help="查看当前转写引擎与就绪状态")
     p_set = sub.add_parser("set", help="切换转写引擎")
     p_set.add_argument("engine", choices=_TRANSCRIBER_ENGINES)
-    p_set.add_argument("--size", help="whisper 模型尺寸（tiny/base/small/medium/large-v3）")
+    p_set.add_argument("--size", help=f"whisper 模型尺寸（{'/'.join(_WHISPER_SIZES)}，或自定义模型名 / HF repo_id / 本地目录）")
     p_dl = sub.add_parser("download", help="下载本地 whisper 模型")
     p_dl.add_argument("size", choices=_WHISPER_SIZES)
     p_dl.add_argument("--engine", default="fast-whisper", choices=("fast-whisper", "mlx-whisper"), help="fast-whisper（默认）或 mlx-whisper（macOS）")
@@ -1319,7 +1319,14 @@ def _transcriber_cli(argv) -> None:
         cfg = mgr.update_config(opts.engine, opts.size)
         print(f"已切换: {cfg['transcriber_type']} / {cfg['whisper_model_size']}", file=sys.stdout)
         if opts.engine == "fast-whisper":
-            print(f"（本地模型还需下载：videonote transcriber download {cfg['whisper_model_size']}）", file=sys.stdout)
+            size = cfg["whisper_model_size"]
+            if size in _WHISPER_SIZES:
+                print(f"（本地模型还需下载：videonote transcriber download {size}）", file=sys.stdout)
+            else:
+                print(
+                    f"（自定义尺寸 {size!r} 无预下载命令：首次转写时会自动从 HuggingFace 下载）",
+                    file=sys.stdout,
+                )
     elif opts.cmd == "download":
         try:
             if opts.engine == "mlx-whisper":
@@ -1538,6 +1545,24 @@ def _export_cli(argv) -> None:
     task_dir = note_output_dir / opts.task_id
     import json as _json
 
+    # C1 门禁（#126）：与 MCP export_transcript 同口径，非 SUCCESS 任务拒绝导出。
+    # 此前 CLI 对 FAILED/运行中任务照常导出、MCP 拒绝——同一任务两套结论（CLI/MCP 不对称）。
+    # 与 MCP 一致放在参数校验后、读转写前；UNKNOWN（任务不存在/状态不可读）放行，
+    # 由下方「找不到任务」路径报准确原因，而不是误报「任务未成功」。
+    status_path = task_dir / "status.json"
+    task_status = None
+    if status_path.exists():
+        try:
+            task_status = _json.loads(status_path.read_text(encoding="utf-8")).get("status")
+        except Exception:
+            task_status = None
+    if task_status not in ("SUCCESS", "UNKNOWN", None):
+        print(
+            f"✗ 任务未成功（当前状态 {task_status}）：只有 SUCCESS 任务能导出转写",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # 与 server 侧 _load_task_transcript 同源（docs/05 #16）：gen/transcript.json 是
     # 规范来源，缺失/损坏才退 result.json；损坏与「无转写」分开报（#120）
     transcript = None
@@ -1562,6 +1587,12 @@ def _export_cli(argv) -> None:
         sys.exit(1)
 
     out_dir = opts.out_dir or str(task_dir / "gen")
+    if opts.out_dir and opts.out_dir.startswith("file://"):
+        # file:// URI 规整（与 MCP export_transcript #107 同口径）：否则 Path("file:///…")
+        # 在 CWD 建字面 `file:` 目录（#126 C8）
+        from urllib.parse import unquote, urlparse
+
+        out_dir = unquote(urlparse(opts.out_dir).path or "")
     written = export_transcript(transcript, formats=formats, out_dir=out_dir, task_id=opts.task_id)
     # 部分失败时 exporter 把 _errors 塞进 written（#125 C2）：先剥离再判空——
     # 否则全部失败时 {"_errors": ...} 仍 truthy，`not written` 报错分支变死代码，

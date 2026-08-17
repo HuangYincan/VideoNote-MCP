@@ -20,6 +20,8 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import shutil
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional, Union
@@ -181,13 +183,17 @@ def apply_diarization(
         if not mgr.get_diarization():
             return segments
         from app.services.diarization import assign_speakers, diarize_audio
-        from app.transcriber.audio_preprocess import cleanup_preprocess_files, normalize_to_wav
+        from app.transcriber.audio_preprocess import normalize_to_wav
 
         created = False
+        prep_dir = None
         wav = wav_path
         try:
             if not wav:
-                wav = normalize_to_wav(audio_file)
+                # 独立临时目录（#126 B1）：自建 wav 落 mkdtemp 而非源文件同目录——
+                # 两个并发任务处理同一文件时互不覆盖，清理也互不误删
+                prep_dir = tempfile.mkdtemp(prefix="vn_dia_")
+                wav = normalize_to_wav(audio_file, out_dir=prep_dir)
                 created = True
             turns = diarize_audio(wav, num_speakers=mgr.get_diarization_speakers())
             segments = assign_speakers(segments, turns)
@@ -197,11 +203,8 @@ def apply_diarization(
             logger.info("说话人分离完成: %d 段、%d 位说话人", len(segments), speaker_count)
             return segments
         finally:
-            if created:
-                try:
-                    cleanup_preprocess_files(wav)
-                except Exception:  # noqa: BLE001 —— 清理失败不阻断
-                    pass
+            if created and prep_dir:
+                shutil.rmtree(prep_dir, ignore_errors=True)
     except Exception as exc:  # noqa: BLE001 —— diarization 失败不阻断笔记生成
         logger.warning("说话人分离失败（跳过）: %s", exc)
         return segments
@@ -258,69 +261,66 @@ def _ensure_transcript_content(full_text: str, segments: list) -> None:
 
 def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> dict:
     """预处理后逐块转写并拼接 segments（时间偏移补偿）。"""
-    from app.transcriber.audio_preprocess import chunk_if_long, normalize_to_wav
     from app.models.transcriber_model import TranscriptSegment
+    from app.transcriber.audio_preprocess import chunk_if_long, normalize_to_wav
 
-    # 归一化到 16kHz mono wav（工作目录 = 源文件同目录）
-    wav = normalize_to_wav(audio_file)
-    chunks = chunk_if_long(wav, max_seconds=1800)
-
-    all_segments: List[TranscriptSegment] = []
-    offset = 0.0
-    language = None
-    failed = 0
-    first_error: Optional[Exception] = None
-    for chunk in chunks:
-        chunk_dur = chunk_duration_guess(chunk)
-        try:
-            tr = transcriber.transcript(file_path=chunk)
-        except Exception as exc:  # noqa: BLE001 —— 单块失败跳过，不阻断整段
-            logger.warning(f"预处理分块转写失败（跳过该块）: {exc}")
-            if first_error is None:
-                first_error = exc
-            failed += 1
-            # 失败也要推进时间偏移，否则后续段时间轴整体错位（缺了这块的 ~1800s）
-            offset += chunk_dur
-            continue
-        if language is None and tr.language:
-            language = tr.language
-        for seg in tr.segments or []:
-            all_segments.append(
-                TranscriptSegment(
-                    start=round(seg.start + offset, 3),
-                    end=round(seg.end + offset, 3),
-                    text=seg.text,
-                )
-            )
-        offset += chunk_dur
-
-    # 说话人分离：复用已归一化的 wav，在临时文件清理前完成（docs/05 #31）
-    all_segments = apply_diarization(audio_file, all_segments, wav_path=wav)
-
-    # 清理预处理临时文件（16k wav + 分块），避免污染用户目录
+    # 独立临时目录（#126 B1）：prep 产物（16k wav + 分块）不再落源文件同目录——
+    # 旧实现固定命名 <名>_16k.wav，两个并发任务处理同一文件会互相覆盖/误删对方
+    # 正在转写的 wav；mkdtemp 隔离后各任务只碰自己的目录。
+    prep_dir = tempfile.mkdtemp(prefix="vn_prep_")
     try:
-        from app.transcriber.audio_preprocess import cleanup_preprocess_files
+        wav = normalize_to_wav(audio_file, out_dir=prep_dir)
+        chunks = chunk_if_long(wav, max_seconds=1800)
 
-        cleanup_preprocess_files(wav)
-    except Exception:  # noqa: BLE001 —— 清理失败不阻断
-        pass
+        all_segments: List[TranscriptSegment] = []
+        offset = 0.0
+        language = None
+        failed = 0
+        first_error: Optional[Exception] = None
+        for chunk in chunks:
+            chunk_dur = chunk_duration_guess(chunk)
+            try:
+                tr = transcriber.transcript(file_path=chunk)
+            except Exception as exc:  # noqa: BLE001 —— 单块失败跳过，不阻断整段
+                logger.warning(f"预处理分块转写失败（跳过该块）: {exc}")
+                if first_error is None:
+                    first_error = exc
+                failed += 1
+                # 失败也要推进时间偏移，否则后续段时间轴整体错位（缺了这块的 ~1800s）
+                offset += chunk_dur
+                continue
+            if language is None and tr.language:
+                language = tr.language
+            for seg in tr.segments or []:
+                all_segments.append(
+                    TranscriptSegment(
+                        start=round(seg.start + offset, 3),
+                        end=round(seg.end + offset, 3),
+                        text=seg.text,
+                    )
+                )
+            offset += chunk_dur
 
-    # 分块文本用空格连接：无分隔拼接会让英文 chunk 边界连词（"hello"+"hello" → "hellohello"）
-    full_text = " ".join(s.text for s in all_segments)
-    if failed == len(chunks):
-        # 全块失败曾静默返回空转写，上层当成功缓存 → 任务 SUCCESS 产空笔记（#118）
-        raise RuntimeError(
-            f"预处理分块转写全部失败（{failed}/{len(chunks)} 块）：{first_error}"
-        ) from first_error
-    # 单块成功但内容为空（静音块）同样按失败处理（#121 B2）
-    _ensure_transcript_content(full_text, list(all_segments))
-    result = asdict(
-        TranscriptResult(language=language, full_text=full_text, segments=all_segments)
-    )
-    if failed:
-        logger.warning(f"预处理分块转写部分失败（{failed}/{len(chunks)} 块），转写不完整")
-        result["truncated"] = True
-    return result
+        # 说话人分离：复用已归一化的 wav，在临时目录清理前完成（docs/05 #31）
+        all_segments = apply_diarization(audio_file, all_segments, wav_path=wav)
+        # 分块文本用空格连接：无分隔拼接会让英文 chunk 边界连词（"hello"+"hello" → "hellohello"）
+        full_text = " ".join(s.text for s in all_segments)
+        if failed == len(chunks):
+            # 全块失败曾静默返回空转写，上层当成功缓存 → 任务 SUCCESS 产空笔记（#118）
+            raise RuntimeError(
+                f"预处理分块转写全部失败（{failed}/{len(chunks)} 块）：{first_error}"
+            ) from first_error
+        # 单块成功但内容为空（静音块）同样按失败处理（#121 B2）
+        _ensure_transcript_content(full_text, list(all_segments))
+        result = asdict(
+            TranscriptResult(language=language, full_text=full_text, segments=all_segments)
+        )
+        if failed:
+            logger.warning(f"预处理分块转写部分失败（{failed}/{len(chunks)} 块），转写不完整")
+            result["truncated"] = True
+        return result
+    finally:
+        shutil.rmtree(prep_dir, ignore_errors=True)
 
 
 def chunk_duration_guess(wav_path: str) -> float:
