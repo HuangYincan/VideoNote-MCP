@@ -6,6 +6,7 @@ Agent 按单视频流程处理；本模块不批量提交。
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -39,6 +40,17 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
         if plat == "bilibili":
             return _inspect_bilibili(raw)
         if plat == "local":
+            # 存在性检查：不存在的路径返回 ok:false——否则 Agent 拿到 ok:true 后把
+            # 幻影路径喂给 generate_note 才报「本地文件不存在」（#130 A5，generate_note
+            # 等入口都有守卫，inspect 层漏了）
+            local_path = Path(raw).expanduser()
+            if not local_path.is_file():
+                return {
+                    "ok": False,
+                    "platform": "local",
+                    "kind": "single",
+                    "error": f"本地文件不存在: {raw}",
+                }
             return {
                 "ok": True,
                 "platform": "local",

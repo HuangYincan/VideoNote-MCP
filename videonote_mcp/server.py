@@ -25,11 +25,11 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 
 from videonote_mcp import __version__ as _SERVER_VERSION
 from videonote_mcp.config import (
-    env_bool,
     env_int,
     env_or,
     get_app_config,
     remove_app_config,
+    resolve_bool_config,
     resolve_default_export_formats,
     resolve_int_config,
     setup_environment,
@@ -180,6 +180,15 @@ def _check_grid_size(grid_size) -> None:
 def _resolve_int_config(key: str, env_name: str, default: int) -> int:
     """app_config 整数配置解析（共享实现见 config.resolve_int_config，#120）。"""
     return resolve_int_config(key, env_name, default)
+
+
+def _resolve_bool_config(key: str, env_name: str, default: bool) -> bool:
+    """app_config 布尔配置解析（共享实现见 config.resolve_bool_config，#130 A1）。
+
+    `bool(get_app_config().get(...))` 的 truthy-swallow：手动写入 "false"/"0"/"no"
+    会被当成 True——视频理解/弹幕/截图开关静默翻转开启。bool 词表解析见 config。
+    """
+    return resolve_bool_config(key, env_name, default)
 
 
 def _coerce_int(value, default: int, clamp_min: Optional[int] = None) -> int:
@@ -851,23 +860,24 @@ def generate_note(
     # 视频理解默认：参数没传（None）时用 setup ③ 配置的默认（默认关 / 0→6s）；
     # 显式传 False/0/具体秒数仍是显式值，覆盖默认
     if video_understanding is None:
-        video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
+        video_understanding = _resolve_bool_config("video_understanding", "VIDEONOTE_VIDEO_UNDERSTANDING", False)
     if video_interval is None:
         video_interval = _resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 0)
     video_interval = _coerce_int(video_interval or 0, 0, clamp_min=0)  # 下限钳制，避免 0/负值进流水线
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
-        include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
+        include_comments = _resolve_bool_config("include_comments", "VIDEONOTE_INCLUDE_COMMENTS", False)
     if comments_limit is None:
         comments_limit = _resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
-    comments_limit = _coerce_int(comments_limit or 20, 20, clamp_min=1)  # 下限钳制
+    # 显式 comments_limit=0（配 include_comments=True 想限 0 条）不能被 `or 20` 吞掉（#130 A2）
+    comments_limit = _coerce_int(comments_limit if comments_limit is not None else 20, 20, clamp_min=1)  # 下限钳制
 
     # 风格/截图默认：参数没传（None）时用 setup ③ 配置的默认（默认 detailed / 关）
     if style is None:
         style = get_app_config().get("default_style") or env_or("VIDEONOTE_DEFAULT_STYLE") or "detailed"
     if screenshot is None:
-        screenshot = bool(get_app_config().get("default_screenshot", env_bool("VIDEONOTE_DEFAULT_SCREENSHOT", False)))
+        screenshot = _resolve_bool_config("default_screenshot", "VIDEONOTE_DEFAULT_SCREENSHOT", False)
 
     # 并发上限：最多 VIDEONOTE_MAX_WORKERS 个进行中任务（默认 3）
     _guard_concurrency()
@@ -958,17 +968,18 @@ def prepare_note_material(
     # 视频理解（抽帧）默认：参数没传（None）时用 setup ③ 配置的默认（默认关 / 0→6s）；
     # 显式传 False/0/具体秒数仍是显式值，覆盖默认
     if video_understanding is None:
-        video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
+        video_understanding = _resolve_bool_config("video_understanding", "VIDEONOTE_VIDEO_UNDERSTANDING", False)
     if video_interval is None:
         video_interval = _resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 0)
     video_interval = _coerce_int(video_interval or 0, 0, clamp_min=0)  # 下限钳制，避免 0/负值进流水线
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
-        include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
+        include_comments = _resolve_bool_config("include_comments", "VIDEONOTE_INCLUDE_COMMENTS", False)
     if comments_limit is None:
         comments_limit = _resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
-    comments_limit = _coerce_int(comments_limit or 20, 20, clamp_min=1)  # 下限钳制
+    # 显式 comments_limit=0 不能被 `or 20` 吞掉（#130 A2）
+    comments_limit = _coerce_int(comments_limit if comments_limit is not None else 20, 20, clamp_min=1)  # 下限钳制
 
     # 并发上限：与 generate_note 一致
     _check_grid_size(grid_size)
@@ -2783,13 +2794,6 @@ def main() -> None:
     """MCP server 入口。CLI（providers）由 videonote_mcp.cli:main 分发，本函数只跑 MCP stdio。"""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
     init_db()
-    try:
-        from app.events import register_handler as _register_handler
-
-        _register_handler()
-        logger.info("已注册转写完成清理事件")
-    except Exception as e:
-        logger.warning(f"注册事件监听器失败: {e}")
     logger.info(f"VideoNote-Mcp 启动 | 数据目录: {DATA_DIR}")
     mcp.run(transport="stdio")
 

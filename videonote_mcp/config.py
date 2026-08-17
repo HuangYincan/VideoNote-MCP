@@ -132,6 +132,27 @@ def resolve_int_config(key: str, env_name: str, default: int) -> int:
     return env_int(env_name, default)
 
 
+def resolve_bool_config(key: str, env_name: str, default: bool) -> bool:
+    """解析 app_config 布尔配置：垃圾值 warning 后回退 env/默认（#130 A1）。
+
+    与 resolve_int_config 同族：`bool(get_app_config().get(key, env_bool(...)))` 的
+    truthy-swallow 让手动写入的字符串 "false"/"0"/"no" 被 bool("false")==True 静默
+    翻转开启——视频理解/弹幕评论/截图开关一旦手滑全开。bool 语义用与 env_bool
+    相同的词表（true/false/1/0/yes/no/on/off，大小写不敏感）；真 bool 直通。
+    """
+    raw = get_app_config().get(key)
+    if raw is not None:
+        if isinstance(raw, bool):
+            return raw
+        v = str(raw).strip().lower()
+        if v in _BOOL_TRUE:
+            return True
+        if v in _BOOL_FALSE:
+            return False
+        logger.warning("app_config.%s 非布尔（%r），回退 env/默认", key, raw)
+    return env_bool(env_name, default)
+
+
 def env_json_list(name: str, default):
     """解析 env JSON 数组（如 '["srt","vtt"]'）；未设置/非法回 default。"""
     v = env_or(name)

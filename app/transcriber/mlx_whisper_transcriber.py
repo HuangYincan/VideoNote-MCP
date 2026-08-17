@@ -6,7 +6,6 @@ from pathlib import Path
 from huggingface_hub import snapshot_download
 
 from app.decorators.timeit import timeit
-from app.events import transcription_finished
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
@@ -121,8 +120,6 @@ full_text=" ".join(seg.text for seg in segments).strip(),
                     segments=segments,
                     raw=result
                 )
-
-                # self.on_finish(file_path, transcript_result)
                 return transcript_result
 
             except Exception as e:
@@ -136,9 +133,3 @@ full_text=" ".join(seg.text for seg in segments).strip(),
         transcriber_provider 的防御性释放接口（getattr(old, "close") 不再是 no-op）。
         """
         self.model_path = None
-
-    def on_finish(self, video_path: str, result: TranscriptResult) -> None:
-        logger.info("MLX Whisper 转写完成")
-        transcription_finished.send({
-            "file_path": video_path,
-        })

@@ -5,7 +5,6 @@ from pathlib import Path
 from faster_whisper import WhisperModel
 
 from app.decorators.timeit import timeit
-from app.events import transcription_finished
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.transcriber.whisper_models import (
@@ -176,7 +175,6 @@ full_text=" ".join(seg.text for seg in segments).strip(),
                     segments=segments,
                     raw=info
                 )
-                # self.on_finish(file_path, result)
                 return result
             except Exception as e:
                 # 抛给调用方（note._transcribe_audio 捕获并写入 FAILED 状态）；不要返回 None，
@@ -189,10 +187,4 @@ full_text=" ".join(seg.text for seg in segments).strip(),
         """释放底层模型引用（#127 B3）：切换模型尺寸时 transcriber_provider 调
         close 让旧 large-v3（~3GB）尽快 GC，不再双驻留撑内存。"""
         self.model = None
-
-    def on_finish(self,video_path:str,result: TranscriptResult)->None:
-        logger.info("转写完成")
-        transcription_finished.send({
-            "file_path": video_path,
-        })
 

@@ -1516,7 +1516,7 @@ def _export_cli(argv) -> None:
     p_run = sub.add_parser("export", help="导出指定任务（<task_id> 必填）")
     p_run.add_argument("task_id", help="已完成任务的 task_id（generate_note 返回）")
     p_run.add_argument("--format", default=None, help="逗号分隔的格式（srt,vtt,json），缺省取 setup 默认")
-    p_run.add_argument("--out-dir", default=None, help="输出目录（缺省 note_results/{task_id}/）")
+    p_run.add_argument("--out-dir", default=None, help="输出目录（缺省 note_results/{task_id}/gen/）")
 
     opts = parser.parse_args(argv)
     if opts.cmd == "list":
@@ -1598,12 +1598,16 @@ def _export_cli(argv) -> None:
         sys.exit(1)
 
     out_dir = opts.out_dir or str(task_dir / "gen")
-    if opts.out_dir and opts.out_dir.startswith("file://"):
-        # file:// URI 规整（与 MCP export_transcript #107 同口径）：否则 Path("file:///…")
-        # 在 CWD 建字面 `file:` 目录（#126 C8）
-        from urllib.parse import unquote, urlparse
+    if opts.out_dir:
+        if opts.out_dir.startswith("file://"):
+            # file:// URI 规整（与 MCP export_transcript #107 同口径）：否则 Path("file:///…")
+            # 在 CWD 建字面 `file:` 目录（#126 C8）
+            from urllib.parse import unquote, urlparse
 
-        out_dir = unquote(urlparse(opts.out_dir).path or "")
+            out_dir = unquote(urlparse(opts.out_dir).path or "")
+        else:
+            # `~` 展开：否则 Path("~/x") 在 CWD 建字面 `~` 目录（#130 A4，MCP 侧 _coerce_local_path 已展开）
+            out_dir = str(Path(opts.out_dir).expanduser())
     written = export_transcript(transcript, formats=formats, out_dir=out_dir, task_id=opts.task_id)
     # 部分失败时 exporter 把 _errors 塞进 written（#125 C2）：先剥离再判空——
     # 否则全部失败时 {"_errors": ...} 仍 truthy，`not written` 报错分支变死代码，

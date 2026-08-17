@@ -102,6 +102,22 @@ class RequestChunker:
             return type(segment)(**data)
         return type(segment)(segment.start, segment.end, text)
 
+    def _largest_fitting_prefix(self, segments, image_urls, start: int, **kwargs) -> int:
+        """二分找最大的 k：segments[start:start+k] 能装进当前约束。
+
+        fits 单调（多一段只增不减），线性逐段试在长转写（数千段）下每加一段都重建
+        整条消息并 json.dumps——O(n²) 累计 CPU（#130 B3）。二分把 _fits 调用从
+        O(段数) 降到 O(log 段数)，块边界与线性扫描完全一致（同为最大可容纳前缀）。
+        """
+        lo, hi = 0, len(segments) - start
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self._fits(segments[start:start + mid], image_urls, **kwargs):
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
+
     def _split_segment_to_fit(self, segment, **kwargs):
         text = self._get_text(segment)
         if not text:
@@ -132,25 +148,17 @@ class RequestChunker:
         seg_idx = 0
 
         while seg_idx < len(segments):
-            batch_segments = []
-            while seg_idx < len(segments):
-                candidate = batch_segments + [segments[seg_idx]]
-                eff_kwargs = kwargs if not chunks else _without_comments(kwargs)
-                if self._fits(candidate, [], **eff_kwargs):
-                    batch_segments = candidate
-                    seg_idx += 1
-                    continue
-                if not batch_segments:
-                    head, tail = self._split_segment_to_fit(segments[seg_idx], **kwargs)
-                    segments[seg_idx] = head
-                    segments.insert(seg_idx + 1, tail)
-                    continue
-                break
-
-            if not batch_segments:
-                raise ValueError("unable to fit any content into chunk")
-
-            chunks.append(ChunkPayload(segments=batch_segments, image_urls=[]))
+            eff_kwargs = kwargs if not chunks else _without_comments(kwargs)
+            # 二分最大可容纳前缀（#130 B3）：等价于线性扫描的停点，但 _fits 调用
+            # 数从 O(段数) 降到 O(log 段数)——长转写不再每次重建整条消息 O(n²)
+            k = self._largest_fitting_prefix(segments, [], seg_idx, **eff_kwargs)
+            if k == 0:
+                head, tail = self._split_segment_to_fit(segments[seg_idx], **kwargs)
+                segments[seg_idx] = head
+                segments.insert(seg_idx + 1, tail)
+                continue
+            chunks.append(ChunkPayload(segments=segments[seg_idx:seg_idx + k], image_urls=[]))
+            seg_idx += k
 
         if not image_urls:
             return chunks
@@ -203,22 +211,31 @@ class RequestChunker:
     def group_texts_by_budget(self, texts: List[str], build_messages: Callable, **kwargs) -> List[List[str]]:
         groups: List[List[str]] = []
         idx = 0
+
+        def _build(candidate) -> list:
+            try:
+                return build_messages(candidate, [], **kwargs)
+            except TypeError:
+                return build_messages(candidate, **kwargs)
+
         while idx < len(texts):
-            group: List[str] = []
-            while idx < len(texts):
-                candidate = group + [texts[idx]]
-                try:
-                    messages = build_messages(candidate, [], **kwargs)
-                except TypeError:
-                    messages = build_messages(candidate, **kwargs)
-                if self.estimate(messages) <= self.max_bytes and (
+            # 二分最大可容纳分组（#130 B3）：与 chunk() 同款——fits 单调，线性逐段
+            # 试在长输入下每次重建整条消息 O(n²)，二分降到 O(log n) 次构建
+            def _fits_group(k) -> bool:
+                messages = _build(texts[idx:idx + k])
+                return self.estimate(messages) <= self.max_bytes and (
                     not self.max_tokens or self._estimate_tokens(messages) <= self.max_tokens
-                ):
-                    group = candidate
-                    idx += 1
-                    continue
-                if not group:
-                    raise ValueError("single text block exceeds max_bytes")
-                break
-            groups.append(group)
+                )
+
+            if not _fits_group(1):
+                raise ValueError("single text block exceeds max_bytes")
+            lo, hi = 1, len(texts) - idx
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if _fits_group(mid):
+                    lo = mid
+                else:
+                    hi = mid - 1
+            groups.append(texts[idx:idx + lo])
+            idx += lo
         return groups

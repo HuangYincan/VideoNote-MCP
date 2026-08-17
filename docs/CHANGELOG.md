@@ -2,6 +2,15 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave F 批 19（2026-08-17 · 第 14 轮双代理扫描 #130，667 tests）
+
+- **bool truthy-swallow 收口（A1）**：`config.py` 新增 `resolve_bool_config`（bool 直通 / `1·true·yes·on / 0·false·no·off` 词表 / 垃圾值 warning 回退 env/默认），`generate_note` / `prepare_note_material` 的 `video_understanding` / `include_comments` / `screenshot` 五处接入——字符串 `"false"` 不再恒为 True 白开视频理解烧多模态 token（#116 int 系收口后 bool 系的最后一窝）。
+- **comments_limit 显式 0（A2）**：`comments_limit or 20` 改显式 `is not None` 判断——传 0 关评论不再被 falsy 吞成 20 条（#116 同族漏网）。
+- **CLI 导出契约（A3）**：`export --out-dir` help 改「缺省 note_results/{task_id}/gen/」（与实际一致）；CLI 侧补 file:// 解码 + expanduser（#105 只修了 MCP 工具面，CLI 直传 URI 曾误报文件不存在）。
+- **本地文件契约（A4/A5）**：`inspect_video` local 分支加 is_file 校验——幻影路径返回 `ok:false` + 明确错误，不再 ok:true 骗 Agent 喂 `generate_note` 到半路才报错；`merge_audio` 文件参数 `os.path.exists` → `Path.is_file()`（目录不再穿透到 ffmpeg 深处炸泛化错误）。
+- **死链整链删除（B1/B2/A6）**：`app/db/sqlite_client.py` 整文件删除（全仓零引用 + CWD 相对 DB 路径死引信）；blinker `transcription_finished` 死链整链删除——server 注册点 + `app/events/` 包 + 4 个转写器 `on_finish` 方法全部清掉（信号永不触发、register_handler 纯空转的悬空接口）；server.py 移除无使用的 `env_bool` import。VENDOR.md / docs/02 同步。
+- **RequestChunker 二分（B3）**：`chunk()` 主循环改 `_largest_fitting_prefix` 二分找最大可容纳前缀（fits 单调，_fits 调用从 O(段数) 降到 O(log 段数)，长转写不再每次重建整条消息 O(n²)）；`group_texts_by_budget` 同款二分。块边界与线性扫描完全一致——**400 随机 trial 差分验证 diffs=0**（超长段 split / comments 首块注入 / max_tokens 约束 / 异常一致性全覆盖）。
+
 ## Wave F 批 18（2026-08-17 · 第 13 轮双代理扫描 #129，666 tests）
 
 - **SKILL/docs 红线与死点清扫（A1-A4）**：troubleshooting.md 改「填 key 一律走 `! videonote providers set`」（不再教 Agent 用 update_provider/add_provider 填 key 撞红线）；docs/04 `get_task_transcript` 改「默认空=前 50 段」（实现口径）、`cleanup_all` 去掉「/logs」（#121 C3 刻意不清）；docs/02 `cleanup_all` 改「同步清空全局索引」。

@@ -53,7 +53,9 @@ def merge_audio(
         raise ValueError(f"至少需要 2 个文件，收到 {len(files)} 个")
     paths = [str(Path(f).expanduser()) for f in files]
     for p in paths:
-        if not os.path.exists(p):
+        # is_file 而非 exists：目录也 exists，直接调 core 时目录会给出误导性 ffmpeg
+        # 错误而非「文件不存在」（#130 A6，#109 只修了工具层）
+        if not Path(p).is_file():
             raise FileNotFoundError(f"文件不存在: {p}")
 
     if out_dir:
