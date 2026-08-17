@@ -2062,12 +2062,18 @@ def preflight(
     checks.append({"name": "provider", "ok": p_ok, "detail": p_detail})
 
     with _tasks_lock:
-        queue_len = len(_task_futures)
-    queue_ok = queue_len < _MAX_WORKERS
+        running_list = [tid for tid, f in _task_futures.items() if f.running()]
+        queued = len(_task_futures) - len(running_list)
+    # 与 _guard_concurrency 同源（只算 running()）：排队任务不占名额（batch 语义），
+    # 此前用 len(_task_futures) 会把「3 个排队」误报成已满（#115）
+    queue_ok = len(running_list) < _MAX_WORKERS
+    queue_detail = f"{len(running_list)}/{_MAX_WORKERS} 运行中"
+    if queued:
+        queue_detail += f"（另 {queued} 排队）"
     checks.append({
         "name": "queue",
         "ok": queue_ok,
-        "detail": f"{queue_len}/{_MAX_WORKERS} 进行中"
+        "detail": queue_detail
         + ("" if queue_ok else "（已满，请等任务完成或 cancel_note 后再提交）"),
     })
 

@@ -28,7 +28,7 @@
 - **E1 可观测性收口（1ced97a）**：stderr 日志超限轮转（`VIDEONOTE_STDERR_LOG_MAX_MB` 默认 50MB → `.log.1`，防长跑体积失控）；`_open_stderr_log` 打开失败不再静默（原因打到原始 stderr）；atexit 退出摘要记录进行中/排队任务数（排查孤儿 ffmpeg/whisper 子进程）。新测试 tests/test_stderr_log.py 7 项。
 - 文档：docs/06 新增 Wave E 章节；docs/05 #39/#44 标注更新。
 
-## Wave E 批 4（2026-08-17 · 自主改进轮 #90-#114，391 tests）
+## Wave E 批 4（2026-08-17 · 自主改进轮 #90-#115，393 tests）
 
 - **下载器健壮性（f5bdc8b，#90）**：#36 剩余 4 子项——kuaishou 失败点抛明确 RuntimeError（原 TypeError/AttributeError/IndexError 三连）；Bcut 轮询指数退避 `min(1<<i, 5)` + 5 处 HTTP 补 timeout；generic cookie 从「写死 example.com 的 Netscape 文件（永不生效）」改 `http_headers` 直接注入；audio.json 实体悬空视为缓存失效重新下载。tests/test_downloader_robustness.py 16 项。
 - **DB 路径修复（5ba8497，#91）**：`app/db/engine.py` 默认 `sqlite:///video_note.db` 是相对 CWD 路径——裸脚本/单文件测试在仓库根分裂出 DB（根目录残留垃圾的真实根因）；改 `get_data_dir()` 稳定路径；`cache_data` 弃用 vendored 旧 `DATA_DIR` env。
@@ -54,6 +54,7 @@
 - **cleanup 运行中任务防护（#111）**：`cleanup_note` / `cleanup_all` 对 `_task_futures` 中未完成的进行中/排队任务拒绝清理——直接删会破坏下载器/转写器正在写的 `raw/` / `gen/` 缓存，任务中途 `FileNotFoundError` 失败（被 FAILED 吞成误导错误）或状态文件在删除后被重建出幽灵任务；此前唯一防线是「cancel 再清理」靠 agent 自觉。`cleanup_note` 返回 `{ok:false, error: "先 cancel_note 或等终态"}`，`cleanup_all` 返回 `{ok:false, running, running_task_ids}`（agent 可按 ids 逐个取消）；判定用本进程 `_task_futures`（server 重启后自然放行，崩溃残留的 status.json 不误锁）。CLI 向导不动（交互式已有 `[status]` 展示 + 双重 confirm，且独立进程看不到 MCP 注册表）。+4 契约测试（CleanupRunningTaskGuardTest）。**380 passed + ruff F-clean**。
 - **cleanup_note 便携笔记副本孤儿化修复（#112）**：`cleanup_task_files(include_note=True)` 此前只删 `task_dir`——便携笔记副本（`<notes_dir>/<标题>/note.md`，用户指定 `notes_dir` 时常在数据目录外）不在删除范围：数据目录内的副本漏删（`notes_dir` 指向数据目录子目录时），数据目录外的副本随 manifest 删除而永久失联（list_tasks / get_task_files 全查不到，磁盘残留含笔记+Assets 的目录），docstring 却声称「连最终笔记一起删」。修复：目录内副本（manifest 记录 + 沙箱校验通过）随 include_note=True 一起删；目录外副本沙箱红线不删，但经新增返回字段 `notes_kept_outside` 列出（Agent 可转告用户路径，不再静默孤儿）；CLI 向导清理后黄字报告；server docstring 与 tools.md 同步。+2 测试。**382 passed + ruff F-clean**。
 - **LLM/转写调用超时收敛（#113）**：`build_openai_client` timeout 缺省 None → openai SDK 默认 600s（代理路径另写 600s）——上游 LLM API 挂死时任务卡 SUMMARIZING 10 分钟才超时，universal_gpt 再 ×3 重试（最坏 ~30 分钟/chunk），worker 槽占死、并发门禁拒掉所有新提交、cancel 无法在 chunk 边界生效；全项目外部调用都有超时（#58 ffmpeg 家族），唯独 LLM 调用是裸 SDK 默认。修复：构造点单点收敛 `DEFAULT_TIMEOUT = httpx.Timeout(300.0, connect=10.0)`（连接 10s 快速失败 + 读写 300s 兜底死读），LLM 主路径（gpt_factory → OpenAICompatibleProvider）与 groq 转写两个未传 timeout 的调用点同时受益，代理路径 httpx.Client 与客户端超时同源（删另写 600s 旧分支），显式传参（连通性测试 15s）不受影响。+4 测试（tests/test_openai_client.py）。**386 passed + ruff F-clean**。
+- **preflight 队列检查与门禁同源（#115）**：`preflight` 的 queue 检查用 `len(_task_futures)`（含排队）且详情写「N/3 进行中」——`_guard_concurrency`（F7）只统计 running()、排队不占名额（batch 语义）；提交 10 集 batch 后（3 运行+7 排队）再对新视频 preflight 会误报「已满，请等任务完成」，门禁实际放行。修复：与门禁同源只统计 running()，详情「N/M 运行中（另 K 排队）」，运行中占满 `_MAX_WORKERS` 才拦。+2 契约测试。**393 passed + ruff F-clean**。
 - **「无转写」文案误报修复（#114）**：三个读转写入口（`get_task_transcript` / MCP Resource `transcript_resource` / `export_transcript`）拿不到转写时一律笼统报「尚未成功或已清理 / 任务可能未成功」——任务还在 DOWNLOADING/TRANSCRIBING 时 Agent 据此向用户误报「任务失败了」。新增共享原因函数 `_transcript_unavailable_reason`（读 status.json 区分：运行中→「仍在运行（{status}）：先 get_task_status 等终态」；FAILED/CANCELLED→「未成功」；成功无转写→如实说；状态不可读→「可能已清理」）接入三处，`get_task_transcript` 结构化 status 字段保留。+5 契约测试（TranscriptUnavailableReasonTest）。**391 passed + ruff F-clean**。
 
 ## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）

@@ -658,6 +658,60 @@ class PreflightTest(unittest.TestCase):
 
     def test_fmt_duration(self):
         self.assertEqual(server._fmt_duration(754), "12:34")
+
+    def test_queue_ok_with_queued_not_running(self):
+        # 排队任务不占名额（与 _guard_concurrency 同源）：3 个排队 + 0 运行 → 不报已满（#115）
+        fake = mock.Mock()
+        fake.running.return_value = False
+        old = dict(server._task_futures)
+        try:
+            with server._tasks_lock:
+                server._task_futures.clear()
+                for i in range(3):
+                    server._task_futures[f"q{i}"] = fake
+            with mock.patch.object(server.shutil, "which", return_value="/usr/bin/ffmpeg"):
+                with mock.patch.object(
+                    server.shutil, "disk_usage", return_value=mock.Mock(free=10 * 1024**3)
+                ):
+                    with mock.patch.object(
+                        server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
+                    ):
+                        with mock.patch.object(server, "_preflight_provider", return_value=(True, "ok")):
+                            data = json.loads(server.preflight())
+            by_name = {c["name"]: c for c in data["checks"]}
+            self.assertTrue(by_name["queue"]["ok"])
+            self.assertIn("3 排队", by_name["queue"]["detail"])
+        finally:
+            with server._tasks_lock:
+                server._task_futures.clear()
+                server._task_futures.update(old)
+
+    def test_queue_full_only_when_running_full(self):
+        # 运行中占满 _MAX_WORKERS 才报已满
+        fake = mock.Mock()
+        fake.running.return_value = True
+        old = dict(server._task_futures)
+        try:
+            with server._tasks_lock:
+                server._task_futures.clear()
+                for i in range(server._MAX_WORKERS):
+                    server._task_futures[f"busy{i}"] = fake
+            with mock.patch.object(server.shutil, "which", return_value="/usr/bin/ffmpeg"):
+                with mock.patch.object(
+                    server.shutil, "disk_usage", return_value=mock.Mock(free=10 * 1024**3)
+                ):
+                    with mock.patch.object(
+                        server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
+                    ):
+                        with mock.patch.object(server, "_preflight_provider", return_value=(True, "ok")):
+                            data = json.loads(server.preflight())
+            by_name = {c["name"]: c for c in data["checks"]}
+            self.assertFalse(by_name["queue"]["ok"])
+            self.assertIn("已满", by_name["queue"]["detail"])
+        finally:
+            with server._tasks_lock:
+                server._task_futures.clear()
+                server._task_futures.update(old)
         self.assertEqual(server._fmt_duration(3661), "1:01:01")
         self.assertEqual(server._fmt_duration(None), "未知")
         self.assertEqual(server._fmt_duration(0), "未知")
