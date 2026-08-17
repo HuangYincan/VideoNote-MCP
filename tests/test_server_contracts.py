@@ -294,6 +294,30 @@ class NoteDirContractTest(unittest.TestCase):
             shutil.rmtree(portable, ignore_errors=True)
 
 
+class ExtractFramesValidationTest(unittest.TestCase):
+    """docs 审计（F 组后续）：extract_frames 参数校验——非法 interval/grid 不应透传。"""
+
+    def test_invalid_grid_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "clip.mp4"
+            f.write_bytes(b"x")
+            with self.assertRaises(ValueError):
+                server.extract_frames(str(f), grid_size=[0, 3])
+            with self.assertRaises(ValueError):
+                server.extract_frames(str(f), grid_size=[3])
+            with self.assertRaises(ValueError):
+                server.extract_frames(str(f), grid_size=[3, "a"])
+
+    def test_zero_interval_clamped_to_one(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "clip.mp4"
+            f.write_bytes(b"x")
+            with mock.patch.object(server, "_submit_step_task", return_value="f1") as m:
+                server.extract_frames(str(f), video_interval=0)
+            kwargs = m.call_args.kwargs
+            self.assertEqual(kwargs["video_interval"], 1)
+
+
 class ConcurrencyGuardTest(unittest.TestCase):
     def test_guard_raises_when_full(self):
         # 门禁只统计「正在执行」（future.running()）——排队不占名额（docs 审计 F7）

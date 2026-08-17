@@ -1237,12 +1237,18 @@ def extract_frames(
         raise ValueError(f"本地视频文件不存在: {video_path}")
     if grid_size is None:
         grid_size = [3, 3]
+    try:
+        interval = max(1, int(video_interval))
+    except (TypeError, ValueError):
+        interval = 6
+    if not (len(grid_size) == 2 and all(isinstance(n, int) and n >= 1 for n in grid_size)):
+        raise ValueError(f"grid_size 必须是两个正整数（如 [3,3]），收到: {grid_size!r}")
     task_id = _submit_step_task(
         "frames",
         _step_extract_frames,
         title=p.name,
         video_path=str(p),
-        video_interval=int(video_interval) or 6,
+        video_interval=interval,
         grid_size=grid_size,
     )
     logger.info(f"已提交抽帧任务 task_id={task_id}")
