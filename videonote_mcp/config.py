@@ -15,6 +15,8 @@ import os
 import threading
 from pathlib import Path
 
+from videonote_mcp.crypto import decrypt_value, encrypt_value
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _IS_SOURCE_CHECKOUT = (_REPO_ROOT / "pyproject.toml").exists()
 
@@ -149,28 +151,42 @@ def setup_environment() -> Path:
 
 _APP_CONFIG_LOCK = threading.Lock()
 
+# app_config 里需要落盘加密的敏感字段（docs/05 #29）
+_SENSITIVE_CONFIG_KEYS = ("hf_token",)
+
 
 def get_app_config() -> dict:
-    """读取持久化应用配置（如默认笔记位置），存于 VIDEONOTE_CONFIG_DIR/app_config.json。"""
+    """读取持久化应用配置（如默认笔记位置），存于 VIDEONOTE_CONFIG_DIR/app_config.json。
+
+    敏感字段（hf_token）返回解密后的明文；解密失败按缺失处理。
+    """
     import json
 
     path = Path(os.environ.get("VIDEONOTE_CONFIG_DIR", "config")) / "app_config.json"
     if path.exists():
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            for k in _SENSITIVE_CONFIG_KEYS:
+                if k in cfg:
+                    cfg[k] = decrypt_value(cfg[k])
+            return cfg
         except Exception:
             return {}
     return {}
 
 
 def _write_app_config(cfg: dict) -> None:
-    """原子写 app_config.json（tmp + replace），带 0600 权限。"""
+    """原子写 app_config.json（tmp + replace），带 0600 权限；敏感字段加密落盘。"""
     import json
 
+    payload = dict(cfg)
+    for k in _SENSITIVE_CONFIG_KEYS:
+        if payload.get(k):
+            payload[k] = encrypt_value(payload[k])
     path = Path(os.environ.get("VIDEONOTE_CONFIG_DIR", "config")) / "app_config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         tmp.chmod(0o600)
     except OSError:

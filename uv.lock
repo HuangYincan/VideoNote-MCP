@@ -4453,6 +4453,7 @@ source = { editable = "." }
 dependencies = [
     { name = "av" },
     { name = "blinker" },
+    { name = "cryptography" },
     { name = "faster-whisper" },
     { name = "fastmcp" },
     { name = "ffmpeg-python" },
@@ -4500,6 +4501,7 @@ dev = [
 requires-dist = [
     { name = "av", specifier = ">=14.2.0" },
     { name = "blinker", specifier = ">=1.9.0" },
+    { name = "cryptography", specifier = ">=42.0.0" },
     { name = "faster-whisper", specifier = ">=1.1.1" },
     { name = "fastmcp", specifier = ">=3,<4" },
     { name = "ffmpeg-python", specifier = ">=0.2.0" },

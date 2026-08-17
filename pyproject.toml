@@ -28,6 +28,8 @@ dependencies = [
     "requests>=2.32.3",
     "SQLAlchemy>=2.0.41",
     "youtube-transcript-api>=1.0.0",
+    # 敏感信息机器级加密（docs/05 #29：providers.api_key / app_config hf_token 落盘加密）
+    "cryptography>=42.0.0",
     # 抖音 ABogus 签名（douyin_helper/abogus.py）
     "gmssl>=3.2.2",
     # 交互式 setup 向导（方向键选择/高亮；无则回退纯文本提示）

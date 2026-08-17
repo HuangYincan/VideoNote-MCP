@@ -89,12 +89,14 @@ class ProviderService:
             raise
     @staticmethod
     def provider_to_dict(p: Provider):
+        from videonote_mcp.crypto import decrypt_value  # 惰性：vendored 层不强制依赖 videonote_mcp
+
         return {
             "id": p.id,
             "name": p.name,
             "logo": p.logo,
             "type": p.type,
-            "api_key": p.api_key,
+            "api_key": decrypt_value(p.api_key),
             "base_url": p.base_url,
             "enabled": p.enabled,
             "created_at": p.created_at,

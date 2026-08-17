@@ -1961,6 +1961,9 @@ def export_transcript(
             formats = ["srt"]
 
     out = out_dir or str(task_dir / "gen")
+    # 数据目录外输出只提示不拦截：显式导出到别处是用户意图（docs/05 #45）
+    if not Path(out).resolve().is_relative_to(DATA_DIR.resolve()):
+        logger.warning("export_transcript 输出到数据目录外: %s", out)
     written = _export(transcript, formats=formats, out_dir=out, task_id=task_id)
     errors = written.pop("_errors", {}) if isinstance(written, dict) else {}
     return json.dumps(
@@ -1983,6 +1986,8 @@ def merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
 
     try:
         out = out_dir or str(NOTE_OUTPUT_DIR / "merged")
+        if out_dir and not Path(out_dir).resolve().is_relative_to(DATA_DIR.resolve()):
+            logger.warning("merge_audio 输出到数据目录外: %s", out_dir)
         merged = _merge(files, out_dir=out)
         return json.dumps({"ok": True, "path": Path(merged).as_uri()}, ensure_ascii=False)
     except Exception as exc:

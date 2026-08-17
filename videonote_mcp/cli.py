@@ -1046,7 +1046,7 @@ def _providers_cli(argv) -> None:
     sub.add_parser("list", help="列出供应商（key 掩码）")
     p_set = sub.add_parser("set", help="给供应商填 key / base_url / name")
     p_set.add_argument("provider_id")
-    p_set.add_argument("--api-key", help="API key")
+    p_set.add_argument("--api-key", help="API key（会出现在 shell history；建议用 add 的交互输入填 key）")
     p_set.add_argument("--base-url", help="base_url")
     p_set.add_argument("--name", help="显示名")
     p_add = sub.add_parser("add", help="新增供应商（如中转站）")
@@ -1102,8 +1102,12 @@ def _providers_cli(argv) -> None:
             sys.exit(1)
         print(f"已更新 {opts.provider_id} (enabled={updated.get('enabled')})", file=sys.stdout)
     elif opts.cmd == "add":
+        # key 缺省走 getpass 交互：不落 shell history / 进程列表（docs/05 #45）
+        key = opts.api_key
+        if not key:
+            key = _prompt_secret(f"{opts.name} 的 API key（输入不回显）")
         new_id = ProviderService.add_provider(
-            name=opts.name, api_key=opts.api_key, base_url=opts.base_url, logo="custom", type_=opts.type
+            name=opts.name, api_key=key, base_url=opts.base_url, logo="custom", type_=opts.type
         )
         print(f"已新增 {opts.name} → id={new_id}", file=sys.stdout)
 

@@ -65,3 +65,10 @@ git -C /path/to/BiliNote rev-parse HEAD
 # 4. 更新本文件的 commit 号与日期
 # 5. 在 docs/CHANGELOG.md 记一条「同步上游」
 ```
+
+## 许可标注（docs/05 #45）
+
+- `app/utils/abogus.py`（抖音 ABogus 签名）来自 **TikTokDownloader**，作者 JoeanAmier，
+  **GPL-3.0** 许可 —— 与本仓库 MIT 混合分发。保留文件头出处声明；整体分发时如需
+  规避 GPL 传染，可替换为纯 Python 实现或仅在独立进程调用。
+- 其余 `app/` vendored 代码按上游 BiliNote 许可分发。
