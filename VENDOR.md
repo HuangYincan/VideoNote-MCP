@@ -22,7 +22,7 @@
 | `app/exceptions/` | biz_exception, note, provider, **task**（**不含** exception_handlers —— 仅 FastAPI 用） |
 | `app/decorators/` | timeit |
 | `app/validators/` | video_url_validator |
-| `app/services/` | note, constant, provider, cookie_manager, task_serial_executor, transcriber_config_manager, proxy_config_manager, **pipeline**, **merge**, **diarization**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用） |
+| `app/services/` | note, constant, provider, cookie_manager, transcriber_config_manager, proxy_config_manager, **pipeline**, **merge**, **diarization**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用；**task_serial_executor 已删** —— 2026-08-17 全仓零引用死模块，MCP 用自己的线程池） |
 | `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, status_code, logger, path_helper, url_parser, openai_client, env_checker, **task_manifest** + **本仓库新增** `model_status.py`（见下）（**不含** response / export / ppt_generator / minio_client） |
 | `videonote_mcp/export/` | SRT/VTT/JSON 确定性导出（不在上游 `utils/export.py`） |
 | `events/` | signals（blinker `transcription_finished`）、handlers（转写完成后临时文件清理）—— 已迁入 `app/events/`（2026-08-17），供各转写器 `from app.events import transcription_finished` |

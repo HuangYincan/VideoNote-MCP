@@ -17,6 +17,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import videonote_mcp.cli as cli
 from app.db.provider_dao import delete_provider
 from app.services.provider import ProviderService
+from videonote_mcp.config import get_app_config
 
 
 @pytest.fixture(autouse=True)
@@ -197,6 +199,201 @@ class TestExportCli:
         assert srt_file.is_file()
         content = srt_file.read_text(encoding="utf-8")
         assert "你好" in content and "00:00:01,500" in content
+
+    def test_export_unknown_format_rejected(self, capsys):
+        # 未知格式此前被 exporter 静默丢弃后仍打印「✓ 已导出 N 个格式」→
+        # 用户以为导出齐了实际缺文件；现在入口拒绝并退出（#120 C4）
+        with pytest.raises(SystemExit) as ei:
+            cli._export_cli(["export", str(uuid.uuid4()), "--format", "srt,bogus"])
+        assert ei.value.code == 1
+        err = capsys.readouterr().err
+        assert "未知导出格式" in err and "bogus" in err
+        assert "已导出" not in err
+
+    def test_export_corrupt_cache_falls_back_to_result(self, capsys):
+        task_id = str(uuid.uuid4())
+        note_out = Path(os.environ["NOTE_OUTPUT_DIR"])
+        task_dir = note_out / task_id
+        (task_dir / "gen").mkdir(parents=True, exist_ok=True)
+        # 规范来源 gen/transcript.json 损坏 → 警告 + 回退 result.json（同源，docs/05 #16）
+        (task_dir / "gen" / "transcript.json").write_text("{broken json", encoding="utf-8")
+        (task_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "transcript": {
+                        "language": "zh",
+                        "full_text": "回退内容",
+                        "segments": [{"start": 0.0, "end": 1.0, "text": "回退内容"}],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        cli._export_cli(["export", task_id, "--format", "srt"])
+        out = _cli_out(capsys)
+        assert "转写缓存损坏" in out
+        assert "✓ 已导出 1 个格式" in out
+        srt_file = task_dir / "gen" / "transcript.srt"
+        assert srt_file.is_file() and "回退内容" in srt_file.read_text(encoding="utf-8")
+
+    def test_export_corrupt_result_reports_damage(self, capsys):
+        task_id = str(uuid.uuid4())
+        note_out = Path(os.environ["NOTE_OUTPUT_DIR"])
+        task_dir = note_out / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        # 无 gen/transcript.json，result.json 也损坏 → 报「结果文件损坏」而不是裸 traceback
+        (task_dir / "result.json").write_text("not-json-at-all", encoding="utf-8")
+        with pytest.raises(SystemExit) as ei:
+            cli._export_cli(["export", task_id, "--format", "srt"])
+        assert ei.value.code == 1
+        err = capsys.readouterr().err
+        assert "结果文件损坏" in err
+
+
+class _InqResult:
+    """InquirerPy prompt 的 .execute() 返回体。"""
+
+    def __init__(self, value):
+        self._value = value
+
+    def execute(self):
+        return self._value
+
+
+class _FakeInq:
+    """InquirerPy 替身：按脚本序列逐项回答（select/text/secret 都走 .execute()）。"""
+
+    def __init__(self, script):
+        self.script = list(script)
+
+    def _next(self, kind):
+        got_kind, value = self.script.pop(0)
+        assert got_kind == kind, f"期望 {got_kind!r}，但调用的是 {kind!r}"
+        return value
+
+    def select(self, message, choices=None, keybindings=None):
+        return _InqResult(self._next("select"))
+
+    def text(self, message, keybindings=None, default=""):
+        return _InqResult(self._next("text"))
+
+    def secret(self, message, keybindings=None):
+        return _InqResult(self._next("secret"))
+
+
+class TestWizardProviderCli:
+    """setup 向导内供应商管理：#120 的错误就地消化（重名不崩 / edit 失败如实报）。"""
+
+    def test_wizard_add_duplicate_name_does_not_crash(self, capsys):
+        # 已有一个同名供应商 → add 抛 ValueError；向导应消化并提示「未新增」，向导继续
+        ProviderService.add_provider(
+            name="中转站A", api_key="sk-dup", base_url="https://a.com/v1",
+            logo="custom", type_="custom",
+        )
+        fake = _FakeInq([
+            ("select", ("add", None)),
+            ("text", "中转站A"),  # 重名
+            ("text", "https://relay.example.com/v1"),
+            ("secret", "sk-key-2"),
+            ("select", ("back", None)),  # 回到主菜单 → 退出
+        ])
+        cli._wizard_llm(fake)
+        out = _cli_out(capsys)
+        assert "未新增" in out
+        assert "已新增" not in out
+        # 已填的 key/base_url 不落库（add_provider 抛错前未 insert）
+        rows = ProviderService.get_all_providers()
+        assert len(rows) == 1 and rows[0]["name"] == "中转站A"
+        assert rows[0]["api_key"] == "sk-dup"
+
+    def test_wizard_add_success_path(self, capsys):
+        fake = _FakeInq([
+            ("select", ("add", None)),
+            ("text", "新供应商"),
+            ("text", "https://relay.example.com/v1"),
+            ("secret", "sk-new"),
+            ("select", ("back", None)),
+        ])
+        cli._wizard_llm(fake)
+        assert "✓ 已新增 新供应商" in _cli_out(capsys)
+
+    def test_edit_provider_failure_reported_not_faked(self, capsys):
+        pid = ProviderService.add_provider(
+            name="P9", api_key="sk-old", base_url="https://a.com/v1",
+            logo="custom", type_="custom",
+        )
+        with mock.patch.object(ProviderService, "update_provider", return_value=None):
+            fake = _FakeInq([("secret", "sk-new"), ("text", "")])  # 换 key，base_url 留空
+            cli._edit_provider(fake, pid)
+        out = _cli_out(capsys)
+        # 失败必须如实报（此前失败也打印「已更新」，用户以为 key 已换，#120）
+        assert "更新" in out and "失败" in out
+        assert "✓ 已更新" not in out
+
+    def test_edit_provider_success(self, capsys):
+        pid = ProviderService.add_provider(
+            name="P10", api_key="sk-old", base_url="https://a.com/v1",
+            logo="custom", type_="custom",
+        )
+        fake = _FakeInq([("secret", "sk-new"), ("text", "")])
+        cli._edit_provider(fake, pid)
+        assert "✓ 已更新" in _cli_out(capsys)
+        assert ProviderService.get_provider_by_id(pid)["api_key"] == "sk-new"
+
+
+class TestFallbackDefaultModelCli:
+    """纯文本兜底向导的默认模型选择：回车=保持现状（此前被当「清除」，#120 S4）。"""
+
+    def _seed(self):
+        pid = ProviderService.add_provider(
+            name="Fallback1", api_key="sk-fb", base_url="https://a.com/v1",
+            logo="custom", type_="custom",
+        )
+        return pid
+
+    def test_enter_keeps_existing_default(self, capsys, monkeypatch):
+        pid = self._seed()
+        cli._set_default_model(pid, "existing-model")
+        capsys.readouterr()
+        monkeypatch.setattr(cli, "probe_models", lambda *a, **k: {"ok": True, "models": ["m1", "m2"]})
+        monkeypatch.setattr(cli, "_ask", lambda *a, **k: "")  # 回车=跳过
+        cli._fallback_test_and_default(pid)
+        assert get_app_config().get(f"default_model:{pid}") == "existing-model"
+        assert "未设置" not in _cli_out(capsys)
+
+    def test_explicit_clear_removes_default(self, capsys, monkeypatch):
+        pid = self._seed()
+        cli._set_default_model(pid, "existing-model")
+        capsys.readouterr()
+        monkeypatch.setattr(cli, "probe_models", lambda *a, **k: {"ok": True, "models": ["m1", "m2"]})
+        monkeypatch.setattr(cli, "_ask", lambda *a, **k: "clear")
+        cli._fallback_test_and_default(pid)
+        assert get_app_config().get(f"default_model:{pid}") is None
+
+    def test_number_picks_model(self, capsys, monkeypatch):
+        pid = self._seed()
+        capsys.readouterr()
+        monkeypatch.setattr(cli, "probe_models", lambda *a, **k: {"ok": True, "models": ["m1", "m2"]})
+        monkeypatch.setattr(cli, "_ask", lambda *a, **k: "2")
+        cli._fallback_test_and_default(pid)
+        assert get_app_config().get(f"default_model:{pid}") == "m2"
+
+
+class TestLoginCli:
+    """login 失败路径：#120 后向导内调用（exit_on_fail=False）只返回不杀进程。"""
+
+    # _login_cli 函数内 `import requests`：patch 字符串路径替换 sys.modules 里
+    # 同一模块对象的 get，函数内 import 绑定到同一对象，同样生效
+    def test_failure_returns_without_exit_in_wizard_mode(self, capsys):
+        with mock.patch("requests.get", side_effect=RuntimeError("网络失败")):
+            cli._login_cli([], exit_on_fail=False)  # 不应 raise SystemExit
+        assert "生成二维码失败" in _cli_out(capsys)
+
+    def test_failure_still_exits_in_standalone_mode(self, capsys):
+        with mock.patch("requests.get", side_effect=RuntimeError("网络失败")):
+            with pytest.raises(SystemExit) as ei:
+                cli._login_cli([], exit_on_fail=True)
+        assert ei.value.code == 1
 
 
 class TestMainUnknownCommand:

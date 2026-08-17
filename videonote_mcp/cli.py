@@ -13,7 +13,7 @@ import os
 import sys
 from pathlib import Path
 
-from videonote_mcp.config import get_app_config, remove_app_config, set_app_config, setup_environment
+from videonote_mcp.config import get_app_config, remove_app_config, resolve_int_config, set_app_config, setup_environment
 
 # 提前初始化运行时环境（数据目录、DB、输出目录）——必须在 import provider_probe / app.*
 # 之前执行。provider_probe 会连累 app.utils.logger（其日志目录依赖 VIDEONOTE_DATA_DIR），
@@ -260,8 +260,12 @@ def _wizard_llm(inq) -> None:
                 base_url = inq.text(message="base_url（如 https://relay.example.com/v1）", keybindings=_KB).execute()
                 key = inq.secret(message="API key（隐藏输入）", keybindings=_KB).execute()
                 if name and base_url and key:
-                    new_id = ProviderService.add_provider(name=name, api_key=key, base_url=base_url, logo="custom", type_="custom")
-                    print(f"{_GREEN}✓ 已新增 {name} → id={new_id}{_RESET}", file=sys.stdout)
+                    try:
+                        new_id = ProviderService.add_provider(name=name, api_key=key, base_url=base_url, logo="custom", type_="custom")
+                        print(f"{_GREEN}✓ 已新增 {name} → id={new_id}{_RESET}", file=sys.stdout)
+                    except ValueError as exc:
+                        # 重名等校验错误就地消化，向导不崩（已填的 key/base_url 不浪费，#120）
+                        print(f"{_YELLOW}⚠ {exc}（未新增）{_RESET}", file=sys.stdout)
                 else:
                     print(f"{_YELLOW}⚠ 信息不完整，未新增{_RESET}", file=sys.stdout)
                 continue
@@ -300,11 +304,20 @@ def _edit_provider(inq, pid) -> None:
     _show_header(f"编辑供应商 {pid}")
     key = inq.secret(message="新的 API key（直接回车保持不变）", keybindings=_KB).execute()
     if key:
-        ProviderService.update_provider(pid, {"api_key": key})
-        print(f"{_GREEN}✓ 已更新 {pid} 的 key{_RESET}", file=sys.stdout)
+        updated = ProviderService.update_provider(pid, {"api_key": key})
+        if updated:
+            print(f"{_GREEN}✓ 已更新 {pid} 的 key{_RESET}", file=sys.stdout)
+        else:
+            # update_provider 对不存在/异常返回 None——失败也打印「已更新」会
+            # 让用户以为 key 已换，之后任务全 401（#120）
+            print(f"{_YELLOW}⚠ 更新 {pid} 的 key 失败（供应商不存在？）{_RESET}", file=sys.stdout)
     base_url = inq.text(message="base_url（直接回车保持不变）", keybindings=_KB).execute()
     if base_url:
-        ProviderService.update_provider(pid, {"base_url": base_url})
+        updated = ProviderService.update_provider(pid, {"base_url": base_url})
+        if updated:
+            print(f"{_GREEN}✓ 已更新 {pid} 的 base_url{_RESET}", file=sys.stdout)
+        else:
+            print(f"{_YELLOW}⚠ 更新 {pid} 的 base_url 失败（供应商不存在？）{_RESET}", file=sys.stdout)
 
 
 def _test_and_set_default(inq, pid) -> None:
@@ -557,9 +570,9 @@ def _wizard_other(inq) -> None:
 
             notes_dir = get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or "（默认 note_results/{task_id}/）"
             vu_on = bool(get_app_config().get("video_understanding", False))
-            vu_int = int(get_app_config().get("video_interval") or 6)
+            vu_int = resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 6)
             cm_on = bool(get_app_config().get("include_comments", False))
-            cm_lim = int(get_app_config().get("comments_limit") or 20)
+            cm_lim = resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
             st_style = get_app_config().get("default_style") or "detailed"
             ss_on = bool(get_app_config().get("default_screenshot", False))
             ad_on = bool(get_app_config().get("agent_direct", False))
@@ -581,7 +594,7 @@ def _wizard_other(inq) -> None:
             if pick == "back":
                 return
             if pick == "bili-login":
-                _login_cli([])
+                _login_cli([], exit_on_fail=False)
             elif pick == "cookie":
                 _show_header("平台 Cookie")
                 platform = inq.select(
@@ -617,7 +630,7 @@ def _wizard_other(inq) -> None:
                 _show_header("视频理解默认")
                 print(f"{_DIM}视频理解把画面按间隔抽帧发给多模态 LLM（需 qwen-vl / gpt-4o 等；会下载整个视频、比纯转写慢）。{_RESET}", file=sys.stdout)
                 cur_on = bool(get_app_config().get("video_understanding", False))
-                cur_int = int(get_app_config().get("video_interval") or 6)
+                cur_int = resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 6)
                 on = inq.confirm(message="默认开启视频理解？", default=cur_on, keybindings=_KB).execute()
                 set_app_config("video_understanding", bool(on))
                 iv = inq.text(message=f"帧间隔秒数（当前 {cur_int}，默认 6）", keybindings=_KB).execute()
@@ -634,7 +647,7 @@ def _wizard_other(inq) -> None:
                 _show_header("评论/弹幕整合默认")
                 print(f"{_DIM}把弹幕+评论区观点整合进笔记（需 B 站 SESSDATA；没配则评论拿不到，任务不阻断）。{_RESET}", file=sys.stdout)
                 cur_on = bool(get_app_config().get("include_comments", False))
-                cur_lim = int(get_app_config().get("comments_limit") or 20)
+                cur_lim = resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
                 on = inq.confirm(message="默认整合弹幕+评论区观点？", default=cur_on, keybindings=_KB).execute()
                 set_app_config("include_comments", bool(on))
                 lim = inq.text(message=f"评论条数（当前 {cur_lim}，默认 20）", keybindings=_KB).execute()
@@ -853,8 +866,12 @@ def _fallback_test_and_default(pid: str) -> None:
         print(f"   {i}) {m}", file=sys.stdout)
     if len(r["models"]) > 10:
         print(f"   … 共 {len(r['models'])} 个，仅显示前 10", file=sys.stdout)
-    sel = _ask("   选默认模型 [1-%d]，0=手动输入，空=不设置" % len(models), default="")
+    # 回车=保持现状（此前 `if not sel: _set_default_model(pid, None)` 把「跳过」
+    # 当「清除」——管道/EOF 场景跑一次 setup 就误删已设默认，#120）；清除要显式 clear
+    sel = _ask("   选默认模型 [1-%d]，0=手动输入，clear=清除默认，回车=保持" % len(models), default="")
     if not sel:
+        pass
+    elif sel == "clear":
         _set_default_model(pid, None)
     elif sel == "0":
         m = _ask("   手动输入模型名")
@@ -937,7 +954,7 @@ def _setup_cli_fallback() -> None:
     print("\n③ 其他（视频理解默认 / 评论·弹幕整合默认 / 笔记默认）：", file=sys.stdout)
     print("   视频理解把画面按间隔抽帧发给多模态 LLM（需 qwen-vl / gpt-4o 等；会下载整个视频、比纯转写慢）", file=sys.stdout)
     cur_on = bool(get_app_config().get("video_understanding", False))
-    cur_int = int(get_app_config().get("video_interval") or 6)
+    cur_int = resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 6)
     on = _ask(f"   默认开启视频理解？[y/N]（当前 {'开' if cur_on else '关'}）", default="N").lower() == "y"
     set_app_config("video_understanding", bool(on))
     iv = _ask(f"   帧间隔秒数（当前 {cur_int}，默认 6）", default=str(cur_int))
@@ -949,7 +966,7 @@ def _setup_cli_fallback() -> None:
     print(f"   ✓ 视频理解默认：{'开' if on else '关'} / {iv}s", file=sys.stdout)
     print("   评论/弹幕整合默认：把弹幕+评论区观点整合进笔记（需 B 站 SESSDATA；没配则评论拿不到，任务不阻断）", file=sys.stdout)
     cur_on = bool(get_app_config().get("include_comments", False))
-    cur_lim = int(get_app_config().get("comments_limit") or 20)
+    cur_lim = resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
     on = _ask(f"   默认整合弹幕+评论区观点？[y/N]（当前 {'开' if cur_on else '关'}）", default="N").lower() == "y"
     set_app_config("include_comments", bool(on))
     lim = _ask(f"   评论条数（当前 {cur_lim}，默认 20）", default=str(cur_lim))
@@ -1210,8 +1227,12 @@ def _transcriber_cli(argv) -> None:
                 )
 
 
-def _login_cli(argv) -> None:
-    """`videonote login [bilibili]`：扫码登录 B 站，自动获取并保存 SESSDATA（AI 字幕用）。"""
+def _login_cli(argv, exit_on_fail: bool = True) -> None:
+    """`videonote login [bilibili]`：扫码登录 B 站，自动获取并保存 SESSDATA（AI 字幕用）。
+
+    exit_on_fail=False 时失败路径只返回不杀进程（setup 向导内调用，#120：
+    登录失败不再让整个向导带 traceback/退出，已配的其它设置不丢失）。
+    """
     if argv and argv[0] != "bilibili":
         print(f"未知平台: {argv[0]}（当前支持 bilibili）", file=sys.stderr)
         sys.exit(2)
@@ -1223,7 +1244,9 @@ def _login_cli(argv) -> None:
         import qrcode
     except ImportError:
         print("需要 qrcode 库：`uv sync` 后重试", file=sys.stderr)
-        sys.exit(1)
+        if exit_on_fail:
+            sys.exit(1)
+        return
 
     _UA = {
         "User-Agent": (
@@ -1239,12 +1262,16 @@ def _login_cli(argv) -> None:
         ).json()
         if resp.get("code") != 0:
             print(f"生成二维码失败: {resp}", file=sys.stderr)
-            sys.exit(1)
+            if exit_on_fail:
+                sys.exit(1)
+            return
         qr_url = resp["data"]["url"]
         qrcode_key = resp["data"]["qrcode_key"]
     except Exception as e:
         print(f"生成二维码失败（网络？）: {e}", file=sys.stderr)
-        sys.exit(1)
+        if exit_on_fail:
+            sys.exit(1)
+        return
 
     _show_header("B 站扫码登录")
     print(f"{_YELLOW}请用 B 站 App「扫一扫」扫描下方二维码（约 1 分钟内有效）{_RESET}", file=sys.stdout)
@@ -1292,7 +1319,9 @@ def _login_cli(argv) -> None:
                     from urllib.parse import urlparse
 
                     print(f"登录成功但未取到 SESSDATA（{urlparse(data['url']).netloc or '未知域名'}）", file=sys.stderr)
-                    sys.exit(1)
+                    if exit_on_fail:
+                        sys.exit(1)
+                    return
                 from app.services.cookie_manager import CookieConfigManager
 
                 CookieConfigManager().set("bilibili", f"SESSDATA={sess}")
@@ -1346,21 +1375,41 @@ def _export_cli(argv) -> None:
     if formats is None:
         formats = get_app_config().get("default_export_formats") or ["srt", "vtt", "json"]
 
-    from videonote_mcp.export import export_transcript
+    from videonote_mcp.export import FORMATS, export_transcript
+
+    # 未知格式直接报错（与 MCP export 工具同口径；此前 exporter 只 warning 丢弃后
+    # 仍打印「✓ 已导出 N 个格式」——用户以为导出齐了实际缺文件，#120）
+    unknown = sorted(set(formats) - set(FORMATS))
+    if unknown:
+        print(
+            f"✗ 未知导出格式: {', '.join(unknown)}（支持: {', '.join(FORMATS)}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     note_output_dir = Path(os.environ.get("NOTE_OUTPUT_DIR", "note_results"))
     task_dir = note_output_dir / opts.task_id
-    result_path = task_dir / "result.json"
-    if not result_path.exists():
-        print(f"✗ 找不到任务 {opts.task_id} 的结果文件（{result_path}），任务可能未成功", file=sys.stderr)
-        sys.exit(1)
     import json as _json
 
+    # 与 server 侧 _load_task_transcript 同源（docs/05 #16）：gen/transcript.json 是
+    # 规范来源，缺失/损坏才退 result.json；损坏与「无转写」分开报（#120）
     transcript = None
-    try:
-        transcript = _json.loads(result_path.read_text(encoding="utf-8")).get("transcript")
-    except Exception:
-        pass
+    cache = task_dir / "gen" / "transcript.json"
+    if cache.exists():
+        try:
+            transcript = _json.loads(cache.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"⚠ 转写缓存损坏（{cache}）：{e}", file=sys.stderr)
+    if not transcript:
+        result_path = task_dir / "result.json"
+        if not result_path.exists():
+            print(f"✗ 找不到任务 {opts.task_id} 的结果文件（{result_path}），任务可能未成功", file=sys.stderr)
+            sys.exit(1)
+        try:
+            transcript = _json.loads(result_path.read_text(encoding="utf-8")).get("transcript")
+        except Exception as e:
+            print(f"✗ 任务 {opts.task_id} 的结果文件损坏：{e}", file=sys.stderr)
+            sys.exit(1)
     if not transcript:
         print(f"✗ 任务 {opts.task_id} 没有转写结果（可能未到转写阶段）", file=sys.stderr)
         sys.exit(1)

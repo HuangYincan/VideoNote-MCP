@@ -56,8 +56,6 @@ class UniversalGPT(GPT):
         self.client = client
         self.model = model
         self.temperature = temperature
-        self.screenshot = False
-        self.link = False
         self.max_request_bytes = int(os.getenv("OPENAI_MAX_REQUEST_BYTES", str(45 * 1024 * 1024)))
         # token 级切块上限（docs/05 #32）：按窗口切，而不是 45MB 字节一整块。
         # 汉字≈1 token 的保守估计，默认 12000 留足输出余量（8-16k 窗口兼容）。
@@ -216,6 +214,15 @@ class UniversalGPT(GPT):
     @staticmethod
     def _is_retryable_error(exc: Exception) -> bool:
         raw = str(exc).lower()
+        # 配额耗尽属非临时错误：重试不改变结果，白等 backoff + 白烧请求（#120）
+        quota_tokens = (
+            "insufficient_user_quota",
+            "insufficient quota",
+            "预扣费额度失败",
+            "quota exceeded",
+        )
+        if any(token in raw for token in quota_tokens):
+            return False
         retryable_tokens = (
             "error code: 524",
             "bad_response_status_code",
@@ -259,7 +266,10 @@ class UniversalGPT(GPT):
             )
         except Exception as exc:
             if self._is_temperature_unsupported_error(exc):
-                print(f"[universal_gpt] 模型 {self.model} 不支持自定义 temperature，改用默认值重试")
+                # stdio 模式 stdout 被吞，print 用户看不到（#120）——走 logger 留痕
+                logger.warning(
+                    "模型 %s 不支持自定义 temperature，改用默认值重试", self.model
+                )
                 return self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
@@ -267,22 +277,22 @@ class UniversalGPT(GPT):
             raise
 
     def _chat_completion_create(self, messages: list):
-        last_exc = None
         for attempt in range(self._max_retry_attempts):
             try:
                 return self._do_create(messages)
             except Exception as exc:
-                last_exc = exc
                 if attempt == self._max_retry_attempts - 1 or not self._is_retryable_error(exc):
                     raise
                 sleep_seconds = self._retry_base_backoff * (2 ** attempt)
                 time.sleep(sleep_seconds)
 
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("chat completion failed without exception")
-
-    def _merge_partials(self, partials: list, checkpoint_key: str | None, source_signature: str | None) -> str:
+    def _merge_partials(
+        self,
+        partials: list,
+        checkpoint_key: str | None,
+        source_signature: str | None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
         def build_messages(texts, *_args, **_kwargs):
             return self._build_merge_messages(texts)
 
@@ -298,6 +308,9 @@ class UniversalGPT(GPT):
 
         current_partials = list(partials)
         while len(current_partials) > 1:
+            # 取消检查进 merge 组循环：此前只在 summarize 的 chunk 循环里，取消后
+            # merge 仍跑完所有组、继续烧 LLM 配额（#120）
+            _check_cancel(cancel_event)
             groups = merge_chunker.group_texts_by_budget(current_partials, build_messages)
             # 防退化：任何一轮没有真实合并（组数 == 输入数）说明无法收敛，
             # 直接报明确错误而不是无限循环烧 LLM 调用
@@ -336,8 +349,6 @@ class UniversalGPT(GPT):
         return current_partials[0]
 
     def summarize(self, source: GPTSource, cancel_event: Optional[threading.Event] = None) -> str:
-        self.screenshot = source.screenshot
-        self.link = source.link
         source.segment = self.ensure_segments_type(source.segment)
         checkpoint_key = source.checkpoint_key
         source_signature = self._build_source_signature(source) if checkpoint_key else None
@@ -448,7 +459,7 @@ class UniversalGPT(GPT):
             if checkpoint_key:
                 self._clear_checkpoint(checkpoint_key)
             return partials[0]
-        merged = self._merge_partials(partials, checkpoint_key, source_signature)
+        merged = self._merge_partials(partials, checkpoint_key, source_signature, cancel_event)
         if checkpoint_key:
             self._clear_checkpoint(checkpoint_key)
         return merged

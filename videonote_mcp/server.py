@@ -23,7 +23,15 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional
 
-from videonote_mcp.config import env_bool, env_int, env_or, get_app_config, remove_app_config, setup_environment
+from videonote_mcp.config import (
+    env_bool,
+    env_int,
+    env_or,
+    get_app_config,
+    remove_app_config,
+    resolve_int_config,
+    setup_environment,
+)
 from videonote_mcp import __version__ as _SERVER_VERSION
 
 DATA_DIR = setup_environment()
@@ -161,21 +169,8 @@ def _check_grid_size(grid_size) -> None:
 
 
 def _resolve_int_config(key: str, env_name: str, default: int) -> int:
-    """解析 app_config 整数配置，垃圾值 warning 后回退 env/默认。
-
-    缺省链是 参数 → app_config → env → 默认（#107 口径）。`get(...) or env_int(...)`
-    的 truthy 短路有两处缺陷：垃圾值（手动编辑 app_config.json 写入 "abc"）让
-    int() 裸 ValueError 遮蔽回退链；0（显式关闭，如 video_interval=0 关视频理解）
-    被当 falsy 吞掉、app_config 优先级倒挂给 env。is not None 判断 + int() 防御
-    两处一起修（#116，与 #107 default_export_formats 同族）。
-    """
-    raw = get_app_config().get(key)
-    if raw is not None:
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
-            logger.warning("app_config.%s 非整数（%r），回退 env/默认", key, raw)
-    return env_int(env_name, default)
+    """app_config 整数配置解析（共享实现见 config.resolve_int_config，#120）。"""
+    return resolve_int_config(key, env_name, default)
 
 # 确保数据库表存在（幂等，init_db 使用 create_all）；空库时预置内置供应商
 # （openai/deepseek/qwen/groq/ollama…，固定 id + 正确 base_url + 空 key，用 update_provider 填 key）
@@ -825,6 +820,13 @@ def generate_note(
     # 便携笔记可写数据目录外（用户显式意图），只提示不拦截（与 export/merge 同口径，docs/05 #45）
     if notes_dir_out and not Path(notes_dir_out).resolve().is_relative_to(DATA_DIR.resolve()):
         logger.warning("generate_note 便携笔记输出到数据目录外: %s", notes_dir_out)
+    # 布尔开关并入 format 列表：screenshot/link=True 时自动追加对应 format 项
+    # （否则 prompt 不注入标记指令 → LLM 不输出标记 → 视频白下载但笔记无图，#120）
+    _format = list(format or [])
+    if screenshot and "screenshot" not in _format:
+        _format.append("screenshot")
+    if link and "link" not in _format:
+        _format.append("link")
     params = dict(
         video_url=video_url,
         platform=platform,
@@ -833,7 +835,7 @@ def generate_note(
         provider_id=provider_id,
         link=link,
         screenshot=screenshot,
-        _format=format or [],
+        _format=_format,
         style=style,
         extras=extras,
         include_comments=include_comments,

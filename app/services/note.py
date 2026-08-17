@@ -208,6 +208,12 @@ class NoteGenerator:
             self._transcript_engine = None
             self._update_status(task_id, TaskStatus.PARSING)
 
+            # format 声明截图与布尔开关归一化：format 含 "screenshot" 等价于 screenshot=True。
+            # 双向闭合：server 层把布尔并入 format（#120），这里把 format 回并布尔，
+            # 下游 need_full_download / _download_media.need_video 只认布尔也能拿到一致结论
+            if "screenshot" in (_format or []):
+                screenshot = True
+
             # 获取下载器与 GPT 实例
 
             downloader = self._get_downloader(platform)
@@ -279,9 +285,16 @@ class NoteGenerator:
                     transcript = None
 
             # 2. 下载音频/视频
-            # 有字幕时只提取元信息，不下载音视频文件（除非需要截图/视频理解）
+            # 有字幕时只提取元信息，不下载音视频文件（除非需要截图/视频理解）。
+            # format 直接声明 "screenshot" 也视为需要视频：否则 prompt 注入的标记指令
+            # 让 LLM 输出 *Screenshot-[mm:ss]，但 video_path=None 时替换被跳过 → 标记残留
             has_transcript = transcript is not None
-            need_full_download = not has_transcript or screenshot or video_understanding
+            need_full_download = (
+                not has_transcript
+                or screenshot
+                or video_understanding
+                or ("screenshot" in (_format or []))
+            )
             audio_meta = self._download_media(
                 downloader=downloader,
                 video_url=video_url,
@@ -632,10 +645,13 @@ class NoteGenerator:
             except Exception as e:
                 logger.warning(f"读取音频缓存失败，将重新下载：{e}")
             if cached is not None:
-                # 需要真实音频文件（无字幕/截图/视频理解）时，file_path 悬空视为缓存
-                # 失效（文件可能被清理/磁盘满删）——JSON 在但实体没了不能直接返回
-                if not skip_download and cached.file_path and not Path(cached.file_path).is_file():
-                    logger.warning(f"音频缓存文件不存在，将重新下载：{cached.file_path}")
+                # 需要真实音频文件（无字幕/截图/视频理解）时，file_path 缺失或悬空
+                # 视为缓存失效（JSON 在但实体没了不能直接返回；None 曾因 falsy 被吞、
+                # 转写时 Path(None) 抛误导性 TypeError——#119 置空路径后暴露）
+                if not skip_download and (
+                    cached.file_path is None or not Path(cached.file_path).is_file()
+                ):
+                    logger.warning(f"音频缓存无实体文件，将重新下载：{cached.file_path!r}")
                 else:
                     return cached
 
@@ -1013,8 +1029,8 @@ class NoteGenerator:
         if "screenshot" in formats and video_path:
             try:
                 markdown = self._insert_screenshots(markdown, video_path, assets_dir)
-            except Exception:
-                logger.warning("截图插入失败，跳过该步骤")
+            except Exception as exc:
+                logger.warning("截图插入失败，跳过该步骤：%s", exc)
 
         if "link" in formats:
             try:
@@ -1056,17 +1072,6 @@ class NoteGenerator:
                 markdown = markdown.replace(marker, "", 1)
                 continue
         return markdown
-
-    @staticmethod
-    def _extract_screenshot_timestamps(markdown: str) -> List[Tuple[str, int]]:
-        """
-        从 Markdown 文本中提取所有 '*Screenshot-mm:ss' 或 'Screenshot-[mm:ss]' 标记，
-        返回 [(原始标记文本, 时间戳秒数), ...] 列表。
-
-        :param markdown: 原始 Markdown 文本
-        :return: 标记与对应时间戳秒数的列表
-        """
-        return extract_screenshot_timestamps(markdown)
 
     def _save_metadata(
         self,

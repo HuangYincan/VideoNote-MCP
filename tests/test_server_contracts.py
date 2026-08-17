@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import videonote_mcp.server as server
 from videonote_mcp import __version__ as pkg_version
+import videonote_mcp.config as config_mod
 
 
 class CoerceLocalPathTest(unittest.TestCase):
@@ -1356,10 +1357,14 @@ class IntConfigFallbackTest(unittest.TestCase):
     """
 
     def _resolve(self, cfg, env_value):
-        """env 用值或空串显式覆盖，防本机环境残留（env_or 空串→None→回退默认）。"""
-        with mock.patch.object(server, "get_app_config", return_value=cfg), mock.patch.dict(
+        """env 用值或空串显式覆盖，防本机环境残留（env_or 空串→None→回退默认）。
+
+        #120 后实现上移到 videonote_mcp.config.resolve_int_config，mock 目标随之切换
+        （server._resolve_int_config 现在是薄包装）。
+        """
+        with mock.patch.object(config_mod, "get_app_config", return_value=cfg), mock.patch.dict(
             "os.environ", {"VIDEONOTE_VIDEO_INTERVAL": env_value}, clear=False
-        ), mock.patch.object(server.logger, "warning") as w:
+        ), mock.patch.object(config_mod.logger, "warning") as w:
             value = server._resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 0)
         return value, w
 
@@ -1405,7 +1410,7 @@ class IntConfigFallbackTest(unittest.TestCase):
         done = Future()
         done.set_result(None)
         with mock.patch.object(
-            server, "get_app_config", return_value={"video_interval": 0}
+            config_mod, "get_app_config", return_value={"video_interval": 0}
         ), mock.patch.dict(
             "os.environ", {"VIDEONOTE_VIDEO_INTERVAL": "6"}, clear=False
         ), mock.patch(
@@ -1575,6 +1580,74 @@ class TranscriptUnavailableReasonTest(unittest.TestCase):
         resp = json.loads(server.get_task_transcript("tx0005"))
         self.assertFalse(resp["ok"])
         self.assertIn("仍在运行", resp["message"])
+
+
+class ScreenshotLinkFormatMergeTest(unittest.TestCase):
+    """screenshot/link 布尔开关并入 _format 列表（#120 G1）。
+
+    布尔不开 → format 原样；布尔开 → 对应项追加；已有同项 → 不重复。
+    否则 prompt 不注入标记指令 → LLM 不输出标记 → 视频白下载但笔记无图。
+    双向闭合的另一半（format→布尔归一化）在 note.py，由 test_material_mode 覆盖。
+    """
+
+    def setUp(self):
+        self.captured = None
+        self._pool_submit = mock.patch.object(
+            server._pool, "submit", side_effect=self._capture_submit
+        )
+        self._pool_submit.start()
+        self.addCleanup(self._pool_submit.stop)
+        self._guards = [
+            mock.patch.object(server, "_resolve_default_provider_id", return_value="prov-test"),
+            mock.patch.object(server, "get_app_config", return_value={}),
+            mock.patch.object(server, "get_models_by_provider",
+                              return_value=[{"model_name": "test-model"}]),
+            mock.patch.object(server, "_guard_concurrency"),
+        ]
+        for g in self._guards:
+            g.start()
+            self.addCleanup(g.stop)
+
+    def _capture_submit(self, fn, task_id, *args, **kwargs):
+        self.captured = (task_id, kwargs)
+        return Future()
+
+    def _run(self, **kwargs):
+        self.captured = None
+        resp = json.loads(server.generate_note(
+            video_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            platform="bilibili",
+            **kwargs,
+        ))
+        tid, params = self.captured
+        with server._tasks_lock:
+            server._task_futures.pop(tid, None)
+            server._task_events.pop(tid, None)
+        shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+        self.assertEqual(resp["status"], "PENDING")
+        return params
+
+    def test_screenshot_true_appends_to_format(self):
+        params = self._run(screenshot=True)
+        self.assertEqual(params["_format"], ["screenshot"])
+        self.assertIs(params["screenshot"], True)
+
+    def test_link_true_appends_to_format(self):
+        params = self._run(link=True, format=["toc"])
+        self.assertEqual(params["_format"], ["toc", "link"])
+
+    def test_dedup_when_format_already_has_item(self):
+        params = self._run(screenshot=True, link=True, format=["screenshot", "toc"])
+        self.assertEqual(params["_format"], ["screenshot", "toc", "link"])
+
+    def test_false_booleans_leave_format_unchanged(self):
+        params = self._run(screenshot=False, link=False, format=["toc"])
+        self.assertEqual(params["_format"], ["toc"])
+
+    def test_no_format_and_no_booleans_empty_list(self):
+        params = self._run()
+        self.assertEqual(params["_format"], [])
+        self.assertIs(params["screenshot"], False)
 
 
 if __name__ == "__main__":

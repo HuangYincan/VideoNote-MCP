@@ -11,11 +11,14 @@ DATABASE_URL / NOTE_OUTPUT_DIR 等环境变量。
     绝不写进 site-packages。
 可用环境变量 VIDEONOTE_DATA_DIR 可显式覆盖。
 """
+import logging
 import os
 import threading
 from pathlib import Path
 
 from videonote_mcp.crypto import decrypt_value, encrypt_value
+
+logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _IS_SOURCE_CHECKOUT = (_REPO_ROOT / "pyproject.toml").exists()
@@ -95,6 +98,25 @@ def env_int(name: str, default: int) -> int:
         return int(v)
     except ValueError:
         return default
+
+
+def resolve_int_config(key: str, env_name: str, default: int) -> int:
+    """解析 app_config 整数配置：垃圾值 warning 后回退 env/默认（#116）。
+
+    MCP 与 CLI 向导共用入口（#120 前 CLI 各自裸 int()，垃圾值每次进循环就崩）。
+    缺省链是 参数 → app_config → env → 默认（#107 口径）。`get(...) or env_int(...)`
+    的 truthy 短路有两处缺陷：垃圾值（手动编辑 app_config.json 写入 "abc"）让
+    int() 裸 ValueError 遮蔽回退链；0（显式关闭，如 video_interval=0 关视频理解）
+    被当 falsy 吞掉、app_config 优先级倒挂给 env。is not None 判断 + int() 防御
+    两处一起修（与 #107 default_export_formats 同族）。
+    """
+    raw = get_app_config().get(key)
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            logger.warning("app_config.%s 非整数（%r），回退 env/默认", key, raw)
+    return env_int(env_name, default)
 
 
 def env_json_list(name: str, default):

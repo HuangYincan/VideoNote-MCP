@@ -2,6 +2,17 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave E 批 9（2026-08-17 · 自主改进轮 #120，438 tests）
+
+- **回归链修复（#120 R1）**：#119 把媒体缓存 miss 的 `audio.file_path` 置 None 后，缓存加载分支的 falsy 检查把 None 当「缓存有效」直接返回 → 切换转写引擎后重跑同视频 `Path(None)` 抛误导性 TypeError；改 `file_path is None or not is_file()` 视为失效重新下载。
+- **screenshot/format 双向闭合（G1/G1b）**：布尔开关（screenshot/link）从不下发到 format 列表——screenshot=True 时视频白下载但 prompt 无标记指令 → LLM 不输出 `*Screenshot-[mm:ss]`、笔记无图；反向 format=["screenshot"] 但布尔 False 时有字幕就不下载视频 → 标记残留。server 层布尔并入 `_format`（去重）+ note 层 `_format` 回并布尔（`_download_media.need_video` 只认布尔）+ `need_full_download` 含 format 检查——两个方向都闭合。
+- **chunker 评论预算只计首 chunk（G2）**：summarize 只把 comments_danmaku 注入首 chunk，但估算每个 chunk 都计评论 → 评论大时 chunk 数成倍膨胀、极端抛误导性「single segment too large to fit request」；估算与注入同语义。
+- **quota 判定先于 429 重试 + merge 取消检查 + 降级走 logger**：`_is_retryable_error` 先识别配额耗尽（insufficient_user_quota / quota exceeded / 预扣费额度失败）再判 429——此前命中 429 判定可重试，白等 backoff + 白烧尝试；`_merge_partials` 组循环前检查取消（cancel 后仍在烧配额）；temperature 降级提示 print → logger（stdio 模式 stdout 被吞）。
+- **CLI 向导加固（C1-C5/S4）**：wizard add 重名 ValueError 就地消化不崩；`_edit_provider` 更新失败如实报（此前失败也打印「已更新」）；`resolve_int_config` 上移 config.py，CLI 6 处裸 `int()` 接入（垃圾值不再进向导循环就崩）；`export` 未知格式入口拒绝 + 转写源与 server 同源（gen/transcript.json 优先、损坏回退 result.json、损坏分开报）；`login` 失败路径 `exit_on_fail=False` 供向导（失败不再带崩整个向导）；纯文本兜底选默认模型回车=保持（此前被当「清除」，管道/EOF 误删已设默认）。
+- **死代码清理**：`app/services/task_serial_executor.py` 全仓零引用整文件删除（VENDOR.md 冻结清单同步）；`universal_gpt` 死属性 `self.screenshot/link`、`_chat_completion_create` 不可达 raise 与 `last_exc`。
+- **修复期间发现的历史破坏**：claude 脚本编辑事故在 cli.py 留下 6 处 sys.exit 缩进错位（providers test/set、transcriber set/download 的 exit 被提出块外 → 成功路径也退出、login 成功块悬挂、export result.json 回退分支永远走不到）——全部恢复原始缩进 + 新增契约测试钉住。
+- 新测试 tests/test_gpt_resilience.py（quota 不重试/429 仍重试/单次尝试、merge 取消、temperature 降级）+28。**438 passed + ruff F-clean**。
+
 ## Wave D 批 1-5（2026-08-17 · 52 项全部落地，198 tests）
 
 - **批 1 安全（c5c65d2）**：print 全清（抖音/快手/helper/groq/video_helper——含 Cookie 打印）；tiktok 平台映射→generic；requests 全带 timeout；下载器惰性工厂 `get_downloader()` 每次新建实例 + atexit 兜底清理 cookie 文件（模块级单例 `__del__` 永不触发）；bilibili SRT 解析 CRLF 归一化。

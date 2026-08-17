@@ -21,6 +21,14 @@ def _builder(segments, image_urls, **kwargs):
             "images": image_urls}
 
 
+def _builder_with_comments(segments, image_urls, **kwargs):
+    """评论参与消息构建（模拟 summarize 的 prompt 注入）。"""
+    messages = _builder(segments, image_urls, **kwargs)
+    if kwargs.get("comments_danmaku"):
+        messages["comments"] = kwargs["comments_danmaku"]
+    return messages
+
+
 class TestTokenChunking(unittest.TestCase):
     def test_chinese_split_by_token_not_bytes(self):
         # 每段 300 汉字（≈300 token）：max_tokens=700 时应切成多 chunk；
@@ -56,6 +64,31 @@ class TestTokenChunking(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         total = sum(len(c.segments[0].text) for c in chunks)
         self.assertEqual(total, 2000, "拆分不丢内容")
+
+
+class TestCommentsBudget(unittest.TestCase):
+    """评论/弹幕只注入首 chunk（summarize 循环语义）——体积估算同样只对首 chunk
+    计评论，否则每个 chunk 都按「文本+评论」预算、chunk 数膨胀（#120）。"""
+
+    def test_comments_charged_to_first_chunk_only(self):
+        # 段 50 字（≈50 token）×8；评论 80 字（≈80 token）；max_tokens=130：
+        # 无评论 → 2 段/chunk → 4 chunk；修复前（每 chunk 都计评论）→ 1 段/chunk → 8 chunk；
+        # 修复后首 chunk 1 段（50+80=130），其余 2 段/chunk → 5 chunk
+        segs = [_Seg("内容" * 25) for _ in range(8)]
+        comments = "长评" * 40
+        chunker = RequestChunker(
+            _builder_with_comments, max_bytes=1024 * 1024,
+            size_estimator=_messages_size,
+            max_tokens=130,
+        )
+        with_comments = chunker.chunk(segs, [], comments_danmaku=comments)
+        without = chunker.chunk(segs, [])
+        # 修复前 with_comments 是 8（与段数相等，无合并）；修复后只首 chunk 预算被评论吃掉
+        self.assertEqual(len(with_comments), 5)
+        self.assertEqual(len(with_comments), len(without) + 1)
+        # 首 chunk 确实带着评论预算：它只有 1 段
+        self.assertEqual(len(with_comments[0].segments), 1)
+        self.assertEqual(len(with_comments[1].segments), 2)
 
 
 if __name__ == "__main__":

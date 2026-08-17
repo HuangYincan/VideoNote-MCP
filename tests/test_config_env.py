@@ -75,6 +75,30 @@ def test_env_int():
     assert env_int("VN_TEST", 20) == 20
 
 
+def test_resolve_int_config_priority_and_garbage():
+    """resolve_int_config：app_config 优先于 env，垃圾值 warning 回退，0 不被 falsy 吞（#120 C3）。
+
+    MCP 与 CLI 向导共用同一实现（此前 CLI 各自裸 int()，垃圾值每次进向导循环就崩）。
+    """
+    from unittest import mock
+
+    from videonote_mcp.config import resolve_int_config
+
+    os.environ.pop("VN_RESOLVE", None)
+    with mock.patch("videonote_mcp.config.get_app_config", return_value={}):
+        assert resolve_int_config("video_interval", "VN_RESOLVE", 6) == 6  # 全缺 → 默认
+    os.environ["VN_RESOLVE"] = "99"
+    with mock.patch("videonote_mcp.config.get_app_config", return_value={"video_interval": "12"}):
+        assert resolve_int_config("video_interval", "VN_RESOLVE", 6) == 12  # app_config 优先
+    with mock.patch("videonote_mcp.config.get_app_config", return_value={"video_interval": "abc"}), \
+         mock.patch("videonote_mcp.config.logger") as m_logger:
+        assert resolve_int_config("video_interval", "VN_RESOLVE", 6) == 99  # 垃圾值回退 env
+        assert any("非整数" in str(c) for c in m_logger.warning.call_args_list)
+    with mock.patch("videonote_mcp.config.get_app_config", return_value={"video_interval": 0}):
+        assert resolve_int_config("video_interval", "VN_RESOLVE", 6) == 0  # 0 显式关闭不被吞
+    os.environ.pop("VN_RESOLVE", None)
+
+
 def test_env_json_list():
     os.environ["VN_TEST"] = '["srt", "vtt"]'
     assert env_json_list("VN_TEST", []) == ["srt", "vtt"]

@@ -12,6 +12,16 @@ class ChunkPayload:
 _TOKENS_PER_IMAGE = 1105
 
 
+def _without_comments(kwargs: dict) -> dict:
+    """评论/弹幕只注入首 chunk（summarize 循环语义）——估算同样只对首 chunk 计评论，
+    否则每个 chunk 的容量预算都按「文本+评论」算，评论大时 chunk 数成倍膨胀（#120）。"""
+    if "comments_danmaku" not in kwargs:
+        return kwargs
+    stripped = dict(kwargs)
+    stripped.pop("comments_danmaku", None)
+    return stripped
+
+
 class RequestChunker:
     def __init__(
         self,
@@ -125,7 +135,8 @@ class RequestChunker:
             batch_segments = []
             while seg_idx < len(segments):
                 candidate = batch_segments + [segments[seg_idx]]
-                if self._fits(candidate, [], **kwargs):
+                eff_kwargs = kwargs if not chunks else _without_comments(kwargs)
+                if self._fits(candidate, [], **eff_kwargs):
                     batch_segments = candidate
                     seg_idx += 1
                     continue
@@ -174,7 +185,8 @@ class RequestChunker:
             for chunk_idx in range(preferred_idx, len(chunks)):
                 chunk = chunks[chunk_idx]
                 candidate_images = chunk.image_urls + [image]
-                if self._fits(chunk.segments, candidate_images, **kwargs):
+                eff_kwargs = kwargs if chunk_idx == 0 else _without_comments(kwargs)
+                if self._fits(chunk.segments, candidate_images, **eff_kwargs):
                     chunk.image_urls = candidate_images
                     placed = True
                     break
