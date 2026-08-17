@@ -13,12 +13,15 @@ ct-punc（自动标点），一个 AutoModel pipeline 端到端输出**已带标
 """
 from __future__ import annotations
 
+import logging
 import threading
 from typing import List
 
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
 from app.transcriber.base import Transcriber
 from app.utils.path_helper import get_model_dir
+
+logger = logging.getLogger(__name__)
 
 _INSTALL_HINT = (
     "FunASR 转写需要 funasr + torch。请用 "
@@ -66,6 +69,8 @@ class FunASRTranscriber(Transcriber):
                 raise RuntimeError(f"FunASR 转写失败: {exc}")
 
             if not results:
+                # 空结果可能是静音（合法），也可能是引擎异常——留痕供排查（#118）
+                logger.warning("funasr 未返回识别结果（静音/无语音，或引擎异常），返回空转写")
                 return TranscriptResult(language="zh", full_text="", segments=[])
 
             res = results[0]

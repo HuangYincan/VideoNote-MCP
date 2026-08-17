@@ -58,7 +58,10 @@ def probe_duration(wav_path: str) -> float:
             capture_output=True, text=True, timeout=60,
         )
         return float(r.stdout.strip())
-    except Exception:
+    except Exception as exc:
+        # ffprobe 失败静默返回 0 会让 chunk_if_long 把未知时长当「不长」——超长音频
+        # 整块喂给云端引擎（可能超限），且无任何留痕（#118）
+        logger.warning(f"ffprobe 探测时长失败: {exc}")
         return 0.0
 
 

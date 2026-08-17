@@ -27,6 +27,61 @@ def _real_transcript() -> TranscriptResult:
     )
 
 
+class PreprocessChunkFailureTest(unittest.TestCase):
+    """预处理分块转写失败不再静默：全失败 raise（任务 FAILED 而非 SUCCESS 空笔记），
+    部分失败返回 truncated 标记 + 汇总 warning（#118）。"""
+
+    def _call(self, fail_chunks=()):
+        """mock normalize/chunk/transcriber 后调 _transcribe_with_preprocess。
+
+        函数体是函数内 import（audio_preprocess 模块），mock 需 patch 源头。
+        """
+        fake = mock.Mock()
+
+        def side_effect(file_path=None):
+            if file_path in fail_chunks:
+                raise RuntimeError(f"boom-{file_path}")
+            return _real_transcript()
+
+        fake.transcript.side_effect = side_effect
+        with mock.patch.object(
+            pipeline, "chunk_duration_guess", return_value=10.0
+        ), mock.patch.object(
+            pipeline, "apply_diarization", side_effect=lambda _a, segs, **k: segs
+        ), mock.patch(
+            "app.transcriber.audio_preprocess.normalize_to_wav", return_value="wav.wav"
+        ), mock.patch(
+            "app.transcriber.audio_preprocess.chunk_if_long", return_value=["chunk-1", "chunk-2"]
+        ), mock.patch(
+            "app.transcriber.audio_preprocess.cleanup_preprocess_files", return_value=None
+        ), mock.patch.object(pipeline.logger, "warning") as w:
+            return pipeline._transcribe_with_preprocess("src.mp3", fake), w
+
+    def test_all_chunks_fail_raises(self):
+        # 全失败曾静默返回空转写 → 任务 SUCCESS 产空笔记；现在显式 raise → 任务 FAILED
+        with self.assertRaises(RuntimeError) as cm:
+            self._call(fail_chunks=("chunk-1", "chunk-2"))
+        self.assertIn("全部失败（2/2 块）", str(cm.exception))
+        self.assertIn("boom", str(cm.exception))
+
+    def test_partial_failure_marks_truncated(self):
+        result, w = self._call(fail_chunks=("chunk-1",))
+        self.assertTrue(result["truncated"])
+        self.assertEqual(len(result["segments"]), 1)
+        # chunk-1 失败仍推进时间偏移：chunk-2 的段偏移 +10s
+        self.assertEqual(result["segments"][0]["start"], 10.0)
+        self.assertTrue(any("部分失败（1/2 块）" in str(c) for c in w.call_args_list))
+
+    def test_all_success_no_truncated(self):
+        result, w = self._call()
+        self.assertNotIn("truncated", result)
+        # 两个 chunk 都成功，各贡献一段 "hello"（full_text 无分隔拼接，段本身正常）
+        self.assertEqual(result["full_text"], "hellohello")
+        self.assertEqual(len(result["segments"]), 2)
+        self.assertEqual(result["segments"][0]["start"], 0.0)
+        self.assertEqual(result["segments"][1]["start"], 10.0)
+
+
 class FetchSubtitlesTest(unittest.TestCase):
     def test_no_subtitles_returns_none(self):
         fake = mock.Mock()

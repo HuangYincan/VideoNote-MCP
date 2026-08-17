@@ -1417,6 +1417,44 @@ class IntConfigFallbackTest(unittest.TestCase):
         self.assertEqual(m.call_args.kwargs["video_interval"], 0)
 
 
+class WriteStatusStartedAtTest(unittest.TestCase):
+    """_write_status 的 started_at 保留 + 写盘失败不裸抛 + get_task_status 内存快照回退（#118）。"""
+
+    def setUp(self):
+        import uuid as _uuid
+
+        self.tid = f"ws-{_uuid.uuid4().hex[:8]}"
+        self.task_dir = server.NOTE_OUTPUT_DIR / self.tid
+
+    def tearDown(self):
+        shutil.rmtree(self.task_dir, ignore_errors=True)
+        with server._tasks_lock:
+            server._status_memory.pop(self.tid, None)
+
+    def test_started_at_preserved_across_writes(self):
+        # 每次重打时间戳曾让成功任务终态 elapsed≈0（PENDING→INITIALIZING→…→SUCCESS 全由本函数写）
+        server._write_status(self.tid, "PENDING", message="任务排队中")
+        first = json.loads((self.task_dir / "status.json").read_text(encoding="utf-8"))["started_at"]
+        server._write_status(self.tid, "SUCCESS", message="完成")
+        second = json.loads((self.task_dir / "status.json").read_text(encoding="utf-8"))["started_at"]
+        self.assertEqual(first, second)
+
+    def test_write_failure_does_not_raise_and_keeps_memory_snapshot(self):
+        # 磁盘满/只读时裸抛会进后台线程被吞、FAILED 重写循环同样失败——不抛 + 快照可查
+        with mock.patch("pathlib.Path.write_text", side_effect=OSError("disk full")):
+            server._write_status(self.tid, "PENDING", message="x")  # 不应抛
+        with server._tasks_lock:
+            self.assertEqual(server._status_memory[self.tid]["status"], "PENDING")
+
+    def test_get_task_status_falls_back_to_memory_snapshot(self):
+        # 状态文件损坏（写一半）曾误报「状态文件读取失败」PENDING——回退最近一次写盘快照
+        server._write_status(self.tid, "PENDING", message="任务排队中")
+        (self.task_dir / "status.json").write_text("{", encoding="utf-8")
+        resp = json.loads(server.get_task_status(self.tid))
+        self.assertEqual(resp["status"], "PENDING")
+        self.assertEqual(resp["message"], "任务排队中")  # 内存快照而非误导文案
+
+
 class CleanupRunningTaskGuardTest(unittest.TestCase):
     """cleanup_note / cleanup_all 对运行中（或排队中）任务拒绝清理——直接删会破坏
     下载器/转写器正在写的目录，任务中途失败或产生残留状态（#111）。"""

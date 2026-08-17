@@ -253,12 +253,17 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
     all_segments: List[TranscriptSegment] = []
     offset = 0.0
     language = None
+    failed = 0
+    first_error: Optional[Exception] = None
     for chunk in chunks:
         chunk_dur = chunk_duration_guess(chunk)
         try:
             tr = transcriber.transcript(file_path=chunk)
         except Exception as exc:  # noqa: BLE001 —— 单块失败跳过，不阻断整段
             logger.warning(f"预处理分块转写失败（跳过该块）: {exc}")
+            if first_error is None:
+                first_error = exc
+            failed += 1
             # 失败也要推进时间偏移，否则后续段时间轴整体错位（缺了这块的 ~1800s）
             offset += chunk_dur
             continue
@@ -286,9 +291,18 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
         pass
 
     full_text = "".join(s.text for s in all_segments)
-    return asdict(
+    if failed == len(chunks):
+        # 全块失败曾静默返回空转写，上层当成功缓存 → 任务 SUCCESS 产空笔记（#118）
+        raise RuntimeError(
+            f"预处理分块转写全部失败（{failed}/{len(chunks)} 块）：{first_error}"
+        ) from first_error
+    result = asdict(
         TranscriptResult(language=language, full_text=full_text, segments=all_segments)
     )
+    if failed:
+        logger.warning(f"预处理分块转写部分失败（{failed}/{len(chunks)} 块），转写不完整")
+        result["truncated"] = True
+    return result
 
 
 def chunk_duration_guess(wav_path: str) -> float:

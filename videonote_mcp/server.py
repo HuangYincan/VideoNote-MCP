@@ -197,6 +197,9 @@ _dl_pool = ThreadPoolExecutor(max_workers=1)
 _tasks_lock = threading.Lock()
 _task_futures: Dict[str, Future] = {}
 _task_events: Dict[str, threading.Event] = {}
+# 最近一次 _write_status 的写盘快照（写盘失败/文件损坏时 get_task_status 回退，
+# 避免把运行中/已完成任务误报成 PENDING，见 #118）
+_status_memory: Dict[str, dict] = {}
 
 
 def _exit_summary() -> None:
@@ -231,17 +234,30 @@ atexit.register(_exit_summary)
 
 def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
     """写入 {task_dir}/status.json（与上游 NoteGenerator._update_status 兼容）。"""
+    task_dir = NOTE_OUTPUT_DIR / str(task_id)
+    f = task_dir / "status.json"
+    # 保留旧 started_at（elapsed_secs 从首次提交起算）——每次重打会让成功任务的
+    # 终态 elapsed≈0（PENDING→INITIALIZING→…→SUCCESS 全由本函数写，见 #118）
+    try:
+        old = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+        started = old.get("started_at")
+    except Exception:
+        started = None
     data = {"status": status.value if isinstance(status, TaskStatus) else str(status)}
     if message:
         data["message"] = message
-    # 首次提交时打时间戳（get_task_status 的 elapsed_secs 用）；后续 _update_status 会保留它
-    data.setdefault("started_at", time.time())
-    task_dir = NOTE_OUTPUT_DIR / str(task_id)
-    task_dir.mkdir(parents=True, exist_ok=True)
-    f = task_dir / "status.json"
-    tmp = f.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(f)
+    data["started_at"] = started if started is not None else time.time()
+    # 写盘前更新内存快照：磁盘满/权限故障时 get_task_status 可回退（见 #118）
+    with _tasks_lock:
+        _status_memory[task_id] = data
+    try:
+        task_dir.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(f)
+    except Exception as exc:  # noqa: BLE001 —— 环境故障（磁盘满/只读）：不裸抛
+        # （裸抛会进后台线程被吞，且 FAILED 重写循环同样失败），内存快照已可查
+        logger.error(f"写状态文件失败 task_id={task_id}: {exc}")
     # 同步全局索引（尽力而为）
     try:
         from app.db.video_task_dao import update_task_status
@@ -508,8 +524,8 @@ def _index_step_task(task_id: str, kind: str, title: str = "") -> None:
             status="PENDING",
             note_dir=str(NOTE_OUTPUT_DIR / task_id),
         )
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 —— 索引失败不阻断提交，但留痕（list_tasks 会缺任务）
+        logger.warning(f"步骤任务入索引失败 task_id={task_id}: {exc}")
 
 
 def _submit_step_task(kind: str, step_fn: Callable, title: str = "", **params) -> str:
@@ -962,7 +978,10 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
     try:
         data = json.loads(status_file.read_text(encoding="utf-8"))
     except Exception:
-        data = {"status": "PENDING", "message": "状态文件读取失败"}
+        # 读盘损坏（写一半/磁盘故障）时回退最近一次写盘快照——「状态文件读取失败」
+        # 曾把运行中/已完成任务误报成 PENDING（#118）；快照也没有才是真未知
+        with _tasks_lock:
+            data = _status_memory.get(task_id) or {"status": "PENDING", "message": "状态文件读取失败"}
 
     status = data.get("status", "PENDING")
     started = data.get("started_at")
