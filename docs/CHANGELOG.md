@@ -668,3 +668,11 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **工具矩阵**：9 项检查全 PASS（health_check / validate_url×4 / set-get_transcriber / 14 工具 / tiny 已下载）。
 - **遗留**：`local_downloader` 封面提取对纯音频文件非致命化（改进）；`list_models` 字段访问修复。
 - 文档：核对 `docs/` 与实现一致。
+
+## Wave F 批 22（2026-08-18 · 第 17 轮四维全库扫描 #133，743 tests）
+
+- **A1 SSRF 覆盖不全修复**：显式 platform=bilibili/kuaishou/douyin 曾绕过 #132 A1（只覆盖 generic/youtube 下载器内部）——短链解析器 / inspect / generate_note / prepare_note_material / fetch_subtitles 五处入口补 `assert_public_http_url`。
+- **B1 显式 provider_id 空 key 校验**（#52 只修默认分支）；**B2 inspect 认 file://**（全工具面最后一块）；**B3 summarize_note full_text-only 拒绝**（防 LLM 零素材凭空生成）；**B7 quality 先于 provider 校验**；**B8 batch max_entries=0 提交 0 条**。
+- **测试基建修复**：test_url_safety 类名非 Test 前缀从未被 pytest 收集——#132 A1 的 21 个 SSRF 回归测试实际从未执行，重命名后 36 用例进套件。
+- **C1 依赖修正**：FastMCP 由 mcp 包自带（mcp.server.fastmcp），直接依赖从未被 import 的独立 fastmcp 包 → 改声明 `mcp>=1.29.0`，lock -500 行；**C2 VENDOR.md 分叉清单同步**；**C3 action-gh-release v2→v3**。
+- **743 passed + ruff F/I-clean**（691 → +52：+14 契约/批量 + 36 收集修复 + 2 batch）。
