@@ -826,6 +826,68 @@ def _parse_segment_range(spec: str, total: int) -> tuple:
     return (a, b)
 
 
+def _load_task_transcript(task_id: str) -> Optional[dict]:
+    """读任务的转写 dict（{language, full_text, segments}）；无转写/未成功返回 None。
+
+    规范来源：gen/transcript.json（note.py 每次成功都会写）；缺失则退 result.json。
+    供 get_task_transcript 工具与 videonote://task/{id}/transcript Resource 共用（docs/05 #16）。
+    """
+    task_dir = NOTE_OUTPUT_DIR / str(task_id)
+    cache = task_dir / "gen" / "transcript.json"
+    if cache.exists():
+        try:
+            return json.loads(cache.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"读取转写缓存失败 task_id={task_id}: {e}")
+    result_file = task_dir / "result.json"
+    if result_file.exists():
+        try:
+            return json.loads(result_file.read_text(encoding="utf-8")).get("transcript")
+        except Exception:
+            return None
+    return None
+
+
+@mcp.resource(
+    "videonote://task/{task_id}/transcript",
+    title="任务转写文本",
+    description="读取任务转写（带时间轴的纯文本，agent 可直接读）。任务未成功/无转写时返回错误说明。",
+    mime_type="text/plain",
+)
+def transcript_resource(task_id: str) -> str:
+    """MCP Resource：按任务读转写全文（带时间轴文本，非 JSON）。
+
+    工具面收敛（docs/05 #16）：Agent 读转写走 Resource（文本直读），
+    get_task_transcript 工具保留用于分段切片/结构化场景。
+    """
+    try:
+        task_id = _validate_task_id(task_id)
+    except Exception as e:
+        return f"task_id 无效: {e}"
+    transcript = _load_task_transcript(task_id)
+    if not transcript:
+        status = "UNKNOWN"
+        try:
+            st = json.loads((NOTE_OUTPUT_DIR / task_id / "status.json").read_text(encoding="utf-8"))
+            status = st.get("status", "UNKNOWN")
+        except Exception:
+            pass
+        return f"该任务没有可读转写（status={status}，尚未成功或已清理）"
+    segments = transcript.get("segments") or []
+    if not segments:
+        return transcript.get("full_text") or ""
+    lines = []
+    for seg in segments:
+        start = seg.get("start") or 0
+        mm, ss = int(start // 60), int(start % 60)
+        hh, mm = divmod(mm, 60)
+        stamp = f"{hh:02d}:{mm:02d}:{ss:02d}" if hh else f"{mm:02d}:{ss:02d}"
+        speaker = seg.get("speaker")
+        prefix = f"[{speaker}] " if speaker else ""
+        lines.append(f"{stamp} - {prefix}{seg.get('text', '').strip()}")
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def get_task_transcript(task_id: str, segment_range: str = "") -> str:
     """读取已完成任务的转写文本（不耗 LLM，从磁盘按需取，避免撑爆 context）。
@@ -839,21 +901,7 @@ def get_task_transcript(task_id: str, segment_range: str = "") -> str:
     task_dir = NOTE_OUTPUT_DIR / str(task_id)
 
     # 规范来源：gen/transcript.json（note.py 每次成功都会写）；缺失则退 result.json
-    transcript = None
-    cache = task_dir / "gen" / "transcript.json"
-    if cache.exists():
-        try:
-            transcript = json.loads(cache.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning(f"读取转写缓存失败 task_id={task_id}: {e}")
-    if transcript is None:
-        result_file = task_dir / "result.json"
-        if result_file.exists():
-            try:
-                result = json.loads(result_file.read_text(encoding="utf-8"))
-                transcript = result.get("transcript")
-            except Exception:
-                transcript = None
+    transcript = _load_task_transcript(task_id)
     if not transcript:
         status = "UNKNOWN"
         try:

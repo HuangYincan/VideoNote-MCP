@@ -339,3 +339,42 @@ class WaitForNoteTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TranscriptResourceTest(unittest.TestCase):
+    """#16 工具面收敛：videonote://task/{id}/transcript Resource 文本直读。"""
+
+    def test_resource_returns_timeline_text(self):
+        task_id = "res0001"
+        task_dir = server.NOTE_OUTPUT_DIR / task_id
+        (task_dir / "gen").mkdir(parents=True, exist_ok=True)
+        (task_dir / "gen" / "transcript.json").write_text(
+            json.dumps({
+                "language": "zh",
+                "full_text": "你好世界",
+                "segments": [
+                    {"start": 0.0, "end": 1.0, "text": "你好"},
+                    {"start": 65.0, "end": 66.0, "text": "世界", "speaker": "SPEAKER_00"},
+                ],
+            }),
+            encoding="utf-8",
+        )
+        out = server.transcript_resource(task_id)
+        self.assertIn("00:00 - 你好", out)
+        self.assertIn("01:05 - [SPEAKER_00] 世界", out)
+
+    def test_resource_missing_transcript_reports_status(self):
+        task_id = "res0002"
+        task_dir = server.NOTE_OUTPUT_DIR / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "status.json").write_text(
+            json.dumps({"status": "RUNNING", "message": "转写中"}),
+            encoding="utf-8",
+        )
+        out = server.transcript_resource(task_id)
+        self.assertIn("RUNNING", out)
+        self.assertIn("没有可读转写", out)
+
+    def test_resource_invalid_task_id(self):
+        out = server.transcript_resource("bad/id!")
+        self.assertIn("task_id 无效", out)
