@@ -210,6 +210,13 @@ class TestExportCli:
         assert "未知导出格式" in err and "bogus" in err
         assert "已导出" not in err
 
+    def test_export_invalid_task_id_rejected(self, capsys):
+        # task_id 进路径拼接前校验格式（与 MCP _validate_task_id 同源正则，防 ../ 逃逸）
+        with pytest.raises(SystemExit) as ei:
+            cli._export_cli(["export", "../escape/../../etc", "--format", "srt"])
+        assert ei.value.code == 1
+        assert "非法 task_id" in capsys.readouterr().err
+
     def test_export_corrupt_cache_falls_back_to_result(self, capsys):
         task_id = str(uuid.uuid4())
         note_out = Path(os.environ["NOTE_OUTPUT_DIR"])

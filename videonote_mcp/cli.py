@@ -10,6 +10,7 @@ API key 的设计原则：key 由用户在独立终端写入（不经过 agent �
 import argparse
 import builtins
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -1388,6 +1389,13 @@ def _export_cli(argv) -> None:
         sys.exit(1)
 
     note_output_dir = Path(os.environ.get("NOTE_OUTPUT_DIR", "note_results"))
+    # task_id 进路径拼接前校验格式（与 MCP _validate_task_id 同源正则，防 ../ 逃逸）
+    if not re.fullmatch(r"^[A-Za-z0-9_-]{1,64}$", opts.task_id):
+        print(
+            f"✗ 非法 task_id: {opts.task_id!r}（应为 1-64 位字母/数字/下划线/连字符）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     task_dir = note_output_dir / opts.task_id
     import json as _json
 
