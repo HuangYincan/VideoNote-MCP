@@ -976,5 +976,90 @@ class ExportFormatsWhitelistTest(unittest.TestCase):
             shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
 
 
+class FetchSubtitlesPlatformTest(unittest.TestCase):
+    """fetch_subtitles 的 platform 参数：拼错平台曾被 pipeline 吞掉异常转成「该视频
+    没有可用平台字幕」——误报成视频没字幕；入口白名单显式报错（#105）。"""
+
+    def test_bogus_platform_reported_explicitly(self):
+        resp = json.loads(server.fetch_subtitles("https://example.com/v", platform="bilibil"))
+        self.assertFalse(resp["ok"])
+        self.assertIn("platform 只支持", resp["error"])
+        self.assertIn("bilibili", resp["error"])
+
+    def test_empty_platform_reported_explicitly(self):
+        # 空串曾因 falsy 静默走自动检测（用户的拼写错误无声消失）
+        resp = json.loads(server.fetch_subtitles("https://example.com/v", platform=""))
+        self.assertFalse(resp["ok"])
+        self.assertIn("platform 只支持", resp["error"])
+
+    def test_valid_platform_passes_to_pipeline(self):
+        with mock.patch(
+            "videonote_mcp.server.pipeline.fetch_subtitles", return_value=None
+        ) as m:
+            resp = json.loads(server.fetch_subtitles("https://example.com/v", platform="bilibili"))
+        m.assert_called_once_with("https://example.com/v", "bilibili")
+        self.assertNotIn("platform 只支持", resp.get("error", ""))
+
+    def test_none_platform_auto_detect(self):
+        with mock.patch(
+            "videonote_mcp.server.pipeline.fetch_subtitles",
+            return_value={"language": "zh", "segments": [], "full_text": ""},
+        ) as m:
+            resp = json.loads(server.fetch_subtitles("https://example.com/v"))
+        m.assert_called_once_with("https://example.com/v", None)
+        self.assertTrue(resp["ok"])
+
+    def test_whitelist_matches_factory(self):
+        from app.services.constant import SUPPORT_PLATFORM_MAP
+
+        self.assertEqual(set(server._KNOWN_PLATFORMS), set(SUPPORT_PLATFORM_MAP))
+
+
+class MergeAudioFileUriTest(unittest.TestCase):
+    """merge_audio 的 file:// 规整：app 层只认普通路径，直接传 URI 曾误报「文件不存在」（#105）。"""
+
+    def test_file_uri_paths_coerced_before_merge(self):
+        with tempfile.TemporaryDirectory() as td:
+            a = Path(td) / "a b.mp3"  # 空格 → URI 编码 %20，必须 unquote
+            b = Path(td) / "b.mp3"
+            a.write_bytes(b"x")
+            b.write_bytes(b"x")
+            with mock.patch(
+                "app.services.merge.merge_audio", return_value=str(Path(td) / "merged.wav")
+            ) as m:
+                resp = json.loads(server.merge_audio([a.as_uri(), b.as_uri()], out_dir=td))
+            self.assertTrue(resp["ok"])
+            self.assertEqual(m.call_args.args[0], [str(a), str(b)])
+
+    def test_plain_paths_passthrough_unchanged(self):
+        with tempfile.TemporaryDirectory() as td:
+            a = Path(td) / "a.mp3"
+            b = Path(td) / "b.mp3"
+            a.write_bytes(b"x")
+            b.write_bytes(b"x")
+            with mock.patch(
+                "app.services.merge.merge_audio", return_value=str(Path(td) / "merged.wav")
+            ) as m:
+                resp = json.loads(server.merge_audio([str(a), str(b)], out_dir=td))
+            self.assertTrue(resp["ok"])
+            self.assertEqual(m.call_args.args[0], [str(a), str(b)])
+
+
+class DiarizeMediaIsFileTest(unittest.TestCase):
+    """diarize_media 目录输入：.exists() 对目录为 True，曾穿透到 ffmpeg 深处炸泛化错误；
+    与 transcribe_media/extract_frames 同口径改 is_file（#105）。"""
+
+    def test_directory_input_rejected_as_missing_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            resp = json.loads(server.diarize_media(td))
+        self.assertFalse(resp["ok"])
+        self.assertIn("本地文件不存在", resp["error"])
+
+    def test_missing_file_rejected(self):
+        resp = json.loads(server.diarize_media("/nonexistent/audio.mp3"))
+        self.assertFalse(resp["ok"])
+        self.assertIn("本地文件不存在", resp["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

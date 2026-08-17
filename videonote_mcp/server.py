@@ -603,6 +603,12 @@ def _detect_platform(url: str) -> str:
 
 _TRANSCRIPT_DEFAULT_SEGMENTS = 50
 
+# 与 app/services/constant.py 的 SUPPORT_PLATFORM_MAP 同源（契约测试断言不漂移）。
+# 仅 fetch_subtitles 需要入口白名单：其它平台参数（generate_note 等）的平台错误
+# 在任务结果里显式 FAILED，唯独 pipeline.fetch_subtitles 把「不支持的平台」异常吞掉
+# 转成「该视频没有可用平台字幕」——拼错的平台被误报成视频没字幕。
+_KNOWN_PLATFORMS = ("bilibili", "douyin", "generic", "kuaishou", "local", "tiktok", "youtube")
+
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
@@ -1272,6 +1278,10 @@ def fetch_subtitles(video_url: str, platform: Optional[str] = None) -> str:
     需要完整 AI 笔记用 generate_note。
     """
     try:
+        if platform is not None and platform not in _KNOWN_PLATFORMS:
+            raise ValueError(
+                f"platform 只支持 {' / '.join(_KNOWN_PLATFORMS)}，收到: {platform!r}"
+            )
         transcript = pipeline.fetch_subtitles(video_url, platform)
         if transcript is None:
             return json.dumps(
@@ -2252,6 +2262,9 @@ def merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
         out = out_dir or str(NOTE_OUTPUT_DIR / "merged")
         if out_dir and not Path(out_dir).resolve().is_relative_to(DATA_DIR.resolve()):
             logger.warning("merge_audio 输出到数据目录外: %s", out_dir)
+        # 与 transcribe_media/extract_frames 同口径：file:// URI 先规整（app 层只认普通路径，
+        # 直接传 file:// 会误报「文件不存在」）
+        files = [str(_coerce_local_path(f)) for f in files]
         merged = _merge(files, out_dir=out)
         return json.dumps({"ok": True, "path": Path(merged).as_uri()}, ensure_ascii=False)
     except Exception as exc:
@@ -2281,7 +2294,7 @@ def diarize_media(
         from app.transcriber.audio_preprocess import normalize_to_wav
 
         p = _coerce_local_path(audio_file)
-        if not p.exists():
+        if not p.is_file():
             raise FileNotFoundError(f"本地文件不存在: {audio_file}")
         wav = normalize_to_wav(str(p))
         turns = diarize_audio(wav, hf_token=None, num_speakers=num_speakers)
