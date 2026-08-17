@@ -8,6 +8,7 @@
 运行时环境（数据目录、DB、输出目录）在 import app.* 之前由 config.setup_environment()
 初始化，详见 videonote_mcp/config.py。
 """
+import atexit
 import json
 import logging
 import os
@@ -44,12 +45,31 @@ _builtins.print = _print_to_stderr
 
 # stdio MCP：把 stderr 重定向到日志文件，避免后台任务的大量输出把 stderr 管道塞满、
 # 阻塞事件循环（logging 持锁跨线程阻塞 → 「第二个工具调用挂起」）。协议只用 stdin/stdout。
+
+def _open_stderr_log(max_mb: int = 50):
+    """打开 mcp_stderr.log（超限先轮转，防止长跑后日志体积失控，docs/05 #44）。
+
+    返回文件对象；失败返回 None 并尽量把原因打印到原始 stderr（此时 dup2 尚未发生）。
+    """
+    path = DATA_DIR / "logs" / "mcp_stderr.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        limit = max(1, int(os.getenv("VIDEONOTE_STDERR_LOG_MAX_MB", str(max_mb)))) * 1024 * 1024
+        if path.exists() and path.stat().st_size > limit:
+            path.replace(path.with_suffix(".log.1"))
+        return open(path, "a", encoding="utf-8", buffering=1)
+    except Exception as exc:
+        print(f"[videonote] 打开 stderr 日志失败({exc}),继续直接输出", file=sys.stderr)
+        return None
+
+
 try:
-    _stderr_log = open(DATA_DIR / "logs" / "mcp_stderr.log", "a", encoding="utf-8", buffering=1)
-    os.dup2(_stderr_log.fileno(), 2)   # OS 层：子进程（yt-dlp/ffmpeg）的 stderr 也进文件
-    sys.stderr = _stderr_log            # Python 层：logging / vendored print 进文件
+    _stderr_log = _open_stderr_log()
+    if _stderr_log is not None:
+        os.dup2(_stderr_log.fileno(), 2)   # OS 层：子进程（yt-dlp/ffmpeg）的 stderr 也进文件
+        sys.stderr = _stderr_log            # Python 层：logging / vendored print 进文件
 except Exception:
-    pass  # 重定向失败不致命，保持原样
+    pass  # 重定向失败不致命，_open_stderr_log 已把原因打到原始 stderr
 
 # app.* 相关导入必须在 setup_environment() 之后 —— 否则 VIDEONOTE_DATA_DIR/CONFIG_DIR 未设置，
 # logger/配置会用 CWD 相对路径建 config/logs（在笔记目录里出现多余文件夹）。
@@ -97,6 +117,23 @@ _dl_pool = ThreadPoolExecutor(max_workers=1)
 _tasks_lock = threading.Lock()
 _task_futures: Dict[str, Future] = {}
 _task_events: Dict[str, threading.Event] = {}
+
+
+def _exit_summary() -> None:
+    """正常退出（sys.exit）时记录进行中任务数，便于排查孤儿 ffmpeg/whisper 子进程。
+
+    已知限制（docs/05 #44）：线程池 worker 是 daemon 线程，SIGKILL 或客户端强杀时
+    钩子不执行，转写/下载子进程会残留跑完；这是 Python 子进程管理的固有边界。
+    """
+    try:
+        with _tasks_lock:
+            active = len(_task_futures)
+        logger.info(f"VideoNote-Mcp 退出;进行中/排队任务 {active} 个")
+    except Exception:
+        pass
+
+
+atexit.register(_exit_summary)
 
 
 def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
