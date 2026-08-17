@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import shutil
 import tempfile
 from abc import ABC
 from typing import Union, Optional, List
@@ -134,10 +135,13 @@ class BilibiliDownloader(Downloader, ABC):
         video_id=extract_video_id(video_url, "bilibili")
         if not video_id:
             raise ValueError(f"无法从链接提取 B 站视频 ID: {video_url}")
-        # 多 P 视频 yt-dlp 的 id 是 {BV}_pN（缓存名 {BV}_pN.mp4），与纯 BV 不同 →
-        # 用前缀 glob 匹配，否则缓存永远不命中、每次重新下载
+        # 多 P 视频 yt-dlp 的 id 是 {BV}_pN（缓存名 {BV}_pN.mp4），与纯 BV 不同。
+        # 旧前缀 glob（{BV}*.mp4）会误配别的视频（BV12345_p1.mp4 命中 BV1234 的查询）；
+        # 精确枚举两种形态：单集 {BV}.mp4 / 分 P {BV}_pN.mp4（#121 B5）
         import glob as _glob
-        existing = _glob.glob(os.path.join(output_dir, f"{video_id}*.mp4"))
+        existing = _glob.glob(os.path.join(output_dir, f"{video_id}.mp4")) or _glob.glob(
+            os.path.join(output_dir, f"{video_id}_p*.mp4")
+        )
         if existing:
             return existing[0]
 
@@ -199,9 +203,13 @@ class BilibiliDownloader(Downloader, ABC):
         except Exception as e:
             logger.warning(f"player API 直拉字幕异常，回退到 yt-dlp: {e}")
 
-        # 2) Fallback：原 yt-dlp 路径（更脆弱，遇到签名/Cookie 问题失败概率较高）
+        # 2) Fallback：原 yt-dlp 路径（更脆弱，遇到签名/Cookie 问题失败概率较高）。
+        # 调用方没给 output_dir 时落专属临时目录、解析后整体清理——yt-dlp 字幕文件
+        # 曾是数据根目录的常驻垃圾（每次回退都留下 {BV}.{lang}.{ext}，从不删除，#121 B6）
+        owned_tmpdir = None
         if output_dir is None:
-            output_dir = get_data_dir()
+            owned_tmpdir = tempfile.mkdtemp(prefix="videonote_subs_")
+            output_dir = owned_tmpdir
         if not output_dir:
             output_dir = self.cache_data
         os.makedirs(output_dir, exist_ok=True)
@@ -280,6 +288,10 @@ class BilibiliDownloader(Downloader, ABC):
         except Exception as e:
             logger.warning(f"获取B站字幕失败: {e}")
             return None
+        finally:
+            # 自建临时目录：成功（字幕已解析进内存）/失败都清掉，不留垃圾
+            if owned_tmpdir:
+                shutil.rmtree(owned_tmpdir, ignore_errors=True)
 
     def _parse_srt_content(self, srt_content: str, language: str) -> Optional[TranscriptResult]:
         """

@@ -19,9 +19,18 @@ MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
 def compress_audio(input_path: str, target_bitrate='64k') -> str:
     output_fd, output_path = tempfile.mkstemp(suffix=".mp3")  # 临时输出文件
     os.close(output_fd)  # 关闭文件描述符，ffmpeg 会用路径操作
-    ffmpeg.input(input_path).output(output_path, audio_bitrate=target_bitrate).run(
-        quiet=True, overwrite_output=True, timeout=600
-    )
+    try:
+        ffmpeg.input(input_path).output(output_path, audio_bitrate=target_bitrate).run(
+            quiet=True, overwrite_output=True, timeout=600
+        )
+    except Exception:
+        # mkstemp 已落盘、ffmpeg 失败 → 不清理就残留临时 mp3（调用方拿不到
+        # temp_file，finally 无从删起）（#121 B7）
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        raise
     return output_path
 
 class GroqTranscriber(Transcriber, ABC):

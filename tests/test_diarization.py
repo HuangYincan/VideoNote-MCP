@@ -191,3 +191,70 @@ class TestDiarizationMainPath(unittest.TestCase):
         ]
         text = gpt._build_segment_text(segs)
         self.assertNotIn("SPEAKER_00", text)
+
+
+class DiarizeMediaCleanupTest(unittest.TestCase):
+    """MCP diarize_media 的归一化临时文件清理（#121 C2）。
+
+    归一化产物写在源文件旁（audio_preprocess 缺省路径），用完即清——
+    否则每次调用在用户目录永久残留 <原名>_16k.wav（小时级视频数百 MB）。
+    """
+
+    def setUp(self):
+        import os
+        import shutil
+
+        self._os = os
+        self._shutil = shutil
+        self.tmp = tempfile.mkdtemp(prefix="vn_diarize_")
+        self.src = os.path.join(self.tmp, "in.mp4")
+        Path(self.src).write_bytes(b"fake")
+        self.wav = os.path.join(self.tmp, "in_16k.wav")
+
+    def tearDown(self):
+        self._shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _call(self, side_effect=None):
+        import videonote_mcp.server as server
+
+        with mock.patch("videonote_mcp.server._coerce_local_path", return_value=Path(self.src)):
+            with mock.patch(
+                "app.transcriber.audio_preprocess.normalize_to_wav", return_value=self.wav
+            ):
+                with mock.patch("app.services.diarization.diarize_audio", side_effect=side_effect):
+                    with mock.patch(
+                        "app.transcriber.audio_preprocess.cleanup_preprocess_files"
+                    ) as m_clean:
+                        server.diarize_media(self.src)
+        return m_clean
+
+    def test_success_path_cleans_normalized_wav(self):
+
+        m_clean = self._call(side_effect=[{"segments": [{"start": 0, "end": 1, "speaker": "A"}]}])
+        m_clean.assert_called_once_with(self.wav)
+
+    def test_exception_path_still_cleans(self):
+        import json as _json
+
+        import videonote_mcp.server as server
+
+        # 工具入口不裸抛（外层 except 归一为 {ok: False, error}），
+        # 但 finally 清理必须执行——不残留归一化 wav
+        with mock.patch("videonote_mcp.server._coerce_local_path", return_value=Path(self.src)):
+            with mock.patch(
+                "app.transcriber.audio_preprocess.normalize_to_wav", return_value=self.wav
+            ):
+                with mock.patch(
+                    "app.services.diarization.diarize_audio",
+                    side_effect=RuntimeError("pyannote 未装"),
+                ):
+                    with mock.patch(
+                        "app.transcriber.audio_preprocess.cleanup_preprocess_files"
+                    ) as m_clean:
+                        out = server.diarize_media(self.src)
+        m_clean.assert_called_once_with(self.wav)
+        self.assertFalse(_json.loads(out)["ok"])
+
+
+if __name__ == "__main__":
+    unittest.main()

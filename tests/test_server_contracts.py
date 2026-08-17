@@ -435,6 +435,31 @@ class FetchCommentsLimitTest(unittest.TestCase):
         self.assertEqual(m.call_args.kwargs.get("limit"), 10)
 
 
+class DownloadModelDedupTest(unittest.TestCase):
+    """download_transcriber_model：尺寸大小写宽容 + 进行中去重（#121 C10）。"""
+
+    def test_size_case_insensitive_and_submits(self):
+        with mock.patch.object(server.dl_state, "is_downloading", return_value=False):
+            with mock.patch.object(server, "_dl_pool") as m_pool:
+                resp = json.loads(server.download_transcriber_model("  SMALL  "))
+        self.assertTrue(resp["started"])
+        self.assertEqual(resp["model_size"], "small")  # 已归一（大小写+空白宽容）
+        m_pool.submit.assert_called_once()
+
+    def test_duplicate_download_skipped(self):
+        with mock.patch.object(server.dl_state, "is_downloading", return_value=True):
+            with mock.patch.object(server, "_dl_pool") as m_pool:
+                resp = json.loads(server.download_transcriber_model("small"))
+        self.assertFalse(resp["started"])
+        self.assertIn("跳过重复提交", resp["message"])
+        m_pool.submit.assert_not_called()
+
+    def test_unknown_size_still_rejected(self):
+        # 大小写宽容不等于尺寸宽松：白名单校验依旧
+        with self.assertRaises(ValueError):
+            server.download_transcriber_model("BOGUS")
+
+
 class ConcurrencyGuardTest(unittest.TestCase):
     def test_guard_raises_when_full(self):
         # 门禁只统计「正在执行」（future.running()）——排队不占名额（docs 审计 F7）
@@ -505,6 +530,22 @@ class ProviderConfigToolsTest(unittest.TestCase):
         with mock.patch.object(server, "get_models_by_provider", return_value=[]):
             with self.assertRaises(ValueError):
                 server.delete_model("p1", "nope")
+
+    def test_delete_model_clears_default_only_when_matching(self):
+        # 删「当前默认模型」→ 清 default_model；删非默认 → 保留（#121 C12）
+        rows = [{"id": 7, "model_name": "local-1"}, {"id": 8, "model_name": "local-2"}]
+        with mock.patch.object(server, "get_models_by_provider", return_value=rows):
+            with mock.patch.object(server, "_dao_delete_model"):
+                # 默认是别的模型：不得误清
+                with mock.patch.object(server, "get_app_config", return_value={"default_model:p1": "local-2"}):
+                    with mock.patch.object(server, "remove_app_config") as m_rm:
+                        server.delete_model("p1", "local-1")
+                m_rm.assert_not_called()
+                # 默认就是被删模型：清
+                with mock.patch.object(server, "get_app_config", return_value={"default_model:p1": "local-1"}):
+                    with mock.patch.object(server, "remove_app_config") as m_rm2:
+                        server.delete_model("p1", "local-1")
+                m_rm2.assert_called_once_with("default_model:p1")
 
     def test_test_provider_ok_and_fail(self):
         provider = {"id": "p1", "api_key": "sk-123", "base_url": "https://api.x", "name": "x"}
@@ -1451,6 +1492,17 @@ class WriteStatusStartedAtTest(unittest.TestCase):
         with server._tasks_lock:
             self.assertEqual(server._status_memory[self.tid]["status"], "PENDING")
 
+    def test_terminal_status_pops_memory_snapshot(self):
+        # 终态落盘成功后弹内存快照：防长生命周期 server 无界增长
+        # （写盘失败保留快照的路径由 test_write_failure_... 覆盖，#121 C9）
+        server._write_status(self.tid, "SUCCESS", message="完成")
+        with server._tasks_lock:
+            self.assertNotIn(self.tid, server._status_memory)
+        # 非终态不弹：快照供运行中读盘损坏时的 get_task_status 回退
+        server._write_status(self.tid, "TRANSCRIBING", message="转写中")
+        with server._tasks_lock:
+            self.assertIn(self.tid, server._status_memory)
+
     def test_get_task_status_falls_back_to_memory_snapshot(self):
         # 状态文件损坏（写一半）曾误报「状态文件读取失败」PENDING——回退最近一次写盘快照
         server._write_status(self.tid, "PENDING", message="任务排队中")
@@ -1563,6 +1615,7 @@ class TranscriptUnavailableReasonTest(unittest.TestCase):
     def test_export_failed_task_reports_failure(self):
         self._status("tx0002", "FAILED")
         resp = json.loads(server.export_transcript("tx0002"))
+        self.assertFalse(resp["ok"])  # 失败形状与成功路径对齐（#121 C4）
         self.assertIn("未成功（FAILED）", resp["error"])
 
     def test_export_missing_task_reports_unreadable(self):

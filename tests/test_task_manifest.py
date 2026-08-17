@@ -225,10 +225,13 @@ class TaskManifestTest(unittest.TestCase):
         (self.models / "whisper").mkdir(exist_ok=True)
         (self.models / "whisper" / "model.bin").write_bytes(b"m")
         res = cleanup_all_files(include_config=False, include_models=False)
-        # 清空 note_results / screenshots / logs
+        # 清空 note_results / screenshots
         self.assertEqual(list(self.note_dir.iterdir()), [])
         self.assertEqual(list(self.screens.iterdir()), [])
-        self.assertEqual(list(self.logs.iterdir()), [])
+        # logs/ 不清理（#121 C3）：MCP 进程持有 mcp_stderr.log 的打开 fd，unlink 后
+        # 日志写入进入已删除 inode——文件消失、磁盘不回收；且日志不属于任务产物
+        self.assertTrue((self.logs / "mcp_stderr.log").exists())
+        self.assertTrue(any(k.startswith("logs（") for k in res["kept"]))
         # 保留 config / models
         self.assertTrue((self.cfg / "app_config.json").exists())
         self.assertTrue((self.models / "whisper" / "model.bin").exists())

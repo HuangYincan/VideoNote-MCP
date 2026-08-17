@@ -67,11 +67,15 @@ class BilibiliSubtitleFetcher:
                 cid = pages[p - 1].get("cid")
                 logger.info(f"分 P 视频: bvid={bvid} p={p} 共 {len(pages)} 集, 取第 {p} 集 cid={cid}")
                 return int(cid) if cid else None
-            else:
-                # 没有 p 参数或 p 超出范围，取第 1 集
-                cid = pages[0].get("cid")
-                logger.info(f"非分 P 或 p 无效: bvid={bvid} 取第 1 集 cid={cid}")
-                return int(cid) if cid else None
+            if p is not None:
+                # 显式 p 越界：返回 None 让上层走转写，绝不静默取第 1 集
+                # （调用方会以为拿到了第 p 集的字幕/评论，实际是第 1 集内容，#121 B4）
+                logger.warning(f"p 越界: bvid={bvid} p={p} 但共 {len(pages)} 集，返回 None")
+                return None
+            # 没给 p：默认取第 1 集
+            cid = pages[0].get("cid")
+            logger.info(f"非分 P 或 p 无效: bvid={bvid} 取第 1 集 cid={cid}")
+            return int(cid) if cid else None
         # 单集视频
         cid = data.get("data", {}).get("cid")
         return int(cid) if cid else None

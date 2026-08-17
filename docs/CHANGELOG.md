@@ -2,6 +2,22 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave E 批 10（2026-08-17 · 自主改进轮 #121，469 tests）
+
+- **batch 并发门禁旁路（C1）**：batch_generate_notes 文档承诺「排队等待」但 worker 毫秒级把任务置 running，第 4 条起逐条被门禁拒——thread-local 旁路（批量排队靠线程池承担，max_entries ≤ 50 封顶），批量结束复位。
+- **diarize_media 临时文件清理（C2）**：归一化 wav 写源文件旁，每次调用永久残留（小时级数百 MB）——`finally` 成功/异常都清。
+- **cleanup_all 不再清 logs/（C3）**：MCP 进程持有 mcp_stderr.log 打开 fd，unlink 后日志进入已删除 inode（文件消失、磁盘不回收、无报错）——logs/ 保留并记入 kept。
+- **cancel_note 竞态收窄（C5）**：运行中任务取消只发协作信号（CANCELLING，终态由 worker 在阶段边界写）——此前 cancel 直接写盘 CANCELLED 会把 worker 刚写的 SUCCESS 覆盖成「已取消」而 result.json 已有完整笔记；排队中仍收尾写 + pop registry。
+- **模型下载去重 + 大小写宽容（C10）**：download_transcriber_model 尺寸 strip+lower 后校验；is_downloading 命中返回「跳过重复提交」（此前排队重下 ~75MB-1.5GB）。
+- **短视频零帧兜底（B1）**：video_reader 组不满整批 continue——短视频只有一组残组产出 0 张网格图静默成功；残组在还没有任何网格图时按单组拼接。
+- **空转写按失败处理（B2）**：whisper 对静音/黑屏返回空——曾当成功缓存、任务 SUCCESS 后 LLM 拿空素材凭空生成笔记；直转/预处理两分支统一抛错。
+- **B 站 p 越界显式失败（B4）**：显式 p 越界静默回退 pages[0]（调用方以为拿到第 p 集内容实际是第 1 集）——改返回 None 走转写。
+- **分 P 缓存精确匹配（B5）**：`{BV}*.mp4` 前缀 glob 会把 BV12345_p1.mp4 命中给 BV1234 的查询——精确枚举 `{BV}.mp4` / `{BV}_pN.mp4`。
+- **字幕回退临时目录（B6）**：yt-dlp 字幕文件曾写数据根从不清理——调用方没给 output_dir 时落专属临时目录、finally 清理。
+- **groq/bcut 失败清理与检查（B7/B8）**：compress_audio ffmpeg 失败删临时 mp3（调用方拿不到路径无从删起）；bcut 上传业务 code≠0 显式 RuntimeError（此前 KeyError 裸崩）。
+- **youtube embed/{id} 匹配（B9）**：url_parser 正则补 embed 形态。
+- **收尾**：export_transcript 失败补 `ok:False`（C4）；inspect 失败归一批量形状（C6）；validate_url 死分支（C7）；终态弹内存快照（C9）；delete_model 只清「删的就是默认」的配置（C12）；update_provider 返回 changed（C13）；docstring 修正（C8/C11）；local cover makedirs（B3）。
+
 ## Wave E 批 9（2026-08-17 · 自主改进轮 #120，438 tests）
 
 - **回归链修复（#120 R1）**：#119 把媒体缓存 miss 的 `audio.file_path` 置 None 后，缓存加载分支的 falsy 检查把 None 当「缓存有效」直接返回 → 切换转写引擎后重跑同视频 `Path(None)` 抛误导性 TypeError；改 `file_path is None or not is_file()` 视为失效重新下载。

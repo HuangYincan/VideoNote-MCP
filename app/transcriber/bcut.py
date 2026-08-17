@@ -82,6 +82,11 @@ class BcutTranscriber(Transcriber):
         )
         resp.raise_for_status()
         resp = resp.json()
+        # 业务层 code 检查：接口失败时返回 {code: 非0, message}，直接取 data 会
+        # KeyError 裸崩（调用方只看到天书般的 traceback）（#121 B8）
+        if resp.get("code") != 0:
+            msg = resp.get("message") or resp.get("msg") or "未知错误"
+            raise RuntimeError(f"必剪申请上传失败: code={resp.get('code')}, {msg}")
         resp_data = resp["data"]
 
         self.__in_boss_key = resp_data["in_boss_key"]

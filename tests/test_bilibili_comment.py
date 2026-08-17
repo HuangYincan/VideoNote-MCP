@@ -294,5 +294,18 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
         self.assertIn("network down", c["error"])
 
 
+    def test_p_out_of_range_returns_none(self):
+        # 显式 p 越界（VIEW_JSON 只有 2 集）：返回 None 而非静默取第 1 集——
+        # 调用方以为拿到了第 p 集的评论，实际是第 1 集内容（#121 B4）
+        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=_make_fake_get()[0]):
+            meta = self.fetcher._get_meta("BV1xx411c7mD", p=3)
+        self.assertIsNone(meta)
+
+    def test_p_within_range_resolves(self):
+        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=_make_fake_get()[0]):
+            meta = self.fetcher._get_meta("BV1xx411c7mD", p=2)
+        self.assertEqual(meta, (12345, 67891))  # pages[1] 的 cid
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

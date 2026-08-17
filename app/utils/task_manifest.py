@@ -361,7 +361,10 @@ def cleanup_all_files(include_config: bool = False, include_models: bool = False
 
     _empty(get_note_dir(), "note_results")
     _empty(get_screenshots_dir(), "static/screenshots")
-    _empty(get_logs_dir(), "logs")
+    # logs/ 不清理（#121 C3）：MCP 进程持有 mcp_stderr.log 的打开 fd，unlink 后
+    # 日志写入进入已删除的 inode——文件消失、磁盘不回收、无任何报错直到重启；
+    # 且日志不属于任务产物。保留并记录到 kept。
+    result["kept"].append(f"logs（{get_logs_dir()}）")
     _empty(get_cache_dir(), "note_cache")
     # 同步清空全局任务索引（尽力而为）
     try:

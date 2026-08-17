@@ -62,12 +62,18 @@ class BatchGenerateTest(unittest.TestCase):
         self.assertEqual(gn.call_count, 1)
 
     def test_inspect_failure_passes_through(self):
+        # C6 归一化：inspect 失败也走统一 errors[] 形状（此前直接透传 {error: ...}，
+        # Agent 要猜两种返回结构）
         with mock.patch("app.services.inspect.inspect_video", return_value={
             "ok": False, "platform": "unknown", "kind": "single", "error": "解析失败",
         }):
             out = json.loads(server.batch_generate_notes("https://x.invalid"))
         self.assertFalse(out["ok"])
-        self.assertIn("解析失败", out["error"])
+        self.assertEqual(out["total"], 0)
+        self.assertEqual(out["submitted"], 0)
+        self.assertEqual(len(out["errors"]), 1)
+        self.assertIn("解析失败", out["errors"][0]["error"])
+        self.assertEqual(out["errors"][0]["url"], "https://x.invalid")
 
     def test_passes_through_advanced_params(self):
         """批量应透传 generate_note 的全部高级参数（视频理解/弹幕/link/notes_dir 等）。"""
@@ -102,6 +108,40 @@ class BatchGenerateTest(unittest.TestCase):
         self.assertTrue(captured["include_comments"])
         self.assertEqual(captured["comments_limit"], 30)
         self.assertEqual(captured["notes_dir"], "/tmp/notes")
+
+    def test_batch_bypasses_concurrency_guard_when_full(self):
+        """满员时批量仍全量提交（#121 C1）：thread-local 旁路只对 batch 生效。
+
+        worker 毫秒级把任务置 running，第 4 条起逐条被门禁拒——批量「排队等待」
+        语义靠线程池承担（max_entries ≤ 50 封顶），不做运行中上限拒绝。
+        """
+        entries = [
+            {"p": i, "title": f"P{i}", "duration": 60, "url": f"u{i}", "video_id": f"v{i}"}
+            for i in range(1, 11)
+        ]
+        fake = mock.Mock()
+        fake.running.return_value = True
+        old = dict(server._task_futures)
+        try:
+            with server._tasks_lock:
+                server._task_futures.clear()
+                for i in range(server._MAX_WORKERS):
+                    server._task_futures[f"busy{i}"] = fake
+            with mock.patch("app.services.inspect.inspect_video", return_value={
+                "ok": True, "platform": "bilibili", "kind": "multi",
+                "title": "合集", "total": 10, "truncated": False, "entries": entries,
+            }), mock.patch.object(server, "generate_note", side_effect=_fake_generate_note) as gn:
+                out = json.loads(server.batch_generate_notes("u1"))
+            self.assertEqual(out["submitted"], 10)
+            self.assertEqual(out["errors"], [])
+            self.assertEqual(gn.call_count, 10)
+            # 旁路已复位（finally 清 thread-local）：批量结束后直接调用门禁仍拒绝
+            with self.assertRaises(ValueError):
+                server._guard_concurrency()
+        finally:
+            with server._tasks_lock:
+                server._task_futures.clear()
+                server._task_futures.update(old)
 
 
 if __name__ == "__main__":

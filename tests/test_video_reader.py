@@ -28,3 +28,73 @@ class TestEffectiveFrameInterval(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShortVideoFallbackTest(unittest.TestCase):
+    """短视频（帧数不足一组）照常出网格图，不静默零帧（#121 B1）。
+
+    旧逻辑：组不满整批 continue——短视频只有一组残组，产出 0 张网格图，
+    上层拿到空 frames 当成功（视频理解空转）。
+    """
+
+    def test_partial_group_falls_back_to_grid(self):
+        import os
+        import shutil
+        import tempfile
+        from unittest import mock
+
+        from PIL import Image
+
+        from app.utils.video_reader import VideoReader
+
+        frame_dir = tempfile.mkdtemp(prefix="vn_frames_")
+        grid_dir = tempfile.mkdtemp(prefix="vn_grid_")
+        try:
+            # 2 张真实小图（frame_dir 内），远小于 3×3=9 的组容量
+            for ts in (0, 6):
+                Image.new("RGB", (64, 64), (10, 20, 30)).save(
+                    os.path.join(frame_dir, f"frame_{ts:02d}_00.jpg")
+                )
+            reader = VideoReader("whatever.mp4", grid_size=(3, 3), frame_dir=frame_dir, grid_dir=grid_dir)
+            with mock.patch.object(
+                VideoReader, "extract_frames",
+                return_value=[os.path.join(frame_dir, "frame_00_00.jpg"), os.path.join(frame_dir, "frame_06_00.jpg")],
+            ):
+                out = reader.run()
+            # 不再是 0 张：残组按单组拼接兜底
+            self.assertEqual(len(out), 1)
+            self.assertTrue(out[0].startswith("data:image/jpeg;base64,"))
+        finally:
+            shutil.rmtree(frame_dir, ignore_errors=True)
+            shutil.rmtree(grid_dir, ignore_errors=True)
+
+    def test_full_groups_then_partial_last_still_skipped(self):
+        # 已有完整组时，末尾残组仍跳过（避免稀疏网格图）——行为不变
+        import os
+        import shutil
+        import tempfile
+        from unittest import mock
+
+        from PIL import Image
+
+        from app.utils.video_reader import VideoReader
+
+        frame_dir = tempfile.mkdtemp(prefix="vn_frames2_")
+        grid_dir = tempfile.mkdtemp(prefix="vn_grid2_")
+        try:
+            paths = []
+            for i in range(10):  # 9 + 1：一组满 + 一组残
+                p = os.path.join(frame_dir, f"frame_{i:02d}_00.jpg")
+                Image.new("RGB", (64, 64), (10, 20, 30)).save(p)
+                paths.append(p)
+            reader = VideoReader("whatever.mp4", grid_size=(3, 3), frame_dir=frame_dir, grid_dir=grid_dir)
+            with mock.patch.object(VideoReader, "extract_frames", return_value=paths):
+                out = reader.run()
+            self.assertEqual(len(out), 1)  # 只有满组
+        finally:
+            shutil.rmtree(frame_dir, ignore_errors=True)
+            shutil.rmtree(grid_dir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -38,6 +38,9 @@ class LocalDownloader(Downloader, ABC):
         base_name = os.path.splitext(os.path.basename(input_path))[0]
         output_path = os.path.join(output_dir, f"{base_name}_cover.jpg")
 
+        # covers 目录此前从不创建 → ffmpeg 写失败被吞、cover_url 恒为空（#121 B3）
+        os.makedirs(output_dir, exist_ok=True)
+
         try:
             command = [
                 'ffmpeg',

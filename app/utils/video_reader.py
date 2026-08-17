@@ -195,8 +195,16 @@ class VideoReader:
             groups = self.group_images()
             for idx, group in enumerate(groups, start=1):
                 if len(group) < self.grid_size[0] * self.grid_size[1]:
-                    logger.warning(f"⚠️ 跳过第 {idx} 组，图片不足 {self.grid_size[0] * self.grid_size[1]} 张")
-                    continue
+                    # 短视频（帧数不足一组）曾被整批跳过 → 静默产出 0 张网格图，
+                    # 上层拿到空 frames 当成功。只有这一组时照常拼接（白格兜底），
+                    # 已有完整组时才跳过末尾残组（避免稀疏网格图）
+                    if image_paths:
+                        logger.warning(f"⚠️ 跳过第 {idx} 组，图片不足 {self.grid_size[0] * self.grid_size[1]} 张")
+                        continue
+                    logger.warning(
+                        f"⚠️ 帧数不足一组（{len(group)}/{self.grid_size[0] * self.grid_size[1]}），"
+                        "按单组拼接兜底，避免短视频零帧"
+                    )
                 out_path = self.concat_images(group, f"grid_{idx}")
                 image_paths.append(out_path)
 

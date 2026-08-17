@@ -126,6 +126,41 @@ class TranscribeAudioTest(unittest.TestCase):
                 result2 = pipeline.transcribe_audio(f.name)
         self.assertEqual(result2["language"], "zh")
 
+    def test_empty_transcript_raises_not_success(self):
+        # 静音/黑屏音频：whisper 常返回空转写——曾当成功缓存，任务 SUCCESS 后
+        # LLM 拿空素材凭空生成笔记（#121 B2）
+        fake_transcriber = mock.Mock()
+        empty = TranscriptResult(language="zh", full_text="", segments=[])
+        fake_transcriber.transcript.return_value = empty
+        with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
+            with self.assertRaises(RuntimeError) as ctx:
+                pipeline.transcribe_audio(f.name, transcriber=fake_transcriber)
+        self.assertIn("转写结果为空", str(ctx.exception))
+
+    def test_empty_preprocess_chunks_raise_too(self):
+        # 预处理分支：单块成功但内容为空（静音块）同样按失败处理
+        fake_transcriber = mock.Mock()
+        fake_transcriber.transcript.return_value = TranscriptResult(
+            language="zh", full_text="", segments=[]
+        )
+        with mock.patch.object(pipeline, "_preprocess_enabled", return_value=True):
+            with mock.patch(
+                "app.transcriber.audio_preprocess.normalize_to_wav", return_value="/tmp/fake_16k.wav"
+            ):
+                with mock.patch(
+                    "app.transcriber.audio_preprocess.chunk_if_long", return_value=["/tmp/fake_16k.wav"]
+                ):
+                    with mock.patch(
+                        "app.transcriber.audio_preprocess.cleanup_preprocess_files"
+                    ):
+                        with mock.patch.object(
+                            pipeline, "apply_diarization", side_effect=lambda *a, **k: []
+                        ):
+                            with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
+                                with self.assertRaises(RuntimeError) as ctx:
+                                    pipeline.transcribe_audio(f.name, transcriber=fake_transcriber)
+        self.assertIn("转写结果为空", str(ctx.exception))
+
 
 class ExtractFramesTest(unittest.TestCase):
     def test_persists_frames_and_returns_file_uris(self):

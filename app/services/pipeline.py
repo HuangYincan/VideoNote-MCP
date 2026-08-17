@@ -223,6 +223,7 @@ def transcribe_audio(audio_file: Union[str, Path], transcriber: Optional[Transcr
     if not _preprocess_enabled():
         tr = transcriber.transcript(file_path=audio_file)
         segments = apply_diarization(audio_file, list(tr.segments or []))
+        _ensure_transcript_content(tr.full_text or "", list(tr.segments or []))
         return asdict(
             TranscriptResult(language=tr.language, full_text=tr.full_text, segments=segments)
         )
@@ -239,6 +240,19 @@ def _preprocess_enabled() -> bool:
         return TranscriberConfigManager().get_enable_preprocess()
     except Exception:
         return False
+
+
+def _ensure_transcript_content(full_text: str, segments: list) -> None:
+    """空转写（无文字且无分段）按失败处理，而不是成功（#121 B2）。
+
+    whisper 对静音/黑屏/损坏音频常返回空：上层曾把空转写当成功缓存，
+    任务 SUCCESS 后 LLM 拿空素材凭空生成笔记。两个分支（直转/预处理）统一检查。
+    """
+    if not (full_text or "").strip() and not segments:
+        raise RuntimeError(
+            "转写结果为空（无文字且无分段）：音频可能静音或损坏，或转写器未生效；"
+            "请检查音视频文件或换转写引擎重试"
+        )
 
 
 def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> dict:
@@ -297,6 +311,8 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
         raise RuntimeError(
             f"预处理分块转写全部失败（{failed}/{len(chunks)} 块）：{first_error}"
         ) from first_error
+    # 单块成功但内容为空（静音块）同样按失败处理（#121 B2）
+    _ensure_transcript_content(full_text, list(all_segments))
     result = asdict(
         TranscriptResult(language=language, full_text=full_text, segments=all_segments)
     )

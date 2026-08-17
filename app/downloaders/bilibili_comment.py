@@ -84,6 +84,11 @@ class BilibiliCommentFetcher:
         if pages:
             if p is not None and 1 <= p <= len(pages):
                 cid = pages[p - 1].get("cid")
+            elif p is not None:
+                # 显式 p 越界：返回 None（调用方按「获取元信息失败」处理），
+                # 绝不静默取第 1 集冒充第 p 集（#121 B4）
+                logger.warning(f"p 越界: bvid={bvid} p={p} 但共 {len(pages)} 集，返回 None")
+                return None
             else:
                 cid = pages[0].get("cid")
         else:

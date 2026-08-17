@@ -192,6 +192,7 @@ _dl_pool = ThreadPoolExecutor(max_workers=1)
 _tasks_lock = threading.Lock()
 _task_futures: Dict[str, Future] = {}
 _task_events: Dict[str, threading.Event] = {}
+_batch_ctx = threading.local()  # batch_generate_notes 内部批量提交的旁路标志（#121 C1）
 # 最近一次 _write_status 的写盘快照（写盘失败/文件损坏时 get_task_status 回退，
 # 避免把运行中/已完成任务误报成 PENDING，见 #118）
 _status_memory: Dict[str, dict] = {}
@@ -250,6 +251,11 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
         tmp = f.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(f)
+        # 终态已落盘且不再变化：弹内存快照，防长生命周期 server 无界增长
+        # （写盘失败时保留——快照是读盘损坏时的唯一回退，#121 C9）
+        if data["status"] in {"SUCCESS", "FAILED", "CANCELLED"}:
+            with _tasks_lock:
+                _status_memory.pop(task_id, None)
     except Exception as exc:  # noqa: BLE001 —— 环境故障（磁盘满/只读）：不裸抛
         # （裸抛会进后台线程被吞，且 FAILED 重写循环同样失败），内存快照已可查
         logger.error(f"写状态文件失败 task_id={task_id}: {exc}")
@@ -457,6 +463,11 @@ def _guard_concurrency() -> None:
     （docs 审计 F7；此前 `not f.done()` 把刚提交还在排队的任务也计入，
     批量 >3 条时第 4 条起全部被拒）。
     """
+    if getattr(_batch_ctx, "bypass_guard", False):
+        # batch_generate_notes 内部批量提交（#121 C1）：worker 毫秒级把任务置
+        # running，第 4 条起逐条被拒——批量调用不适用「运行中上限」语义；
+        # 队列由线程池承担（batch 已 max_entries ≤ 50 封顶），直接放行
+        return
     with _tasks_lock:
         active = [tid for tid, f in _task_futures.items() if f.running()]
     if len(active) >= _MAX_WORKERS:
@@ -1232,15 +1243,23 @@ def cancel_note(task_id: str) -> str:
              "message": "任务已完成，取消不生效"},
             ensure_ascii=False,
         )
-    _write_status(task_id, TaskStatus.CANCELLED, message="任务已取消")
     if cancelled:
-        # 排队中（未启动）任务：_run_note_task/_run_step_task 不会执行，
-        # finally 里的 pop 不跑 → 手动弹注册表，避免条目泄漏
+        # 排队中（未启动）任务：worker 不会执行，状态由本函数收尾写（无并发写方）
+        _write_status(task_id, TaskStatus.CANCELLED, message="任务已取消")
         with _tasks_lock:
             _task_futures.pop(task_id, None)
             _task_events.pop(task_id, None)
-    logger.info(f"已取消任务 task_id={task_id}")
-    return json.dumps({"ok": True, "task_id": task_id, "status": "CANCELLED"}, ensure_ascii=False)
+        logger.info(f"已取消排队任务 task_id={task_id}")
+        return json.dumps({"ok": True, "task_id": task_id, "status": "CANCELLED"}, ensure_ascii=False)
+    # 运行中任务：只发协作式取消信号，终态由 worker 在阶段边界收尾写（TaskCancelledError
+    # → CANCELLED）。此前 cancel 直接写盘 CANCELLED——检查与写入之间 worker 完成时
+    # 把刚写的 SUCCESS 覆盖成「已取消」，而 result.json 已有完整笔记（#121 C5）
+    logger.info(f"已发送取消信号 task_id={task_id}")
+    return json.dumps(
+        {"ok": True, "task_id": task_id, "status": "CANCELLING",
+         "message": "取消请求已发送，任务将在下一阶段边界停止"},
+        ensure_ascii=False,
+    )
 
 
 @mcp.tool()
@@ -1267,7 +1286,10 @@ def list_tasks(limit: Optional[int] = None, offset: int = 0) -> str:
 def get_task_files(task_id: str) -> str:
     """列出某任务在磁盘上生成的相关文件/目录（manifest 记录 + 任务文件夹扫描）。
 
-    返回 {task_id, manifest_paths, existing}，existing 是真实存在的文件/目录列表。
+    返回 {task_id, manifest_paths, existing, meta}：
+      - manifest_paths：manifest 记录的路径（可能已不存在）；
+      - existing：真实存在的文件/目录列表（manifest 解析 + 任务文件夹扫描并集）；
+      - meta：任务语义元数据（title/summary 等，无则空对象）。
     清理前先用它查看该任务占了哪些存储。
     """
     task_id = _validate_task_id(task_id)
@@ -1481,7 +1503,11 @@ def summarize_note(
     - transcript: 必填，转写结果 dict {language, full_text, segments}（transcribe_media /
       fetch_subtitles 的返回，或 prepare_note_material 的 result.transcript）；
     - frames: 可选，帧图片 file:// 路径列表（extract_frames 的返回），传了且模型多模态时参与总结；
-    - comments_danmaku: 可选，B 站弹幕+评论参考文本（`fetch_comments` / `fetch_danmaku` 的返回）；
+    - comments_danmaku: 可选，B 站弹幕+评论参考文本——传**拼接好的纯文本**
+      （如 `fetch_danmaku` 返回的 danmaku_summary 字段、或按
+      `- 用户(N赞): 内容` 手排的 fetch_comments 的 comments 列表），
+      不是 fetch 返回的整体包（含 ok/source/bvid/cid 包装）；也可直接用
+      prepare_note_material 的 result.comments_danmaku；
     - title: 可选，视频标题（默认空）；
     - style: 输出风格（minimal 精简/detailed 详细/academic 学术/tutorial 教程/xiaohongshu 小红书/
       life_journal 生活向/task_oriented 任务导向/business 商业风格/meeting_minutes 会议纪要）；
@@ -1606,7 +1632,12 @@ def update_provider(
     updated = ProviderService.update_provider(provider_id, data)
     if not updated:
         raise ValueError(f"更新失败：供应商 {provider_id} 不存在")
-    return json.dumps({"updated": provider_id, "enabled": updated.get("enabled")}, ensure_ascii=False)
+    # enabled 只在实际改 enabled 时有值——只改 name/base_url 时返回 null 会误导判读；
+    # 补 changed 字段说明实际改动的字段（#121 C13）
+    return json.dumps(
+        {"updated": provider_id, "changed": sorted(data), "enabled": updated.get("enabled")},
+        ensure_ascii=False,
+    )
 
 
 @mcp.tool()
@@ -1670,7 +1701,9 @@ def delete_model(provider_id: str, model_name: str) -> str:
     if target is None:
         raise ValueError(f"模型不存在: {provider_id}/{model_name}（可 list_models 查看）")
     _dao_delete_model(target["id"])
-    remove_app_config(f"default_model:{provider_id}")
+    # 只清「删的就是默认模型」的配置——此前无条件清空，删非默认也把默认抹掉（#121 C12）
+    if get_app_config().get(f"default_model:{provider_id}") == model_name:
+        remove_app_config(f"default_model:{provider_id}")
     return json.dumps({"deleted": True, "provider_id": provider_id, "model_name": model_name}, ensure_ascii=False)
 
 
@@ -1800,13 +1833,20 @@ def list_transcriber_models() -> str:
 @mcp.tool()
 def download_transcriber_model(model_size: str, transcriber_type: str = "fast-whisper") -> str:
     """在后台下载 whisper 模型（仅本地引擎需要）。下载中/完成后用 list_transcriber_models 查询。"""
-    if model_size not in WHISPER_MODEL_SIZES:
+    size = model_size.strip().lower()
+    if size not in WHISPER_MODEL_SIZES:
         raise ValueError(
             f"未知模型尺寸: {model_size}（可选: {', '.join(WHISPER_MODEL_SIZES)}）"
         )
-    size = model_size.strip().lower()
     if transcriber_type == "fast-whisper":
         key = size
+        # 进行中去重：同尺寸二次提交直接返回（此前排队重下整个模型，~75MB-1.5GB，#121 C10）
+        if dl_state.is_downloading(key):
+            return json.dumps(
+                {"started": False, "model_size": size, "transcriber_type": "fast-whisper",
+                 "message": "模型正在下载中，跳过重复提交"},
+                ensure_ascii=False,
+            )
 
         def _dl():
             try:
@@ -1836,6 +1876,13 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
     if transcriber_type == "mlx-whisper":
         if not (sys.platform == "darwin"):
             raise ValueError("mlx-whisper 仅在 macOS 可用，请改用 fast-whisper")
+        # 进行中去重（#121 C10）
+        if dl_state.is_downloading(f"mlx-{size}"):
+            return json.dumps(
+                {"started": False, "model_size": size, "transcriber_type": "mlx-whisper",
+                 "message": "模型正在下载中，跳过重复提交"},
+                ensure_ascii=False,
+            )
 
         def _dl_mlx():
             try:
@@ -1996,15 +2043,10 @@ def validate_url(url: str) -> str:
 
     内置平台：bilibili（含 b23.tv）、youtube（含 youtu.be）、douyin、tiktok、kuaishou、本地文件路径。
     其他 URL 返回 platform: "generic"（会尝试 yt-dlp 通用提取，覆盖 1800+ 站点）。
-    仅显式传 platform="unsupported" 时返回 {supported: False, handoff: True, ...}。
+    仅当 generic 下载失败时才需要 Agent 接手解析（handoff 语义，docs 审计 H6）。
     """
     try:
         platform = _detect_platform(url)
-        if platform == "unsupported":
-            return json.dumps(
-                {"supported": False, **pipeline.handoff_result(url)},
-                ensure_ascii=False,
-            )
         reason = (
             "识别为 generic：将尝试 yt-dlp 通用提取（可能需登录/代理）"
             if platform == "generic"
@@ -2228,7 +2270,21 @@ def batch_generate_notes(
     max_entries = max(1, min(int(max_entries or 10), 50))
     parsed = _inspect(video_url, platform=platform)
     if not parsed.get("ok"):
-        return json.dumps(parsed, ensure_ascii=False)
+        # inspect 失败归一为批量形状（#121 C6）：此前直接透传 inspect 的
+        # {ok:false, platform, kind, error}——Agent 拿不到 total/submitted/tasks
+        # 无法统一判读；工具文档只声明一种形状
+        return json.dumps(
+            {
+                "ok": False,
+                "total": 0,
+                "submitted": 0,
+                "errors": [{"p": None, "title": None, "url": video_url, "error": parsed.get("error") or "解析视频失败"}],
+                "tasks": [],
+                "platform": parsed.get("platform"),
+                "kind": parsed.get("kind"),
+            },
+            ensure_ascii=False,
+        )
     entries = list(parsed.get("entries") or [])
     plat = platform or parsed.get("platform")
 
@@ -2258,7 +2314,11 @@ def batch_generate_notes(
         # 单集链接：退化为单任务，不引入条目语义；失败与多条目同形状（#109：
         # 此前 raise 裸传，Agent 拿不到结构化 errors）
         try:
-            task = _submit({"p": 1, "title": parsed.get("title"), "url": video_url, "duration": None})
+            _batch_ctx.bypass_guard = True  # 批量语义：排队由线程池承担（#121 C1）
+            try:
+                task = _submit({"p": 1, "title": parsed.get("title"), "url": video_url, "duration": None})
+            finally:
+                _batch_ctx.bypass_guard = False
         except Exception as exc:  # noqa: BLE001 —— 与多条目收集口径一致
             return json.dumps(
                 {
@@ -2279,14 +2339,18 @@ def batch_generate_notes(
     total = int(parsed.get("total") or len(entries))
     entries = entries[:max_entries]
     submitted, errors, tasks = 0, [], []
-    for e in entries:
-        try:
-            tasks.append(_submit(e))
-            submitted += 1
-        except Exception as exc:  # noqa: BLE001 —— 单条失败收集继续
-            errors.append(
-                {"p": e.get("p"), "title": e.get("title"), "url": e.get("url"), "error": str(exc)}
-            )
+    _batch_ctx.bypass_guard = True  # 批量语义：超出 worker 数排队等待而非拒绝（#121 C1）
+    try:
+        for e in entries:
+            try:
+                tasks.append(_submit(e))
+                submitted += 1
+            except Exception as exc:  # noqa: BLE001 —— 单条失败收集继续
+                errors.append(
+                    {"p": e.get("p"), "title": e.get("title"), "url": e.get("url"), "error": str(exc)}
+                )
+    finally:
+        _batch_ctx.bypass_guard = False
     return json.dumps(
         {
             "ok": submitted > 0,
@@ -2354,6 +2418,7 @@ def export_transcript(
     if transcript is None:
         return json.dumps(
             {
+                "ok": False,  # 与成功路径形状对齐（此前缺 ok，Agent 判读 KeyError，#121 C4）
                 "task_id": task_id,
                 "error": f"找不到任务 {task_id} 的转写结果（{_transcript_unavailable_reason(task_id)}）",
             },
@@ -2442,13 +2507,18 @@ def diarize_media(
         raise ValueError(_SENSITIVE_VIA_MCP)
     try:
         from app.services.diarization import diarize_audio
-        from app.transcriber.audio_preprocess import normalize_to_wav
+        from app.transcriber.audio_preprocess import cleanup_preprocess_files, normalize_to_wav
 
         p = _coerce_local_path(audio_file)
         if not p.is_file():
             raise FileNotFoundError(f"本地文件不存在: {audio_file}")
         wav = normalize_to_wav(str(p))
-        turns = diarize_audio(wav, hf_token=None, num_speakers=num_speakers)
+        try:
+            turns = diarize_audio(wav, hf_token=None, num_speakers=num_speakers)
+        finally:
+            # 归一化产物写在源文件旁（audio_preprocess 缺省路径），用完即清——
+            # 否则每次调用在用户目录永久残留 <原名>_16k.wav（小时级视频数百 MB，#121 C2）
+            cleanup_preprocess_files(wav)
         return json.dumps(
             {"ok": True, "turns": turns, "num_speakers": len({t["speaker"] for t in turns})},
             ensure_ascii=False,

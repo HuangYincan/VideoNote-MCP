@@ -27,8 +27,8 @@ def extract_video_id(url: str, platform: str) -> Optional[str]:
         return f"BV{match.group(1)}" if match else None
 
     elif platform == "youtube":
-        # 匹配 v=xxxxx、youtu.be/xxxxx 或 shorts/xxxxx，ID 长度通常为 11
-        match = re.search(r"(?:v=|youtu\.be/|shorts/)([0-9A-Za-z_-]{11})", url)
+        # 匹配 v=xxxxx、youtu.be/xxxxx、shorts/xxxxx 或 embed/xxxxx（#121 B9），ID 长度通常为 11
+        match = re.search(r"(?:v=|youtu\.be/|shorts/|embed/)([0-9A-Za-z_-]{11})", url)
         return match.group(1) if match else None
 
     elif platform == "douyin":
