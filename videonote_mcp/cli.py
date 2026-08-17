@@ -1310,8 +1310,8 @@ def _transcriber_cli(argv) -> None:
         print(f"可选引擎: {', '.join(_TRANSCRIBER_ENGINES)}", file=sys.stdout)
         print(f"whisper 尺寸: {', '.join(_WHISPER_SIZES)}", file=sys.stdout)
     elif opts.cmd == "set":
-        if opts.engine in ("fast-whisper", "mlx-whisper") and not opts.size:
-            opts.size = "small"
+        # 未带 --size 时保留现有 whisper_model_size（update_config(None) 不覆盖）——
+        # 曾静默重置 "small"，用户配好 large-v3 → 切 groq → 切回 fast-whisper 悄悄降级（#127 A8）
         if opts.size:
             # 与 MCP set_transcriber 同口径（#108）：非法尺寸被持久化后任务跑到
             # TRANSCRIBING 才因模型加载失败；下载白名单有 choices，set 是自由串

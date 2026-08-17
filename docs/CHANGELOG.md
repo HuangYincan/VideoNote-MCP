@@ -2,6 +2,20 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave F 批 17（2026-08-17 · 第 12 轮双代理扫描 #128，666 tests）
+
+- **SKILL 死点 + 指引矛盾（A1/A7）**：troubleshooting.md 5 处 `set_downloader_cookie(cookie=…)` 改引导 `! videonote login bilibili`（Agent 按 SKILL 逐字执行不再撞「拒绝 cookie」红线）；tools.md `inspect_video` 改「多集全出用 `batch_generate_notes`、只一集用对应 url」——不再教逐条 subagent 撞并发上限。
+- **下载/导出契约（A2/A3）**：`download_transcriber_model` 仅内置档位名 lowercase——直通 HF repo_id / 本地目录保持原 case，不再 1.5GB 白下而 preflight 仍报「未下载」；`export_transcript` 未知格式去重前先 `str(f)`——`formats=[1,"pdf"]` 不再 int/str 比较崩、`[["srt"]]` 不再 unhashable。
+- **docstring 与行为对齐（A4）**：`cleanup_all`「数据库记录不动」改「同步清空全局索引 video_tasks」；`cleanup_note` include_note=True 的删索引副作用一并注明——文档不再与实现相反。
+- **状态快照补缺（A5）**：`get_task_status` status.json 缺失也先查 `_status_memory`——提交时首写失败（磁盘满/只读）任务在跑不再误报 NOT_FOUND、与 list_tasks 的 PENDING 矛盾。
+- **模型列表同源（A6）**：`list_transcriber_models` 遍历 `WhisperModelRegistry.visible_model_names()`——large-v1/自定义模型下载后不再永远「未下载」、反复误判重下。
+- **CLI 默认分叉关闭（A8）**：`transcriber set` 未带 `--size` 时保留现有配置——用户配好 large-v3 → 切 groq → 切回 fast-whisper 不再悄悄降级 small。
+- **groq 引擎可配置（B1）**：`GroqTranscriber` 按名称 `get_provider_by_name('groq')` 查找——`providers add` 建的 uuid 供应商也能驱动 groq 引擎（不再锁死内置 seed 行、无修复入口）。
+- **产物目录统一（B2）**：note/pipeline/universal_gpt 三处 `NOTE_OUTPUT_DIR` 缺省统一 `get_data_dir()/note_results`——裸脚本产物不再落 CWD、对清理/status/list_task_files 失明。
+- **默认值收敛（B3）**：transcriber_provider / whisper / mlx 兜底统一 `small`——绕过 config manager 的直接调用不再静默 base 降质。
+- **临时目录 / 删除 / 日志（B4/B6/B7）**：`apply_diarization` `created=True` 在 mkdtemp 后立即置位（normalize 失败不再残留 `/tmp/vn_dia_*`）；`cleanup_temp_files` 沙箱化（仅任务目录内清理，绝不连带删用户源目录）；timeit 度量 print → `logger.info`（裸脚本/pytest 不再污染 stdout）。
+- **快手接口防御（B5）**：`_extract_photo` 统一校验 `visionVideoDetail.photo` 与 `photoUrl`——视频被删/接口形状变更给可排查的明确错误，不再 `None['photo']` 天书 TypeError。
+
 ## Wave F 批 16（2026-08-17 · 第 11 轮双代理扫描 #127，666 tests）
 
 - **任务索引时序（A1）**：note/material 任务提交时先 `insert_video_task(PENDING)` 再写状态——运行期每次 `_write_status` 不再刷「不在全局索引」warning，**FAILED 任务也进 list_tasks**（不再重启后孤儿目录）；`_submit_step_task` 顺序同步修正。

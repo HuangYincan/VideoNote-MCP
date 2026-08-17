@@ -33,6 +33,7 @@ from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import _transcribers, get_transcriber
 from app.utils.json_store import write_json_atomic, write_text_atomic
 from app.utils.note_helper import prepend_source_link, replace_content_markers
+from app.utils.path_helper import get_data_dir
 from app.utils.screenshot_marker import extract_screenshot_timestamps
 from app.utils.task_manifest import record_task_paths
 from app.utils.video_helper import generate_screenshot
@@ -47,7 +48,9 @@ if not os.environ.get("VIDEONOTE_DATA_DIR"):
     load_dotenv()
 
 # 输出目录（用于缓存音频、转写、Markdown 文件，以及存储截图）
-NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", "note_results"))
+# 缺省统一落数据目录（#127 B2）：与 task_manifest.get_note_dir 同源——
+# 否则不经 config 的裸脚本把产物写 CWD/note_results，清理/status 按数据目录找 → 失明
+NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", str(Path(get_data_dir()) / "note_results")))
 NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # 截图目录：优先 IMAGE_OUTPUT_DIR（config.setup_environment 设置），
 # 兼容上游残留的 OUT_DIR；都没有则落到数据目录，绝不写 CWD。

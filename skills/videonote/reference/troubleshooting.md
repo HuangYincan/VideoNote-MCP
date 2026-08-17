@@ -11,14 +11,14 @@
 | 报「供应商还没有可用模型」 | `list_models(provider_id)` 实时拉取，或 `add_model` 手动加模型名 |
 | 转写一直失败、提示模型未下载 | 问用户：`videonote transcriber download <size>` 下载，或切云端（`set_transcriber("bcut"/"groq")`）—— 不要静默切换 |
 | 任务卡在 `INITIALIZING` | 首次使用 fast-whisper 正在下载模型，耐心等；模型大可改用云端转写 |
-| B 站下载报 `fatal` / playurl 412 | 已修复（yt-dlp fatal 透传）；仍失败则 `set_downloader_cookie(platform="bilibili", cookie=...)` 后重试 |
-| 想用 B 站 **AI 字幕**跳过语音识别 | 引导用户跑 `videonote login bilibili`（扫码自动存 SESSDATA），或手动 `set_downloader_cookie(...)`。AI 字幕需登录态；`raw_info.subtitles={}` 只反映手动 CC，AI 字幕在 automatic_captions |
+| B 站下载报 `fatal` / playurl 412 | 已修复（yt-dlp fatal 透传）；仍失败则让用户 `videonote login bilibili`（扫码存 SESSDATA）后重试 |
+| 想用 B 站 **AI 字幕**跳过语音识别 | 引导用户跑 `videonote login bilibili`（扫码自动存 SESSDATA）。AI 字幕需登录态；`raw_info.subtitles={}` 只反映手动 CC，AI 字幕在 automatic_captions |
 | 整合评论/弹幕时评论拿不到 | 未配 B 站 SESSDATA —— 引导用户 `videonote login bilibili`；抓取失败**不阻断**笔记生成（跳过该部分） |
 | 其他平台（非内置 6 平台） | `validate_url` 返回 `platform:"generic"` → 自动走 **yt-dlp 通用提取**（覆盖 1800+ 站点）；若也失败任务报错 → Agent 接手：WebFetch/浏览器解析视频源后 `generate_note(video_url="/绝对/路径/x.mp4", platform="local")` |
-| generic 下载报需登录/JS 渲染 | 该站点 yt-dlp 无法直接提取 —— Agent 用 WebFetch/浏览器处理登录/验证，或让用户 `set_downloader_cookie(platform="generic", cookie=...)` 后重试 |
+| generic 下载报需登录/JS 渲染 | 该站点 yt-dlp 无法直接提取 —— Agent 用 WebFetch/浏览器处理登录/验证，或让用户 `videonote setup` 向导里配「平台 Cookie」后重试 |
 | `diarize_media` 报需安装 pyannote / 缺 HF_TOKEN | 引导用户 `transcriber diarization on`（给安装指引 + 存 HF_TOKEN）；pyannote 模型需先在 huggingface.co 同意授权 |
 | `transcribe_media` 输出异常（开预处理后） | 预处理默认关；若开了又出问题，`transcriber preprocess off` 关闭对比 |
-| 视频下载 403 / 需会员 | `set_downloader_cookie` 配置平台 Cookie |
+| 视频下载 403 / 需会员 | 让用户 `videonote setup` 向导里配「平台 Cookie」（MCP 工具不收 cookie，见安全红线） |
 | `generate_note` 报「已有 N 个进行中任务（上限 M）」 | 并发已达上限 —— 等其中一些完成（或 `cancel_note` 取消）再提交；合集/多集用 `batch_generate_notes`（服务端排队），互相独立的链接用 subagent 并行 |
 
 ## 并发与多会话
@@ -32,7 +32,7 @@
 
 ## B 站细节
 
-- **SESSDATA**：AI 字幕、评论、弹幕的高质量抓取需要登录态。让用户在终端 `videonote login bilibili` 扫码自动获取保存；或手动 `set_downloader_cookie(platform="bilibili", cookie="SESSDATA=...")`。
+- **SESSDATA**：AI 字幕、评论、弹幕的高质量抓取需要登录态。让用户在终端 `videonote login bilibili` 扫码自动获取保存；MCP 工具不收 cookie（安全红线）。
 - **字幕优先级**：平台字幕（人工 > AI）> 语音转写。AI 字幕需登录态。
 - **弹幕**：`fetch_danmaku` 返回高密度时段 + 高频词（时间窗聚类），注入 `include_comments=True` 时作为参考。
 - **评论**：`fetch_comments` 返回热门评论（likes 排序、翻页去重）。评论抓取失败不阻断笔记生成。

@@ -1031,25 +1031,34 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
     task_id = _validate_task_id(task_id)
     task_dir = NOTE_OUTPUT_DIR / str(task_id)
     status_file = task_dir / "status.json"
-    if not status_file.exists():
-        return json.dumps(
-            {
-                "status": "NOT_FOUND",
-                "stage": "不存在",
-                "elapsed_secs": None,
-                "message": "任务不存在（id 拼错或已被 cleanup）。用 list_tasks 查看。",
-                "task_id": task_id,
-                "result": None,
-            },
-            ensure_ascii=False,
-        )
-    try:
-        data = json.loads(status_file.read_text(encoding="utf-8"))
-    except Exception:
-        # 读盘损坏（写一半/磁盘故障）时回退最近一次写盘快照——「状态文件读取失败」
-        # 曾把运行中/已完成任务误报成 PENDING（#118）；快照也没有才是真未知
+    data = None
+    if status_file.exists():
+        try:
+            data = json.loads(status_file.read_text(encoding="utf-8"))
+        except Exception:
+            # 读盘损坏（写一半/磁盘故障）时回退最近一次写盘快照——「状态文件读取失败」
+            # 曾把运行中/已完成任务误报成 PENDING（#118）；快照也没有才是真未知
+            with _tasks_lock:
+                data = _status_memory.get(task_id) or {"status": "PENDING", "message": "状态文件读取失败"}
+    else:
+        # 缺失文件也先查快照（#127 A5）：_write_status 先写内存快照再写盘，若提交时
+        # 首写就失败（磁盘满/只读）任务在跑但 status.json 不存在——直接报 NOT_FOUND
+        # 会与 list_tasks 显示的 PENDING 矛盾。快照命中 → 任务在跑，返回快照内容。
         with _tasks_lock:
-            data = _status_memory.get(task_id) or {"status": "PENDING", "message": "状态文件读取失败"}
+            snap = _status_memory.get(task_id)
+        if snap is None:
+            return json.dumps(
+                {
+                    "status": "NOT_FOUND",
+                    "stage": "不存在",
+                    "elapsed_secs": None,
+                    "message": "任务不存在（id 拼错或已被 cleanup）。用 list_tasks 查看。",
+                    "task_id": task_id,
+                    "result": None,
+                },
+                ensure_ascii=False,
+            )
+        data = snap
 
     status = data.get("status", "PENDING")
     started = data.get("started_at")
@@ -1396,7 +1405,8 @@ def cleanup_note(task_id: str, include_note: bool = False) -> str:
     """清理某个任务生成的中间产物（下载的视频/音频、转写、截图、临时文件、dl 目录等）。
 
     - include_note=False（默认）：保留最终笔记（note.md / note_dir / 便携笔记目录）；
-    - include_note=True：连最终笔记一起删（含 manifest）。
+    - include_note=True：连最终笔记一起删（含 manifest），并同步删除全局索引
+      video_tasks 里该任务的记录（否则 list_tasks 出现 note_dir 悬空的任务）。
 
     只删除 manifest 记录 / note_results/{task_id}* / dl_{task_id} 前缀的文件，
     且 resolve 校验在数据目录内（防路径穿越）。返回 {deleted, missing, errors, note_kept,
@@ -1433,7 +1443,9 @@ def cleanup_all(include_config: bool = False, include_models: bool = False) -> s
       include_models=True 时连 models/ 一起清。
     - **logs/ 不清**（#121 C3）：MCP 进程持有 mcp_stderr.log 打开 fd，unlink 后日志进
       已删除 inode——文件消失、磁盘不回收；日志也不属任务产物。
-    数据库记录（video_note.db）不动。返回各目录清理统计 + 保留项。
+    同步清空全局任务索引 video_tasks（任务目录删了，索引记录一并清——否则
+    list_tasks 出现 note_dir 悬空的任务，见 task_manifest.cleanup_all_files）。
+    返回各目录清理统计 + 保留项。
 
     **有进行中/排队任务时拒绝**（返回 {ok: false, running, running_task_ids, error}）——
     全局清空会把运行中任务的目录一并删掉。先 cancel_note 或等全部终态，再清理。
@@ -1962,8 +1974,12 @@ def set_transcriber(
 @mcp.tool()
 def list_transcriber_models() -> str:
     """列出本地 whisper 模型（fast-whisper）的下载状态。"""
+    from app.transcriber.whisper_models import get_registry
+
+    # 与 registry 同源：默认可见内置档位 + 用户自定义模型（#127 A6）——
+    # 否则按 #108 配了自定义尺寸后，list 里看不到它，也没法从 CLI 下载。
     rows = []
-    for size in WHISPER_MODEL_SIZES:
+    for size in get_registry().visible_model_names():
         downloaded = check_whisper_model_exists(size, "whisper")
         state = dl_state.get_status(size) or ("done" if downloaded else "none")
         rows.append({"size": size, "downloaded": downloaded, "state": state})
@@ -1980,7 +1996,13 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
     """
     from app.transcriber.whisper_models import resolve_whisper_model
 
-    size = model_size.strip().lower()
+    size = model_size.strip()
+    # 仅内置档位名做小写容差（#127 A2）：直通 HF repo_id（含 "/"）或本地目录
+    # 保持原 case——否则小写 repo 落 models--systran--… 缓存目录，而 is_model_ready
+    # /加载按原 case 找 models--Systran--… 对不上 → 预下载白下、preflight 仍报「未下载」
+    #（CLI _download_whisper 不 lowercase，两侧行为已对齐）
+    if "/" not in size and not os.path.isdir(size):
+        size = size.lower()
     try:
         resolve_whisper_model(size)
     except ValueError:
@@ -2591,7 +2613,7 @@ def export_transcript(
         raise ValueError("formats 为空列表，未导出任何格式（省略该参数以用默认格式）")
     if not isinstance(formats, list):
         raise ValueError(f"formats 必须是字符串列表（支持 {' / '.join(FORMATS)}），收到: {formats!r}")
-    unknown = sorted({f for f in formats if f not in FORMATS})
+    unknown = sorted({str(f) for f in formats if str(f) not in FORMATS})
     if unknown:
         # 未知格式曾只写 stderr 警告后静默丢弃——Agent 以为导出成功实际缺文件
         raise ValueError(f"formats 只支持 {' / '.join(FORMATS)}，收到未知格式: {unknown!r}")

@@ -19,7 +19,7 @@
 ### `inspect_video(url, platform?)`
 - **只解析、不下载、不提交**。B 站分 P / YouTube 播放列表 / 单集。
 - 返回 `{ok, platform, kind: single|multi, title, current_p?, total, truncated, entries:[{p, title, duration, url, video_id}]}`。
-- `kind=multi` 时把每条 `entries[].url` 当独立视频，按单集流程（subagent）提交；用户只要一集就用对应那条 url。超过 200 条 `truncated=true`。
+- `kind=multi`：用户只要一集 → 直接用对应那条 `entries[].url` 按单集流程提交；要全出 → 用 `batch_generate_notes`（服务端逐个排队，见下）。**不要逐条 subagent 提交**——并发上限 3，逐条会被拒。超过 200 条 `truncated=true`。
 - **批量**：多集要全出笔记用 `batch_generate_notes(url, max_entries=10)` 一次排队（服务端逐个提交），省去逐条 subagent。
 
 ### `batch_generate_notes(video_url, max_entries=10, quality?, provider_id?, model_name?, format?, style?, screenshot?, extras?, link?, video_understanding?, video_interval?, grid_size?, include_comments?, comments_limit?, notes_dir?)`

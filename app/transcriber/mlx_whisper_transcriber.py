@@ -42,7 +42,7 @@ def resolve_mlx_repo_id(model_size: str) -> str:
 class MLXWhisperTranscriber(Transcriber):
     def __init__(
             self,
-            model_size: str = "base"
+            model_size: str = "small"
     ):
         # 检查平台
         if platform.system() != "Darwin":

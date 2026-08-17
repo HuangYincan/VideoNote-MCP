@@ -37,11 +37,13 @@ from app.services.constant import get_downloader as _new_downloader
 from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import _transcribers, get_transcriber
+from app.utils.path_helper import get_data_dir
 from app.utils.video_reader import VideoReader
 
 logger = logging.getLogger(__name__)
 
-NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", "note_results"))
+# 缺省统一落数据目录（#127 B2）：与 task_manifest.get_note_dir 同源，避免 CWD 相对分裂
+NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", str(Path(get_data_dir()) / "note_results")))
 
 _PLATFORM_HINTS = [
     ("bilibili", ("bilibili.com", "b23.tv")),
@@ -193,8 +195,10 @@ def apply_diarization(
                 # 独立临时目录（#126 B1）：自建 wav 落 mkdtemp 而非源文件同目录——
                 # 两个并发任务处理同一文件时互不覆盖，清理也互不误删
                 prep_dir = tempfile.mkdtemp(prefix="vn_dia_")
-                wav = normalize_to_wav(audio_file, out_dir=prep_dir)
+                # 立即置位（#127 B4）：normalize_to_wav 抛错时 finally 也能清掉目录，
+                # 不再泄漏 /tmp/vn_dia_XXXX
                 created = True
+                wav = normalize_to_wav(audio_file, out_dir=prep_dir)
             turns = diarize_audio(wav, num_speakers=mgr.get_diarization_speakers())
             segments = assign_speakers(segments, turns)
             speaker_count = len(

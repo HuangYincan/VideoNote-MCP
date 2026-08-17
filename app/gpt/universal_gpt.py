@@ -16,6 +16,7 @@ from app.gpt.prompt_builder import generate_base_prompt
 from app.gpt.request_chunker import RequestChunker
 from app.models.gpt_model import GPTSource
 from app.models.transcriber_model import TranscriptSegment
+from app.utils.path_helper import get_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,8 @@ class UniversalGPT(GPT):
         # token 级切块上限（docs/05 #32）：按窗口切，而不是 45MB 字节一整块。
         # 汉字≈1 token 的保守估计，默认 12000 留足输出余量（8-16k 窗口兼容）。
         self.max_tokens_per_chunk = _env_int("OPENAI_MAX_TOKENS_PER_CHUNK", 12000)
-        self.checkpoint_dir = Path(os.getenv("NOTE_OUTPUT_DIR", "note_results"))
+        # 缺省落数据目录（#127 B2）：与 task_manifest 同源，裸脚本产物不再 CWD 分裂
+        self.checkpoint_dir = Path(os.getenv("NOTE_OUTPUT_DIR", str(Path(get_data_dir()) / "note_results")))
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         # 初始化时缓存重试配置，避免每次请求重复读取环境变量
         self._max_retry_attempts = max(1, _env_int("OPENAI_RETRY_ATTEMPTS", 3))

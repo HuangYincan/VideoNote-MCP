@@ -47,7 +47,13 @@ class GroqTranscriber(Transcriber, ABC):
             file_path = compress_audio(file_path)
             temp_file = file_path
             logger.info(f"压缩完成，临时路径：{file_path}")
-        provider = ProviderService.get_provider_by_id('groq')
+        # 按名称查找（#127 B1）：add_provider 强制 uuid id，硬编码 id='groq' 只对
+        # seed 行生效——按向导新建 groq 得到 uuid id 后引擎永远读空 key 的 seed 行；
+        # 库非空时 seed 被跳过 id='groq' 永不出现。名称可配（seed 或用户 add 都叫 Groq）。
+        provider = ProviderService.get_provider_by_name('groq')
+        if not provider:
+            # 兜底：用户可能改过名称，尝试历史 seed 的固定 id
+            provider = ProviderService.get_provider_by_id('groq')
 
         if not provider:
             raise Exception("Groq 供应商未配置,请配置以后使用。")

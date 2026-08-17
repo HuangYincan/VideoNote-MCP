@@ -18,11 +18,32 @@ class KuaiShouDownloader(Downloader, ABC):
     def __init__(self):
         super().__init__()
 
+    @staticmethod
+    def _extract_photo(video_raw_info: dict) -> dict:
+        """从快手接口返回里取 photo 详情；形状变更/视频被删时给可排查的明确错误。
+
+        接口返回嵌套 `{'visionVideoDetail': {'photo': {...}}}`。visionVideoDetail 为
+        null 或 photo 缺失（视频被删/接口变更）时，裸索引抛 `None['photo']` 天书
+        TypeError——任务整体 FAILED 且无法定位（#127 B5 修了 caption，这里是父级）。
+        """
+        detail = video_raw_info.get("visionVideoDetail") or {}
+        photo = detail.get("photo")
+        if not isinstance(photo, dict):
+            raise RuntimeError(
+                "快手接口返回缺少 visionVideoDetail.photo（视频可能已删除，或接口形状变更）"
+            )
+        if not photo.get("id"):
+            raise RuntimeError("快手接口返回缺少 photo.id")
+        return photo
+
     def _download_mp4(self, photo_info: dict, mp4_path: str) -> None:
         """下载 mp4 视频到 mp4_path；HTTP 非 200 抛明确异常。"""
+        photo_url = photo_info.get("photoUrl")
+        if not photo_url:
+            raise RuntimeError("快手接口返回缺少 photoUrl（下载地址）")
         # with 托管响应关闭：裸 requests.get 的 stream 响应直到 GC 才释放连接
         #（每次下载泄漏一个连接池条目，#124 B8）
-        with requests.get(photo_info['photoUrl'], stream=True, timeout=30) as resp:
+        with requests.get(photo_url, stream=True, timeout=30) as resp:
             resp.raise_for_status()
             with open(mp4_path, "wb") as f:
                 for chunk in resp.iter_content(1024 * 1024):
@@ -45,8 +66,8 @@ class KuaiShouDownloader(Downloader, ABC):
         ks = KuaiShou()
         video_raw_info = ks.run(video_url)
         logger.debug("快手视频原始信息已获取")
-        photo_info = video_raw_info['visionVideoDetail']['photo']
-        video_id = photo_info['id']
+        photo_info = self._extract_photo(video_raw_info)
+        video_id = photo_info["id"]
         # caption 可为 null（无文案/草稿）——裸 strip 会在下载开始前 AttributeError（#127 B5）
         title = (photo_info.get('caption') or '').strip().replace('\n', '').replace(' ', '_')[:50]
         mp4_path = os.path.join(output_dir, f"{video_id}.mp4")
@@ -133,7 +154,7 @@ class KuaiShouDownloader(Downloader, ABC):
         os.makedirs(output_dir, exist_ok=True)
         ks = KuaiShou()
         video_raw_info = ks.run(video_url)
-        photo_info = video_raw_info['visionVideoDetail']['photo']
+        photo_info = self._extract_photo(video_raw_info)
         mp4_path = os.path.join(output_dir, f"{photo_info['id']}.mp4")
         self._download_mp4(photo_info, mp4_path)
         return mp4_path

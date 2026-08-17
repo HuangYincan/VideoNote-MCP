@@ -34,7 +34,7 @@ logger=get_logger(__name__)
 class WhisperTranscriber(Transcriber):
     def __init__(
             self,
-            model_size: str = "base",
+            model_size: str = "small",
             device: str = 'cpu',
             compute_type: str = None,
             cpu_threads: int = 1,

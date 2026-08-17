@@ -12,11 +12,15 @@ def cleanup_temp_files(data):
         logger.warning(f"路径不存在：{file_path}")
         return
 
-    dir_path = os.path.dirname(file_path)
-    # 防御：绝不从共享根目录（data/ 等）按 video_id 前缀批量删除——
-    # 并发任务下那会删到别的任务正在用的文件。只在任务自己的子目录里清理。
-    if os.path.abspath(dir_path) == os.path.abspath(get_data_dir()):
-        logger.warning(f"跳过清理：{dir_path} 是共享数据根目录，不在其中按 video_id 删除")
+    dir_path = os.path.abspath(os.path.dirname(file_path))
+    data_dir = os.path.abspath(get_data_dir())
+    # 沙箱红线（#127 B6）：只允许清理数据目录内（含任务子目录）的产物。
+    # 旧实现只挡「目录 == data/」一种情况，local 直接转写时 dir_path 是用户
+    # 源目录（如 ~/Downloads），前缀删除会连带删掉同名 mp4/txt——所有转写器
+    # on_finish 已注释、本 handler 是死链，但若将来有人重新接通，这里绝不能
+    # 删数据目录外的用户文件。
+    if dir_path != data_dir and not dir_path.startswith(data_dir + os.sep):
+        logger.warning(f"跳过清理：{dir_path} 不在数据目录内（#127 B6 沙箱红线）")
         return
 
     base_name = os.path.basename(file_path)
