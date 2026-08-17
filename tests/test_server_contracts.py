@@ -824,5 +824,157 @@ class SetTranscriberValidationTest(unittest.TestCase):
         self.assertEqual(set(server._TRANSCRIBER_TYPES), {e.value for e in TranscriberType})
 
 
+class SummarizeTranscriptShapeTest(unittest.TestCase):
+    """summarize_note 的 transcript 形状：缺 segments/full_text 时曾静默拿空素材让 LLM
+    凭空生成笔记（还烧配额）；入口显式报错（#104）。"""
+
+    @staticmethod
+    def _submit(transcript):
+        """stub provider/模型/线程池，让 summarize_note 干净走到提交点。"""
+        done = Future()
+        done.set_result(None)
+        with mock.patch(
+            "videonote_mcp.server._resolve_default_provider_id", return_value="t-provider"
+        ), mock.patch(
+            "videonote_mcp.server.get_models_by_provider", return_value=[{"model_name": "t-model"}]
+        ), mock.patch("videonote_mcp.server._pool.submit", return_value=done):
+            return server.summarize_note(transcript)
+
+    def test_empty_dict_rejected(self):
+        with self.assertRaises(ValueError) as cm:
+            self._submit({})
+        self.assertIn("transcript 缺少内容字段", str(cm.exception))
+
+    def test_missing_content_fields_rejected(self):
+        # 传 fetch 结果外层（{"ok": ...}）是常见传错——必须报错而不是拿空素材总结
+        with self.assertRaises(ValueError) as cm:
+            self._submit({"ok": True, "language": "zh"})
+        self.assertIn("segments 或 full_text", str(cm.exception))
+
+    def test_garbage_json_string_rejected(self):
+        with self.assertRaises(ValueError) as cm:
+            self._submit('{"not": "a transcript"}')
+        self.assertIn("transcript 缺少内容字段", str(cm.exception))
+
+    def test_non_dict_rejected(self):
+        with self.assertRaises(ValueError) as cm:
+            self._submit(42)
+        self.assertIn("transcript 缺少内容字段", str(cm.exception))
+
+    def test_empty_but_shaped_transcript_accepted(self):
+        # 静音视频的合法转写（segments 为空但字段在）不拦截——是否总结是用户的决定
+        resp = self._submit({"language": "zh", "segments": [], "full_text": ""})
+        self.assertIn('"status": "PENDING"', resp)
+
+    def test_full_text_only_accepted(self):
+        resp = self._submit({"full_text": "hello"})
+        self.assertIn('"status": "PENDING"', resp)
+
+    def test_segments_only_accepted(self):
+        resp = self._submit({"segments": [{"start": 0, "end": 1, "text": "hi"}]})
+        self.assertIn('"status": "PENDING"', resp)
+
+
+class ExtractFramesIntervalWarningTest(unittest.TestCase):
+    """video_interval 非数值静默回退 6——与 num_speakers 同口径（#101），打 warning 后回退（#104）。"""
+
+    def test_non_numeric_interval_warns_and_falls_back(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "clip.mp4"
+            f.write_bytes(b"x")
+            with mock.patch.object(server, "_submit_step_task", return_value="f1") as m:
+                with self.assertLogs("videonote_mcp.server", level="WARNING") as logs:
+                    server.extract_frames(str(f), video_interval="abc")
+            kwargs = m.call_args.kwargs
+            self.assertEqual(kwargs["video_interval"], 6)
+            self.assertTrue(any("video_interval" in msg for msg in logs.output))
+
+    def test_numeric_string_still_accepted(self):
+        # 数字字符串是合法输入（int() 可转），不打扰
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "clip.mp4"
+            f.write_bytes(b"x")
+            with mock.patch.object(server, "_submit_step_task", return_value="f1") as m, mock.patch.object(
+                server.logger, "warning"
+            ) as w:
+                server.extract_frames(str(f), video_interval="10")
+            self.assertEqual(m.call_args.kwargs["video_interval"], 10)
+            self.assertFalse(any("video_interval" in str(c) for c in w.call_args_list))
+
+
+class ExportFormatsWhitelistTest(unittest.TestCase):
+    """export_transcript 未知格式曾只写 stderr 警告后静默丢弃——Agent 以为导出成功
+    实际缺文件；入口显式报错（#104）。"""
+
+    @staticmethod
+    def _task_with_transcript():
+        tid = f"exp_{uuid.uuid4().hex}"
+        task_dir = server.NOTE_OUTPUT_DIR / tid
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "transcript": {
+                        "language": "zh",
+                        "segments": [{"start": 0, "end": 1, "text": "hi"}],
+                        "full_text": "hi",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return tid
+
+    def test_unknown_format_rejected(self):
+        tid = self._task_with_transcript()
+        try:
+            with self.assertRaises(ValueError) as cm:
+                server.export_transcript(tid, formats=["pdf"])
+            self.assertIn("srt", str(cm.exception))
+        finally:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def test_mixed_unknown_rejected(self):
+        # 请求里混入未知格式 → 整单拒绝（不静默导出半份）
+        tid = self._task_with_transcript()
+        try:
+            with self.assertRaises(ValueError) as cm:
+                server.export_transcript(tid, formats=["srt", "pdf"])
+            self.assertIn("pdf", str(cm.exception))
+        finally:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def test_non_list_formats_rejected(self):
+        tid = self._task_with_transcript()
+        try:
+            with self.assertRaises(ValueError) as cm:
+                server.export_transcript(tid, formats="srt")
+            self.assertIn("formats 必须是字符串列表", str(cm.exception))
+        finally:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def test_valid_formats_export(self):
+        tid = self._task_with_transcript()
+        try:
+            resp = json.loads(server.export_transcript(tid, formats=["srt"]))
+            self.assertTrue(resp["ok"])
+            self.assertIn("srt", resp["formats"])
+        finally:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def test_default_formats_still_export(self):
+        # 缺省（None）走 config/env 默认链，白名单校验只作用于显式传入
+        tid = self._task_with_transcript()
+        try:
+            with mock.patch.object(server, "get_app_config", return_value={}), mock.patch.dict(
+                "os.environ", {"VIDEONOTE_DEFAULT_EXPORT_FORMATS": '["srt"]'}, clear=False
+            ):
+                resp = json.loads(server.export_transcript(tid))
+            self.assertTrue(resp["ok"])
+            self.assertIn("srt", resp["formats"])
+        finally:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

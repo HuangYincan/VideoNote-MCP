@@ -1331,6 +1331,7 @@ def extract_frames(
     try:
         interval = max(1, int(video_interval))
     except (TypeError, ValueError):
+        logger.warning(f"video_interval={video_interval!r} 不是整数，回退默认 6")
         interval = 6
     _check_grid_size(grid_size)
     task_id = _submit_step_task(
@@ -1380,6 +1381,17 @@ def summarize_note(
     只想要素材（转写/帧/评论）自行写笔记时用 prepare_note_material；一步到位用 generate_note。
     """
     _check_style_and_format(style, format or [])
+    transcript = _coerce_transcript(transcript)
+    if not isinstance(transcript, dict) or not (
+        transcript.get("segments") is not None or transcript.get("full_text") is not None
+    ):
+        # 传错形状（fetch 结果外层 {"ok": ...}、纯 {"language": ...}、垃圾串）会静默拿空素材
+        # 让 LLM 凭空生成笔记——入口显式报错，不消耗 LLM 配额
+        raise ValueError(
+            "transcript 缺少内容字段（需要 segments 或 full_text 之一）：请传 "
+            "transcribe_media / fetch_subtitles 的返回，或 prepare_note_material 的 "
+            "result.transcript 字段"
+        )
     if not provider_id:
         provider_id = _resolve_default_provider_id()
     if not provider_id:
@@ -1401,7 +1413,7 @@ def summarize_note(
         style = get_app_config().get("default_style") or env_or("VIDEONOTE_DEFAULT_STYLE") or "detailed"
     material = {
         "title": title,
-        "transcript": _coerce_transcript(transcript),
+        "transcript": transcript,
         "frames": frames or [],
         "comments_danmaku": comments_danmaku,
         "video_path": None,
@@ -2172,7 +2184,7 @@ def export_transcript(
     只做确定性机械渲染（时间轴换算），不调用 LLM。返回
     {task_id, formats: {fmt: "file://绝对路径"}, errors: {}}，供 Agent 直接 Read。
     """
-    from videonote_mcp.export import export_transcript as _export
+    from videonote_mcp.export import FORMATS, export_transcript as _export
 
     task_id = _validate_task_id(task_id)
     task_dir = NOTE_OUTPUT_DIR / str(task_id)
@@ -2205,6 +2217,12 @@ def export_transcript(
         )
         if not formats:
             formats = ["srt"]
+    if not isinstance(formats, list):
+        raise ValueError(f"formats 必须是字符串列表（支持 {' / '.join(FORMATS)}），收到: {formats!r}")
+    unknown = sorted({f for f in formats if f not in FORMATS})
+    if unknown:
+        # 未知格式曾只写 stderr 警告后静默丢弃——Agent 以为导出成功实际缺文件
+        raise ValueError(f"formats 只支持 {' / '.join(FORMATS)}，收到未知格式: {unknown!r}")
 
     out = out_dir or str(task_dir / "gen")
     # 数据目录外输出只提示不拦截：显式导出到别处是用户意图（docs/05 #45）

@@ -28,7 +28,7 @@
 - **E1 可观测性收口（1ced97a）**：stderr 日志超限轮转（`VIDEONOTE_STDERR_LOG_MAX_MB` 默认 50MB → `.log.1`，防长跑体积失控）；`_open_stderr_log` 打开失败不再静默（原因打到原始 stderr）；atexit 退出摘要记录进行中/排队任务数（排查孤儿 ffmpeg/whisper 子进程）。新测试 tests/test_stderr_log.py 7 项。
 - 文档：docs/06 新增 Wave E 章节；docs/05 #39/#44 标注更新。
 
-## Wave E 批 4（2026-08-17 · 自主改进轮，268 tests）
+## Wave E 批 4（2026-08-17 · 自主改进轮 #90-#104，331 tests）
 
 - **下载器健壮性（f5bdc8b，#90）**：#36 剩余 4 子项——kuaishou 失败点抛明确 RuntimeError（原 TypeError/AttributeError/IndexError 三连）；Bcut 轮询指数退避 `min(1<<i, 5)` + 5 处 HTTP 补 timeout；generic cookie 从「写死 example.com 的 Netscape 文件（永不生效）」改 `http_headers` 直接注入；audio.json 实体悬空视为缓存失效重新下载。tests/test_downloader_robustness.py 16 项。
 - **DB 路径修复（5ba8497，#91）**：`app/db/engine.py` 默认 `sqlite:///video_note.db` 是相对 CWD 路径——裸脚本/单文件测试在仓库根分裂出 DB（根目录残留垃圾的真实根因）；改 `get_data_dir()` 稳定路径；`cache_data` 弃用 vendored 旧 `DATA_DIR` env。
@@ -43,6 +43,7 @@
 - **num_speakers 无效值显式提示（#101）**：`diarize_audio` 的 `kwargs = {"num_speakers": n} if n else {}`——0 / 负值 / 非 int 静默回退自动检测（用户显式传了无效值却无声无息）；入口校验打 warning 后回退，合法值照常透传。+4 单元测试。**310 passed + ruff F-clean**。
 - **list_tasks 分页（#102）**：无上限返回全量（每行含 200 字 summary，长跑用户任务上百条时响应膨胀）；加可选 `limit` / `offset`（缺省全量，向后兼容；limit 钳制 ≥1，offset 钳制 ≥0）；skills tools.md 同步新签名。+4 契约测试。**314 passed + ruff F-clean**。
 - **set_transcriber 引擎白名单（#103）**：未知 `transcriber_type` 被持久化后，运行时 `get_transcriber` 的 `TranscriberType(...)` 解析失败**静默回退 fast-whisper**——用户以为配了 groq/bcut 云端引擎，实际在跑本地 whisper；入口白名单校验（与 style/format 同口径；CLI 侧 argparse choices 本就安全），白名单与 TranscriberType 枚举同源防漂移。+3 契约测试。**317 passed + ruff F-clean**。
+- **静默错误族收尾（#104）**：① summarize_note 的 transcript 形状——垃圾/空 dict/传 fetch 结果外层 `{"ok": ...}` 曾静默规整成空素材，LLM 拿零转写**凭空生成笔记**（幻觉内容还烧配额）；入口显式报错（provider 解析前，H6；只查字段存在不查内容——静音视频的 `segments: []` 是合法转写不拦）。② extract_frames 的 video_interval 非数值——`int("abc")` 失败静默回退默认 6（用户设了间隔却无声生效默认值）；与 num_speakers 同口径打 warning 后回退，数字字符串照常透传。③ export_transcript 未知格式——底层 exporter 只写 stderr 警告后静默跳过，Agent 请求 `["srt","pdf"]` 拿到 `ok:true` 实际缺 pdf；入口白名单校验（srt/vtt/json，与 exporter FORMATS 同源），config/env 缺省链解析后同样校验。+14 契约测试。**331 passed + ruff F-clean**。
 - 文档：docs/05 第三轮 #90-#94、docs/06、CHANGELOG；skills tools.md 同步 batch 新签名；docs/05 Wave B 第 6 条过时 ⏸ 标记修正（Resource 6f 已落地）。
 
 ## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）
