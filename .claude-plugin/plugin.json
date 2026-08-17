@@ -29,7 +29,9 @@
         "VIDEONOTE_COMMENTS_LIMIT": "${user_config.comments_limit}",
         "VIDEONOTE_DEFAULT_EXPORT_FORMATS": "${user_config.default_export_formats}",
         "VIDEONOTE_ENABLE_PREPROCESS": "${user_config.enable_preprocess}",
-        "VIDEONOTE_DIARIZATION": "${user_config.diarization}"
+        "VIDEONOTE_DIARIZATION": "${user_config.diarization}",
+        "VIDEONOTE_MAX_WORKERS": "${user_config.max_workers}",
+        "VIDEONOTE_STDERR_LOG_MAX_MB": "${user_config.stderr_log_max_mb}"
       }
     }
   },
@@ -105,6 +107,18 @@
       "title": "说话人分离",
       "description": "输入 true 或 false。true=转写后做说话人分离（需可选依赖 pyannote，且需要 HF token）",
       "default": false
+    },
+    "max_workers": {
+      "type": "number",
+      "title": "并发任务上限",
+      "description": "数字，默认 3。同时执行的笔记生成任务数上限（排队不算；机器强可调大，弱可调小）",
+      "default": 3
+    },
+    "stderr_log_max_mb": {
+      "type": "number",
+      "title": "MCP 日志轮转上限（MB）",
+      "description": "数字，默认 50。mcp_stderr.log 超过该大小后轮转为 .log.1",
+      "default": 50
     }
   }
 }
