@@ -1161,15 +1161,23 @@ def cancel_note(task_id: str) -> str:
 
 
 @mcp.tool()
-def list_tasks() -> str:
-    """列出全部任务（全局索引 video_tasks 表），按创建时间倒序。
+def list_tasks(limit: Optional[int] = None, offset: int = 0) -> str:
+    """列出任务（全局索引 video_tasks 表），按创建时间倒序。
 
+    - limit: 可选，最多返回条数（缺省全部）；offset: 可选，跳过条数（配合 limit 分页）。
     返回 [{task_id, title, status, summary, platform, created_at, note_dir}]——
     Agent 据此枚举任务、按语义标题识别，无需预先知道 task_id。
     """
     from app.db.video_task_dao import list_tasks as _list
 
-    return json.dumps(_list(), ensure_ascii=False)
+    tasks = _list()
+    offset = max(0, int(offset or 0))
+    if limit is not None:
+        limit = max(1, int(limit))
+        tasks = tasks[offset : offset + limit]
+    elif offset:
+        tasks = tasks[offset:]
+    return json.dumps(tasks, ensure_ascii=False)
 
 
 @mcp.tool()

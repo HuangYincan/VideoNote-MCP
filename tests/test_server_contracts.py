@@ -4,6 +4,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import uuid
 from concurrent.futures import Future
 from pathlib import Path
 from unittest import mock
@@ -755,6 +756,44 @@ class GridSizeValidationTest(unittest.TestCase):
             self.assertIn("grid_size 必须是两个正整数", str(cm.exception))
         finally:
             Path(tmp.name).unlink(missing_ok=True)
+
+
+class ListTasksPaginationTest(unittest.TestCase):
+    """list_tasks 的 limit/offset 分页（#102）：缺省全量向后兼容；limit 钳制 ≥1。"""
+
+    def setUp(self):
+        from app.db.video_task_dao import insert_video_task
+
+        self.tids = []
+        for i in range(3):
+            tid = f"paging_{uuid.uuid4().hex}"
+            # video_id 必须唯一：shared DB 里 get_task_by_video 取「最新」，
+            # 与 test_task_index 的 BV1/BV2 撞名会抢到对方断言（created_at 秒级并列按 rowid 序）
+            insert_video_task(f"LTP_{i}_{uuid.uuid4().hex}", "bilibili", tid, title=f"任务{i}")
+            self.tids.append(tid)
+
+    def test_all_when_limit_none(self):
+        tasks = json.loads(server.list_tasks())
+        by_id = {t["task_id"] for t in tasks}
+        self.assertTrue({self.tids[0], self.tids[1], self.tids[2]} <= by_id)
+
+    def test_limit_truncates(self):
+        tasks = json.loads(server.list_tasks(limit=2))
+        # 共享 DB 里其它测试也有行，created_at 秒级并列使「最新在前」断言不可控——
+        # 只验证切片机制：条数=2，且全量列表必然多于 2（证明截断生效）
+        self.assertEqual(len(tasks), 2)
+        full = json.loads(server.list_tasks())
+        self.assertGreater(len(full), 2)
+        self.assertTrue({t["task_id"] for t in tasks} <= {t["task_id"] for t in full})
+
+    def test_offset_skips(self):
+        all_tasks = json.loads(server.list_tasks())
+        paged = json.loads(server.list_tasks(offset=2))
+        self.assertEqual(paged, all_tasks[2:])
+
+    def test_zero_limit_clamped_to_one(self):
+        tasks = json.loads(server.list_tasks(limit=0))
+        self.assertEqual(len(tasks), 1)
 
 
 if __name__ == "__main__":

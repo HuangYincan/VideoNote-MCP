@@ -140,8 +140,9 @@
 
 全局索引在 SQLite `video_tasks` 表（含 `title/status/summary/note_dir`）。
 
-### `list_tasks()`
+### `list_tasks(limit?, offset?)`
 - 列出**全部任务**（全局索引，按创建时间倒序），返回 `[{task_id, title, status, summary, platform, created_at, note_dir}]`。
+- `limit` / `offset` 可选：分页（缺省全量；任务多时用 `list_tasks(limit=20)` + 递增 offset 翻页）。
 - Agent 据此枚举任务、按**语义标题**识别，无需预先知道 task_id。
 
 ### `get_task_files(task_id)`
