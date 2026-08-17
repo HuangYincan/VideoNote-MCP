@@ -36,10 +36,17 @@ def build_openai_client(
         kwargs["timeout"] = timeout
 
     proxy_url = ProxyConfigManager().get_proxy_url()
+    client = OpenAI(**kwargs)
     if proxy_url:
         # 延迟 import httpx：仅在确实要走代理时才需要
         import httpx
-        kwargs["http_client"] = httpx.Client(proxy=proxy_url, timeout=timeout or 600.0)
+        import weakref
+
+        http_client = httpx.Client(proxy=proxy_url, timeout=timeout or 600.0)
+        kwargs["http_client"] = http_client
+        client = OpenAI(**kwargs)
+        # 实例被 GC 时关掉 http_client，避免连接/fd 跨任务累积（docs/05 #74）
+        weakref.finalize(client, http_client.close)
         logger.info(f"OpenAI 客户端走代理: {proxy_url}")
 
-    return OpenAI(**kwargs)
+    return client

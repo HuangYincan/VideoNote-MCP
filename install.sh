@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 
-echo "==> 1/4 安装 Python 依赖"
+echo "==> 1/3 安装 Python 依赖"
 if command -v uv >/dev/null 2>&1; then
   uv sync
 else
@@ -33,13 +33,20 @@ if [ "$HAVE_UV" = "1" ] && command -v claude >/dev/null 2>&1; then
   if claude plugin marketplace add HuangYincan/VideoNote-MCP >/dev/null 2>&1 \
      && claude plugin install videonote@videonote >/dev/null 2>&1; then
     echo "Skill + MCP 已通过 marketplace 安装（videonote@videonote）"
+    # 清理旧安装残留的用户级条目（空 env 会遮蔽插件 server env）
+    claude mcp remove videonote >/dev/null 2>&1 || true
     PLUGIN_OK="1"
   fi
 fi
 if [ "$PLUGIN_OK" != "1" ]; then
   # 回退：无 uv 或 marketplace 失败 → 用户级 MCP + 本地 Skill 链接
   if command -v claude >/dev/null 2>&1; then
-    claude mcp add videonote -- "$BIN" && echo "已注册：claude mcp add videonote -- $BIN"
+    # 插件已装时不要 mcp add：用户级空 env 条目会遮蔽插件 server 的 env（userConfig 失效）
+    if claude plugin list 2>/dev/null | grep -q "videonote"; then
+      echo "检测到插件 videonote 已安装，跳过用户级 mcp add（避免遮蔽插件配置）"
+    else
+      claude mcp add videonote -- "$BIN" && echo "已注册：claude mcp add videonote -- $BIN"
+    fi
   else
     echo "未找到 claude CLI。请手动把下面的配置加入你的 MCP 配置："
     echo "  { \"mcpServers\": { \"videonote\": { \"command\": \"$BIN\" } } }"

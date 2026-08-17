@@ -266,7 +266,13 @@ class UniversalGPT(GPT):
                         self._save_checkpoint(checkpoint_key, source_signature, current_partials, "merge")
                     raise
 
-                new_partials.append(response.choices[0].message.content.strip())
+                content = (response.choices[0].message.content or "").strip()
+                if not content:
+                    raise ValueError(
+                        "模型返回空内容（可能被拒绝/内容过滤），finish_reason="
+                        + str(getattr(response.choices[0], "finish_reason", "?"))
+                    )
+                new_partials.append(content)
 
                 if checkpoint_key and source_signature:
                     remaining_partials = []
@@ -356,7 +362,13 @@ class UniversalGPT(GPT):
                     self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")
                 raise
 
-            partials.append(response.choices[0].message.content.strip())
+            content = (response.choices[0].message.content or "").strip()
+            if not content:
+                raise ValueError(
+                    "模型返回空内容（可能被拒绝/内容过滤），finish_reason="
+                    + str(getattr(response.choices[0], "finish_reason", "?"))
+                )
+            partials.append(content)
             if checkpoint_key and source_signature:
                 self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")
 

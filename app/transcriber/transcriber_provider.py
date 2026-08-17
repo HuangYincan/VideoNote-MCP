@@ -63,6 +63,15 @@ def _init_transcriber(key: TranscriberType, cls, *args, **kwargs):
             if need_build:
                 logger.info(f'创建 {cls.__name__} 实例: {key} (model_size={want_size})')
                 try:
+                    # 替换旧实例前防御性释放（whisper 大模型约 3GB，双驻留会撑爆内存）
+                    old = _transcribers.get(key)
+                    if old is not None:
+                        close = getattr(old, "close", None)
+                        if callable(close):
+                            try:
+                                close()
+                            except Exception as exc:
+                                logger.warning(f'释放旧 {cls.__name__} 实例失败: {exc}')
                     _transcribers[key] = cls(*args, **kwargs)
                     logger.info(f'{cls.__name__} 创建成功')
                 except Exception as e:

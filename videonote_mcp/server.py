@@ -88,7 +88,7 @@ mcp = FastMCP("videonote")
 
 # ---------- 后台任务 ----------
 
-_MAX_WORKERS = int(os.environ.get("VIDEONOTE_MAX_WORKERS", "3"))
+_MAX_WORKERS = max(1, env_int("VIDEONOTE_MAX_WORKERS", 3))
 _pool = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
 # 模型下载独立线程池：不占笔记任务 worker 槽位，也不被并发门禁计入进行中任务
 _dl_pool = ThreadPoolExecutor(max_workers=1)
@@ -343,7 +343,6 @@ def _step_extract_frames(
     video_path: str,
     video_interval: int,
     grid_size: Optional[List[int]],
-    save_dir: str,
 ) -> dict:
     """extract_frames 的后台步骤：抽帧 → payload {kind: frames, frames: [file://...]}。"""
     _check_cancel(cancel_event)
@@ -351,7 +350,7 @@ def _step_extract_frames(
         video_path,
         video_interval=video_interval,
         grid_size=grid_size,
-        save_dir=save_dir,
+        save_dir=str(NOTE_OUTPUT_DIR / task_id / "gen" / "frames"),
     )
     return {"kind": "frames", "frames": frames}
 
@@ -572,12 +571,14 @@ def generate_note(
         video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
     if video_interval is None:
         video_interval = int(get_app_config().get("video_interval") or env_int("VIDEONOTE_VIDEO_INTERVAL", 0))
+    video_interval = max(0, int(video_interval or 0))  # 下限钳制，避免 0/负值进流水线
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
         include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
     if comments_limit is None:
         comments_limit = int(get_app_config().get("comments_limit") or env_int("VIDEONOTE_COMMENTS_LIMIT", 20))
+    comments_limit = max(1, int(comments_limit or 20))  # 下限钳制
 
     # 风格/截图默认：参数没传（None）时用 setup ③ 配置的默认（默认 detailed / 关）
     if style is None:
@@ -660,12 +661,14 @@ def prepare_note_material(
         video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
     if video_interval is None:
         video_interval = int(get_app_config().get("video_interval") or env_int("VIDEONOTE_VIDEO_INTERVAL", 0))
+    video_interval = max(0, int(video_interval or 0))  # 下限钳制，避免 0/负值进流水线
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
         include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
     if comments_limit is None:
         comments_limit = int(get_app_config().get("comments_limit") or env_int("VIDEONOTE_COMMENTS_LIMIT", 20))
+    comments_limit = max(1, int(comments_limit or 20))  # 下限钳制
 
     # 并发上限：与 generate_note 一致
     _guard_concurrency()
@@ -1071,7 +1074,7 @@ def transcribe_media(file_path: str) -> str:
     只要平台自带字幕（不转写）用 fetch_subtitles。
     """
     p = _coerce_local_path(file_path)
-    if not p.exists():
+    if not p.is_file():
         raise ValueError(f"本地文件不存在: {file_path}")
     task_id = _submit_step_task("transcript", _step_transcribe, title=p.name, file_path=str(p))
     logger.info(f"已提交转写任务 task_id={task_id}")
@@ -1098,25 +1101,18 @@ def extract_frames(
     summarize_note 的 frames 参数参与笔记总结。
     """
     p = _coerce_local_path(video_path)
-    if not p.exists():
+    if not p.is_file():
         raise ValueError(f"本地视频文件不存在: {video_path}")
     if grid_size is None:
         grid_size = [3, 3]
-    _guard_concurrency()
-    task_id = uuid.uuid4().hex
-    _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
-    _index_step_task(task_id, "frames", title=p.name)
-    params = dict(
+    task_id = _submit_step_task(
+        "frames",
+        _step_extract_frames,
+        title=p.name,
         video_path=str(p),
         video_interval=int(video_interval) or 6,
         grid_size=grid_size,
-        save_dir=str(NOTE_OUTPUT_DIR / task_id / "gen" / "frames"),
     )
-    cancel_event = threading.Event()
-    future = _pool.submit(_run_step_task, task_id, cancel_event, step_fn=_step_extract_frames, **params)
-    with _tasks_lock:
-        _task_futures[task_id] = future
-        _task_events[task_id] = cancel_event
     logger.info(f"已提交抽帧任务 task_id={task_id}")
     return json.dumps(
         {"task_id": task_id, "status": "PENDING", "kind": "frames"}, ensure_ascii=False
@@ -1427,6 +1423,10 @@ def list_transcriber_models() -> str:
 
 @mcp.tool()
 def download_transcriber_model(model_size: str, transcriber_type: str = "fast-whisper") -> str:
+    if model_size not in WHISPER_MODEL_SIZES:
+        raise ValueError(
+            f"未知模型尺寸: {model_size}（可选: {', '.join(WHISPER_MODEL_SIZES)}）"
+        )
     """在后台下载 whisper 模型（仅本地引擎需要）。下载中/完成后用 list_transcriber_models 查询。"""
     size = model_size.strip().lower()
     if transcriber_type == "fast-whisper":

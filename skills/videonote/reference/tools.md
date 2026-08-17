@@ -65,7 +65,7 @@
 流水线各阶段可**独立调用、任意组合**：不想走整条 `generate_note` 时，可只做其中一步，或自己拼素材后交给 `summarize_note`。**素材包**（material dict，见上方 `prepare_note_material` 返回结构）是步骤间传递对象。
 
 ### `fetch_subtitles(video_url, platform?)`
-- **只取平台字幕**（不下载、不转写），同步返回 `{language, full_text, segments}`；无字幕/失败返回 `{ok: false, error}`。
+- **只取平台字幕**（不下载、不转写），同步返回 `{ok: true, language, full_text, segments}`；无字幕/失败返回 `{ok: false, error}`。
 - 适用：先看看平台有没有字幕、只要字幕文本。
 
 ### `transcribe_media(file_path)`

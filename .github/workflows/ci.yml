@@ -7,15 +7,21 @@ on:
 
 jobs:
   smoke:
-    name: Smoke test
+    name: Smoke test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      - name: Install dependencies
-        run: uv sync --no-dev --frozen
+      - name: Install dependencies (Python ${{ matrix.python-version }})
+        run: |
+          uv python install ${{ matrix.python-version }}
+          uv sync --frozen --python ${{ matrix.python-version }}
       - name: Ruff F-class lint
-        run: uvx ruff check --select F .
+        run: uv run ruff check --select F .
       - name: Server imports
         run: uv run python -c "import videonote_mcp.server; print('import OK')"
       - name: MCP tools/list over stdio
@@ -33,10 +39,12 @@ jobs:
                       tools = await session.list_tools()
                       names = [t.name for t in tools.tools]
                       assert "generate_note" in names, f"missing generate_note: {names}"
+                      # 工具面收敛时同步改这里（docs/05 #70）：37 = server.py 的 @mcp.tool 数
+                      assert len(names) == 37, f"工具数漂移: {len(names)} != 37"
                       print(f"tools/list OK: {len(names)} tools")
           asyncio.run(main())
           EOF
       - name: CLI smoke
         run: uv run videonote providers list
       - name: Unit tests
-        run: uv run --with pytest python -m pytest -q
+        run: uv run pytest -q

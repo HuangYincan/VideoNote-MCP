@@ -5,7 +5,9 @@
     "name": "HuangYincan",
     "url": "https://github.com/HuangYincan"
   },
-  "commands": ["./commands/"],
+  "commands": [
+    "./commands/"
+  ],
   "mcpServers": {
     "videonote": {
       "command": "uvx",
@@ -21,7 +23,12 @@
         "VIDEONOTE_INCLUDE_COMMENTS": "${user_config.include_comments}",
         "VIDEONOTE_NOTES_DIR": "${user_config.notes_dir}",
         "TRANSCRIBER_TYPE": "${user_config.transcriber_type}",
-        "WHISPER_MODEL_SIZE": "${user_config.whisper_model_size}"
+        "WHISPER_MODEL_SIZE": "${user_config.whisper_model_size}",
+        "VIDEONOTE_VIDEO_INTERVAL": "${user_config.video_interval}",
+        "VIDEONOTE_COMMENTS_LIMIT": "${user_config.comments_limit}",
+        "VIDEONOTE_DEFAULT_EXPORT_FORMATS": "${user_config.default_export_formats}",
+        "VIDEONOTE_ENABLE_PREPROCESS": "${user_config.enable_preprocess}",
+        "VIDEONOTE_DIARIZATION": "${user_config.diarization}"
       }
     }
   },
@@ -59,14 +66,44 @@
     "transcriber_type": {
       "type": "string",
       "title": "语音转写引擎",
-      "description": "直接输入英文 key，其一：fast-whisper 本地（推荐，免费）/ groq 云端 / bcut 云端 / kuaishou 云端 / mlx-whisper 本地（macOS）",
+      "description": "直接输入英文 key，其一：fast-whisper 本地（推荐，免费）/ funasr 本地（中文更优，需手动切换）/ groq 云端 / bcut 云端 / kuaishou 云端 / mlx-whisper 本地（macOS）",
       "default": "fast-whisper"
     },
     "whisper_model_size": {
       "type": "string",
       "title": "Whisper 模型尺寸",
-      "description": "直接输入英文 key，其一：tiny / base / small / medium / large-v3 / large-v3-turbo（内存小用 tiny/base，追求精度用 medium+）",
-      "default": "tiny"
+      "description": "直接输入英文 key，其一：tiny / base / small / medium / large-v3 / large-v3-turbo（内存小用 tiny/base，追求精度用 medium+；中文建议 small 起）",
+      "default": "small"
+    },
+    "video_interval": {
+      "type": "number",
+      "title": "视频理解截帧间隔（秒）",
+      "description": "数字，如 6。默认关闭时无效；开视频理解时每 N 秒抽一帧",
+      "default": 6
+    },
+    "comments_limit": {
+      "type": "number",
+      "title": "弹幕+评论条数上限",
+      "description": "数字，默认 20。开弹幕/评论整合时抓取的条数",
+      "default": 20
+    },
+    "default_export_formats": {
+      "type": "string",
+      "title": "转写导出格式默认",
+      "description": "JSON 数组字符串，如 [\"srt\",\"vtt\"]。留空=不自动导出（成功后可手动 export_transcript）",
+      "default": ""
+    },
+    "enable_preprocess": {
+      "type": "boolean",
+      "title": "音频预处理",
+      "description": "输入 true 或 false。true=转写前做 16kHz 归一化+超长分块（提高长视频转写稳定）",
+      "default": false
+    },
+    "diarization": {
+      "type": "boolean",
+      "title": "说话人分离",
+      "description": "输入 true 或 false。true=转写后做说话人分离（需可选依赖 pyannote，且需要 HF token）",
+      "default": false
     }
   }
 }

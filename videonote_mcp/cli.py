@@ -1265,7 +1265,10 @@ def _login_cli(argv) -> None:
                     except Exception as e:
                         print(f"跟随登录 URL 拿 cookie 失败: {e}", file=sys.stderr)
                 if not sess:
-                    print(f"登录成功但未取到 SESSDATA：{data['url']}", file=sys.stderr)
+                    # 不打印完整 URL：crossDomain ticket 含敏感参数（#71）
+                    from urllib.parse import urlparse
+
+                    print(f"登录成功但未取到 SESSDATA（{urlparse(data['url']).netloc or '未知域名'}）", file=sys.stderr)
                     sys.exit(1)
                 from app.services.cookie_manager import CookieConfigManager
 

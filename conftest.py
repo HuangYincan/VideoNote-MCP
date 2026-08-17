@@ -12,7 +12,9 @@ import glob
 import os
 from pathlib import Path
 
-_TEST_ROOT = Path("/tmp/videonote_pytest")
+# 固定 /tmp/videonote_pytest 会被并行 pytest / 多 checkout 撞库（docs/05 #66）：
+# 按 pid 隔离，同一进程内所有测试共享，跨进程互不干扰
+_TEST_ROOT = Path(f"/tmp/videonote_pytest_{os.getpid()}")
 _TEST_ROOT.mkdir(parents=True, exist_ok=True)
 _TEST_DB = _TEST_ROOT / "video_note.db"
 _NOTE_OUTPUT_DIR = _TEST_ROOT / "note_results"
