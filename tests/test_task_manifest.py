@@ -168,6 +168,34 @@ class TaskManifestTest(unittest.TestCase):
         # 连最终笔记 + 整个任务文件夹一起删
         self.assertFalse(task_dir.exists())
         self.assertFalse(res["note_kept"])
+        self.assertEqual(res["notes_kept_outside"], [])
+
+    def test_cleanup_note_include_note_removes_portable_inside_data_dir(self):
+        # 便携笔记副本在数据目录内（notes_dir 设为数据目录子目录）→ 随 include_note=True 一起删
+        tid = "task03b"
+        self._make_task(tid)
+        portable = self.root / "notes" / "测试笔记"
+        (portable / "Assets").mkdir(parents=True, exist_ok=True)
+        (portable / "note.md").write_text("# 便携", encoding="utf-8")
+        (portable / "Assets" / "1.jpg").write_bytes(b"z")
+        record_task_paths(tid, [str(portable), str(portable / "note.md"), str(portable / "Assets")])
+        res = cleanup_task_files(tid, include_note=True)
+        self.assertFalse(portable.exists())
+        self.assertEqual(res["notes_kept_outside"], [])
+
+    def test_cleanup_note_include_note_reports_portable_outside(self):
+        # 便携笔记副本在数据目录外（用户指定 notes_dir 的典型场景）→ 沙箱红线不删，路径列出
+        tid = "task03c"
+        self._make_task(tid)
+        portable = self.root.parent / "outside_notes" / "测试笔记"
+        portable.mkdir(parents=True, exist_ok=True)
+        (portable / "note.md").write_text("# 便携", encoding="utf-8")
+        record_task_paths(tid, [str(portable), str(portable / "note.md")])
+        res = cleanup_task_files(tid, include_note=True)
+        # 数据目录外副本保留且被列出，manifest 已删（不再有其它引用）
+        self.assertTrue(portable.exists())
+        self.assertEqual(res["notes_kept_outside"], [str(portable)])
+        self.assertEqual(get_task_paths(tid), [])
 
     # ---------- 路径穿越防护 ----------
 

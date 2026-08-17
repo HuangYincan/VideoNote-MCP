@@ -28,7 +28,7 @@
 - **E1 可观测性收口（1ced97a）**：stderr 日志超限轮转（`VIDEONOTE_STDERR_LOG_MAX_MB` 默认 50MB → `.log.1`，防长跑体积失控）；`_open_stderr_log` 打开失败不再静默（原因打到原始 stderr）；atexit 退出摘要记录进行中/排队任务数（排查孤儿 ffmpeg/whisper 子进程）。新测试 tests/test_stderr_log.py 7 项。
 - 文档：docs/06 新增 Wave E 章节；docs/05 #39/#44 标注更新。
 
-## Wave E 批 4（2026-08-17 · 自主改进轮 #90-#111，380 tests）
+## Wave E 批 4（2026-08-17 · 自主改进轮 #90-#112，382 tests）
 
 - **下载器健壮性（f5bdc8b，#90）**：#36 剩余 4 子项——kuaishou 失败点抛明确 RuntimeError（原 TypeError/AttributeError/IndexError 三连）；Bcut 轮询指数退避 `min(1<<i, 5)` + 5 处 HTTP 补 timeout；generic cookie 从「写死 example.com 的 Netscape 文件（永不生效）」改 `http_headers` 直接注入；audio.json 实体悬空视为缓存失效重新下载。tests/test_downloader_robustness.py 16 项。
 - **DB 路径修复（5ba8497，#91）**：`app/db/engine.py` 默认 `sqlite:///video_note.db` 是相对 CWD 路径——裸脚本/单文件测试在仓库根分裂出 DB（根目录残留垃圾的真实根因）；改 `get_data_dir()` 稳定路径；`cache_data` 弃用 vendored 旧 `DATA_DIR` env。
@@ -52,6 +52,7 @@
 - **merge 目录穿透 + batch 单集退化（#109）**：① `merge_audio` 目录输入——merge.py 的 `os.path.exists` 对目录为 True，穿透到 ffmpeg 深处才炸「转换失败」泛化错误（真因是「是目录不是文件」）；入口 `is_file`（与 diarize_media 同口径）返回「文件不存在或不是文件」，file:// 规整（#107）与 is_file 叠加生效。② `batch_generate_notes` 单集退化路径（`kind=="single"`）`_submit` raise 裸传中断调用——多条目循环有「单条失败收集继续」契约、单集没有；收进 errors 返回与多条目同形状（`ok:false, submitted:0`）。+5 契约测试。**376 passed + ruff F-clean**。
 - **SKILL/文档与 batch 工具面对齐（#110）**：6e 落地 `batch_generate_notes`（服务端展开+排队）后 SKILL 仍是 subagent 时代的编排——`SKILL.md` 规则 2 / 默认路径步骤 4 / 工作流 3 处、`troubleshooting.md` 并发段 2 处、`docs/04` 1 处统一改为「合集/分P/播放列表 → 一条 batch（服务端排队）；互相独立的多个链接 → 各一个 subagent」。纯文档批次。**376 passed + ruff F-clean**。
 - **cleanup 运行中任务防护（#111）**：`cleanup_note` / `cleanup_all` 对 `_task_futures` 中未完成的进行中/排队任务拒绝清理——直接删会破坏下载器/转写器正在写的 `raw/` / `gen/` 缓存，任务中途 `FileNotFoundError` 失败（被 FAILED 吞成误导错误）或状态文件在删除后被重建出幽灵任务；此前唯一防线是「cancel 再清理」靠 agent 自觉。`cleanup_note` 返回 `{ok:false, error: "先 cancel_note 或等终态"}`，`cleanup_all` 返回 `{ok:false, running, running_task_ids}`（agent 可按 ids 逐个取消）；判定用本进程 `_task_futures`（server 重启后自然放行，崩溃残留的 status.json 不误锁）。CLI 向导不动（交互式已有 `[status]` 展示 + 双重 confirm，且独立进程看不到 MCP 注册表）。+4 契约测试（CleanupRunningTaskGuardTest）。**380 passed + ruff F-clean**。
+- **cleanup_note 便携笔记副本孤儿化修复（#112）**：`cleanup_task_files(include_note=True)` 此前只删 `task_dir`——便携笔记副本（`<notes_dir>/<标题>/note.md`，用户指定 `notes_dir` 时常在数据目录外）不在删除范围：数据目录内的副本漏删（`notes_dir` 指向数据目录子目录时），数据目录外的副本随 manifest 删除而永久失联（list_tasks / get_task_files 全查不到，磁盘残留含笔记+Assets 的目录），docstring 却声称「连最终笔记一起删」。修复：目录内副本（manifest 记录 + 沙箱校验通过）随 include_note=True 一起删；目录外副本沙箱红线不删，但经新增返回字段 `notes_kept_outside` 列出（Agent 可转告用户路径，不再静默孤儿）；CLI 向导清理后黄字报告；server docstring 与 tools.md 同步。+2 测试。**382 passed + ruff F-clean**。
 
 ## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）
 

@@ -277,18 +277,40 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
 
     数据层重构后以任务文件夹 task_dir 为边界：
       - include_note=False：删 raw/（下载媒体）+ gen/ 内除 note.md 外的一切；保留 task_dir + status/manifest/result。
-      - include_note=True：删整个 task_dir + manifest + 全局索引（video_tasks）记录。
-    返回统计（deleted/missing/errors/note_kept）。
+      - include_note=True：删整个 task_dir + 数据目录内的便携笔记副本（manifest 记录）+ manifest + 全局索引（video_tasks）记录。
+        数据目录**外**的便携笔记副本（用户指定 notes_dir 时常见）不删——沙箱红线只清数据目录内；
+        其路径经 notes_kept_outside 列出，避免 manifest 删除后成为无人知晓的孤儿。
+    返回统计（deleted/missing/errors/note_kept/notes_kept_outside）。
     """
     notes = _note_paths(task_id)
     tdir = task_dir(task_id)
 
     to_delete: set = set()
+    kept_outside: List[str] = []
 
     if include_note:
         # 整删：任务文件夹 + manifest + 全局索引
         if tdir.exists():
             to_delete.add(tdir)
+        # 便携笔记副本：<notes_dir>/<标题>/note.md（或含 note.md 的目录）
+        roots = [get_note_dir(), get_data_dir()]
+        for p in get_task_paths(task_id):
+            try:
+                resolved = Path(str(p)).expanduser().resolve()
+            except Exception:  # noqa: BLE001
+                continue
+            if not (
+                resolved.name == "note.md"
+                or (resolved.is_dir() and (resolved / "note.md").exists())
+            ):
+                continue
+            if _safe_resolve(p, roots) is not None:
+                # 数据目录内 → 连目录一起删（note.md 文件则删其所在目录）
+                to_delete.add(resolved if resolved.is_dir() else resolved.parent)
+            else:
+                # 数据目录外 → 沙箱红线不删，列出目录路径供报告
+                kept_outside.append(str(resolved if resolved.is_dir() else resolved.parent))
+        kept_outside = sorted(set(kept_outside))
         remove_manifest(task_id)
         try:
             from app.db.video_task_dao import delete_task
@@ -317,6 +339,7 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
         "task_id": task_id,
         "include_note": include_note,
         "note_kept": (not include_note) and bool(notes),
+        "notes_kept_outside": kept_outside,
         **stats,
     }
 

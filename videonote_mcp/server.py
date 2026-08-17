@@ -1221,7 +1221,9 @@ def cleanup_note(task_id: str, include_note: bool = False) -> str:
     - include_note=True：连最终笔记一起删（含 manifest）。
 
     只删除 manifest 记录 / note_results/{task_id}* / dl_{task_id} 前缀的文件，
-    且 resolve 校验在数据目录内（防路径穿越）。返回 {deleted, missing, errors, note_kept}。
+    且 resolve 校验在数据目录内（防路径穿越）。返回 {deleted, missing, errors, note_kept,
+    notes_kept_outside}——数据目录**外**的便携笔记副本（用户指定 notes_dir 时常见）不删除
+    （沙箱红线），路径经 notes_kept_outside 列出，不会成为无人知晓的孤儿。
 
     **任务仍在运行（或排队中）时拒绝**（返回 {ok: false, error}）——直接清理会删掉
     下载器/转写器正在写的目录，任务会中途失败或产生残留状态。先 cancel_note 或等终态。

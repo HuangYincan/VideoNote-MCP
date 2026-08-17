@@ -794,6 +794,11 @@ def _wizard_data_cleanup_one(inq) -> None:
         f"笔记{'保留' if r.get('note_kept') else '已删'}{_RESET}",
         file=sys.stdout,
     )
+    for p in r.get("notes_kept_outside", []):
+        print(
+            f"{_YELLOW}⚠ 数据目录外的便携笔记未删除（沙箱红线）：{p}{_RESET}",
+            file=sys.stdout,
+        )
     _press_any_key()
 
 
