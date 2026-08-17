@@ -1274,5 +1274,82 @@ class DefaultExportFormatsJunkTest(unittest.TestCase):
         self.assertTrue(any("不是列表" in str(c) for c in w.call_args_list))
 
 
+class CleanupRunningTaskGuardTest(unittest.TestCase):
+    """cleanup_note / cleanup_all 对运行中（或排队中）任务拒绝清理——直接删会破坏
+    下载器/转写器正在写的目录，任务中途失败或产生残留状态（#111）。"""
+
+    def _fresh_future(self):
+        from concurrent.futures import Future
+
+        return Future()  # 未 set_result → 与进行中/排队等价（not done）
+
+    def _done_future(self):
+        from concurrent.futures import Future
+
+        f = Future()
+        f.set_result(None)
+        return f
+
+    def _inject(self, futures):
+        old = dict(server._task_futures)
+        with server._tasks_lock:
+            server._task_futures.clear()
+            server._task_futures.update(futures)
+        return old
+
+    def _restore(self, old):
+        with server._tasks_lock:
+            server._task_futures.clear()
+            server._task_futures.update(old)
+
+    def test_cleanup_note_refuses_running_task(self):
+        old = self._inject({"live-1": self._fresh_future()})
+        try:
+            with mock.patch.object(server, "cleanup_task_files") as m:
+                resp = json.loads(server.cleanup_note("live-1"))
+            self.assertFalse(resp["ok"])
+            self.assertIn("cancel_note", resp["error"])
+            m.assert_not_called()
+        finally:
+            self._restore(old)
+
+    def test_cleanup_note_allows_terminal_task(self):
+        old = self._inject({"done-1": self._done_future()})
+        try:
+            with mock.patch.object(
+                server, "cleanup_task_files",
+                return_value={"task_id": "done-1", "include_note": False,
+                              "note_kept": True, "deleted": [], "missing": [], "errors": []},
+            ) as m:
+                resp = json.loads(server.cleanup_note("done-1"))
+            self.assertTrue(resp["note_kept"])  # 正常清理形状，未被拦截
+            m.assert_called_once_with("done-1", include_note=False)
+        finally:
+            self._restore(old)
+
+    def test_cleanup_all_refuses_while_tasks_running(self):
+        old = self._inject({"live-1": self._fresh_future(), "live-2": self._fresh_future()})
+        try:
+            with mock.patch.object(server, "cleanup_all_files") as m:
+                resp = json.loads(server.cleanup_all())
+            self.assertFalse(resp["ok"])
+            self.assertEqual(resp["running"], 2)
+            self.assertIn("cancel_note", resp["error"])
+            m.assert_not_called()
+        finally:
+            self._restore(old)
+
+    def test_cleanup_all_allows_when_idle(self):
+        old = self._inject({})
+        try:
+            with mock.patch.object(server, "cleanup_all_files",
+                                   return_value={"cleaned": [], "kept": []}) as m:
+                resp = json.loads(server.cleanup_all())
+            self.assertNotIn("ok", resp)  # 正常全局清理形状无 ok 字段
+            m.assert_called_once_with(include_config=False, include_models=False)
+        finally:
+            self._restore(old)
+
+
 if __name__ == "__main__":
     unittest.main()

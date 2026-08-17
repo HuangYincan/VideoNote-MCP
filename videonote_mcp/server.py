@@ -1222,8 +1222,22 @@ def cleanup_note(task_id: str, include_note: bool = False) -> str:
 
     只删除 manifest 记录 / note_results/{task_id}* / dl_{task_id} 前缀的文件，
     且 resolve 校验在数据目录内（防路径穿越）。返回 {deleted, missing, errors, note_kept}。
+
+    **任务仍在运行（或排队中）时拒绝**（返回 {ok: false, error}）——直接清理会删掉
+    下载器/转写器正在写的目录，任务会中途失败或产生残留状态。先 cancel_note 或等终态。
     """
     task_id = _validate_task_id(task_id)
+    with _tasks_lock:
+        future = _task_futures.get(task_id)
+        if future is not None and not future.done():
+            return json.dumps(
+                {
+                    "ok": False,
+                    "task_id": task_id,
+                    "error": "任务仍在运行（或排队中）：先 cancel_note，或等待终态后再清理",
+                },
+                ensure_ascii=False,
+            )
     return json.dumps(cleanup_task_files(task_id, include_note=include_note), ensure_ascii=False)
 
 
@@ -1236,7 +1250,22 @@ def cleanup_all(include_config: bool = False, include_models: bool = False) -> s
     - include_models=False（默认）：保留 models/（已下载模型可复用，重下成本高）；
       include_models=True 时连 models/ 一起清。
     数据库记录（video_note.db）不动。返回各目录清理统计 + 保留项。
+
+    **有进行中/排队任务时拒绝**（返回 {ok: false, running, running_task_ids, error}）——
+    全局清空会把运行中任务的目录一并删掉。先 cancel_note 或等全部终态，再清理。
     """
+    with _tasks_lock:
+        running = [tid for tid, f in _task_futures.items() if not f.done()]
+    if running:
+        return json.dumps(
+            {
+                "ok": False,
+                "running": len(running),
+                "running_task_ids": running,
+                "error": f"有 {len(running)} 个进行中/排队任务：先 cancel_note 或等终态，再进行全局清理",
+            },
+            ensure_ascii=False,
+        )
     return json.dumps(cleanup_all_files(include_config=include_config, include_models=include_models), ensure_ascii=False)
 
 
