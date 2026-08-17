@@ -624,11 +624,19 @@ class NoteGenerator:
         # 已有缓存，尝试加载
         if audio_cache_file.exists():
             logger.info(f"检测到音频缓存 ({audio_cache_file})，直接读取")
+            cached = None
             try:
                 data = json.loads(audio_cache_file.read_text(encoding="utf-8"))
-                return AudioDownloadResult(**data)
+                cached = AudioDownloadResult(**data)
             except Exception as e:
                 logger.warning(f"读取音频缓存失败，将重新下载：{e}")
+            if cached is not None:
+                # 需要真实音频文件（无字幕/截图/视频理解）时，file_path 悬空视为缓存
+                # 失效（文件可能被清理/磁盘满删）——JSON 在但实体没了不能直接返回
+                if not skip_download and cached.file_path and not Path(cached.file_path).is_file():
+                    logger.warning(f"音频缓存文件不存在，将重新下载：{cached.file_path}")
+                else:
+                    return cached
 
         # 有字幕且不需要截图/视频理解时，只提取元信息不下载文件
         if skip_download:

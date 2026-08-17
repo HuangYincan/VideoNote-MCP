@@ -42,15 +42,19 @@ class KuaiShou:
     def _extract_kuaishou_link(text):
 
         url = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
+        if not url:
+            return None
         return url[0]
 
     def get_photo_id(self, url):
-        response = requests.get(url, allow_redirects=True, headers=self.header)
+        response = requests.get(url, allow_redirects=True, headers=self.header, timeout=(5, 10))
         real_url = response.url
         # 提取short—video/后面的id
         pattern = re.compile(r'short-video/(\w+)')
         match = pattern.search(real_url)
-        return match.group().split('/')[1]
+        if match is None:
+            return None
+        return match.group(1)
 
     def get_temp_cookies(self):
         is_exist = cfm.get('kuaishou')
@@ -77,21 +81,24 @@ class KuaiShou:
     def run(self, url):
         real_url = self._extract_kuaishou_link(url)
         if not real_url:
-            logger.error(f"快手视频 URL 解析失败 {url}")
+            raise RuntimeError(f"快手视频 URL 解析失败 {url}")
 
         cookies = self.get_temp_cookies()
         if not cookies:
-            logger.error(f"快手视频 cookies 解析失败 {url},请考虑设置环境变量 KUAISHOU_COOKIES")
+            raise RuntimeError(f"快手视频 cookies 解析失败 {url},请考虑设置环境变量 KUAISHOU_COOKIES")
 
         self.header['Cookie'] = cookies.strip()
         photo_id = self.get_photo_id(real_url)
         if photo_id is None:
-            logger.error(f"快手视频 ID 解析失败 {url}")
+            raise RuntimeError(f"快手视频 ID 解析失败 {url}")
         video_details = self.get_video_details(real_url, photo_id)
         logger.debug("快手视频详情已获取")
         if video_details is None:
-            logger.error(f"快手视频详情解析失败 {url}")
-        return video_details['data']
+            raise RuntimeError(f"快手视频详情解析失败 {url}")
+        data = video_details.get('data')
+        if data is None:
+            raise RuntimeError(f"快手视频详情响应无 data(接口可能变更): {url}")
+        return data
 
 
 if __name__ == '__main__':

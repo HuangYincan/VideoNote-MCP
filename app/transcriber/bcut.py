@@ -77,7 +77,8 @@ class BcutTranscriber(Transcriber):
         resp = self.session.post(
             API_REQ_UPLOAD,
             data=payload,
-            headers=self.headers
+            headers=self.headers,
+            timeout=(10, 30)
         )
         resp.raise_for_status()
         resp = resp.json()
@@ -105,7 +106,8 @@ class BcutTranscriber(Transcriber):
             resp = self.session.put(
                 self.__upload_urls[clip],
                 data=file_binary[start_range:end_range],
-                headers={'Content-Type': 'application/octet-stream'}
+                headers={'Content-Type': 'application/octet-stream'},
+                timeout=(10, 120)
             )
             resp.raise_for_status()
             etag = resp.headers.get("Etag", "").strip('"')
@@ -124,7 +126,8 @@ class BcutTranscriber(Transcriber):
         resp = self.session.post(
             API_COMMIT_UPLOAD,
             data=data,
-            headers=self.headers
+            headers=self.headers,
+            timeout=(10, 30)
         )
         resp.raise_for_status()
         resp = resp.json()
@@ -140,7 +143,8 @@ class BcutTranscriber(Transcriber):
     def _create_task(self) -> str:
         """开始创建转换任务"""
         resp = self.session.post(
-            API_CREATE_TASK, json={"resource": self.__download_url, "model_id": _BCUT_MODEL_ID}, headers=self.headers
+            API_CREATE_TASK, json={"resource": self.__download_url, "model_id": _BCUT_MODEL_ID}, headers=self.headers,
+            timeout=(10, 30)
         )
         resp.raise_for_status()
         resp = resp.json()
@@ -158,7 +162,8 @@ class BcutTranscriber(Transcriber):
         resp = self.session.get(
             API_QUERY_RESULT,
             params={"model_id": _BCUT_MODEL_ID, "task_id": self.task_id},
-            headers=self.headers
+            headers=self.headers,
+            timeout=(5, 10)
         )
         resp.raise_for_status()
         resp = resp.json()
@@ -201,7 +206,8 @@ class BcutTranscriber(Transcriber):
                 if i % 10 == 0:
                     logger.info(f"转录进行中... {i}/{max_retries}")
                     
-                time.sleep(1)
+                # 指数退避轮询 1→2→4→5s 封顶(B站 ASR 常需数十秒,不空转)
+                time.sleep(min(1 << i, 5))
                 
             if not task_resp or task_resp["state"] != 4:
                 error_msg = f"B站ASR任务未能完成，状态: {task_resp.get('state') if task_resp else 'Unknown'}"

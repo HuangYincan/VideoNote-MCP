@@ -30,45 +30,18 @@ class GenericDownloader(Downloader, ABC):
     def __init__(self):
         super().__init__()
         self._cookie_mgr = CookieConfigManager()
-        self._cookiefile = None
+        self._cookie = None  # None=未取，""=已取但无配置
 
-    def _ensure_cookie(self) -> None:
-        """若配置过平台 Cookie，写成 Netscape cookiefile 供 yt-dlp 使用。
+    def _get_cookie(self) -> str:
+        """取 setup ③ 填的 generic 槽位 cookie。
 
-        跨平台 cookie 无统一槽位，仅当 detect_platform 识别出具体平台时可用；
-        generic 场景多数站点无需登录，这里保持惰性（首次下载才写文件）。
+        generic 站点无统一域名可预知，Netscape 文件会把 cookie 绑死在
+        example.com 使 yt-dlp 永远不带 —— 改用 http_headers 的 Cookie 头
+        直接注入，对目标站点及其 CDN 分片请求统一生效。
         """
-        if self._cookiefile is not None:
-            return
-        cookie = self._cookie_mgr.get("generic") or ""
-        if not cookie:
-            self._cookiefile = ""
-            return
-        import tempfile
-
-        fd, path = tempfile.mkstemp(suffix=".txt")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(
-                "# Netscape HTTP Cookie File\n"
-                f"example.com\tTRUE\t/\tTRUE\t0\tgeneric\t{cookie}\n"
-            )
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
-        self._cookiefile = path
-
-    def _cleanup_cookie_file(self) -> None:
-        path = getattr(self, "_cookiefile", None)
-        if path:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-        self._cookiefile = None
-
-    def __del__(self):
-        self._cleanup_cookie_file()
+        if self._cookie is None:
+            self._cookie = self._cookie_mgr.get("generic") or ""
+        return self._cookie
 
     def download(
         self,
@@ -93,9 +66,9 @@ class GenericDownloader(Downloader, ABC):
         }
         if skip_download:
             ydl_opts["skip_download"] = True
-        self._ensure_cookie()
-        if self._cookiefile:
-            ydl_opts["cookiefile"] = self._cookiefile
+        cookie = self._get_cookie()
+        if cookie:
+            ydl_opts["http_headers"] = {"Cookie": cookie}
         _apply_proxy(ydl_opts)
 
         try:
@@ -135,9 +108,9 @@ class GenericDownloader(Downloader, ABC):
             "quiet": False,
             "merge_output_format": "mp4",
         }
-        self._ensure_cookie()
-        if self._cookiefile:
-            ydl_opts["cookiefile"] = self._cookiefile
+        cookie = self._get_cookie()
+        if cookie:
+            ydl_opts["http_headers"] = {"Cookie": cookie}
         _apply_proxy(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ytdlp_retry(ydl.extract_info, video_url, download=True)
