@@ -21,7 +21,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 from videonote_mcp.config import env_bool, env_int, env_or, get_app_config, remove_app_config, setup_environment
 from videonote_mcp import __version__ as _SERVER_VERSION
@@ -106,6 +106,35 @@ from app.utils.task_manifest import (
 from mcp.server.fastmcp import FastMCP
 
 logger = get_logger(__name__)
+
+# 枚举白名单：schema 以 Literal 呈现（Agent 可见合法值），非法值显式报错而非静默降级
+# （get_style_format / get_format_function 对未知值返回空串——静默无风格笔记）。
+Style = Literal[
+    "minimal", "detailed", "academic", "tutorial", "xiaohongshu",
+    "life_journal", "task_oriented", "business", "meeting_minutes",
+]
+NoteFormat = Literal["toc", "link", "screenshot", "summary"]
+
+_STYLE_VALUES = (
+    "minimal", "detailed", "academic", "tutorial", "xiaohongshu",
+    "life_journal", "task_oriented", "business", "meeting_minutes",
+)
+_FORMAT_VALUES = ("toc", "link", "screenshot", "summary")
+
+
+def _check_style_and_format(style, formats) -> None:
+    """显式传入的 style/format 必须命中白名单。
+
+    schema enum 只约束客户端生成参数（MCP 服务端不做运行时校验），
+    直接调用函数/老客户端仍可能传非法值——静默降级成「无风格笔记」太隐蔽，入口显式报错。
+    默认值路径（setup 配置）不在校验范围：配置是用户自持的，坏值走原有行为。
+    """
+    if style is not None and style not in _STYLE_VALUES:
+        raise ValueError(f"style 必须是 {' / '.join(_STYLE_VALUES)} 之一，收到: {style!r}")
+    if formats:
+        unknown = sorted(set(formats) - set(_FORMAT_VALUES))
+        if unknown:
+            raise ValueError(f"format 只支持 toc / link / screenshot / summary，收到: {unknown}")
 
 # 确保数据库表存在（幂等，init_db 使用 create_all）；空库时预置内置供应商
 # （openai/deepseek/qwen/groq/ollama…，固定 id + 正确 base_url + 空 key，用 update_provider 填 key）
@@ -456,7 +485,7 @@ def _step_summarize(
     material: dict,
     provider_id: str,
     model_name: Optional[str],
-    style: Optional[str],
+    style: Optional[Style],
     extras: Optional[str],
     formats: Optional[List[str]],
 ) -> dict:
@@ -599,8 +628,8 @@ def generate_note(
     quality: str = "medium",
     provider_id: Optional[str] = None,
     model_name: Optional[str] = None,
-    format: Optional[List[str]] = None,
-    style: Optional[str] = None,
+    format: Optional[List[NoteFormat]] = None,
+    style: Optional[Style] = None,
     screenshot: Optional[bool] = None,
     link: bool = False,
     video_understanding: Optional[bool] = None,
@@ -643,6 +672,7 @@ def generate_note(
         if not _local_video_exists(video_url):
             raise ValueError(f"本地文件不存在: {video_url}")
         video_url = str(_coerce_local_path(video_url))
+    _check_style_and_format(style, format or [])
     if not provider_id:
         provider_id = _resolve_default_provider_id()
     if not provider_id:
@@ -1294,9 +1324,9 @@ def summarize_note(
     frames: Optional[List[str]] = None,
     comments_danmaku: Optional[str] = None,
     title: Optional[str] = None,
-    style: Optional[str] = None,
+    style: Optional[Style] = None,
     extras: Optional[str] = None,
-    format: Optional[List[str]] = None,
+    format: Optional[List[NoteFormat]] = None,
     provider_id: Optional[str] = None,
     model_name: Optional[str] = None,
 ) -> str:
@@ -1320,6 +1350,7 @@ def summarize_note(
     {kind: note, markdown, title}。
     只想要素材（转写/帧/评论）自行写笔记时用 prepare_note_material；一步到位用 generate_note。
     """
+    _check_style_and_format(style, format or [])
     if not provider_id:
         provider_id = _resolve_default_provider_id()
     if not provider_id:
@@ -1982,8 +2013,8 @@ def batch_generate_notes(
     quality: str = "medium",
     provider_id: Optional[str] = None,
     model_name: Optional[str] = None,
-    format: Optional[List[str]] = None,
-    style: Optional[str] = None,
+    format: Optional[List[NoteFormat]] = None,
+    style: Optional[Style] = None,
     screenshot: Optional[bool] = None,
     extras: Optional[str] = None,
     link: bool = False,

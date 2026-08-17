@@ -36,6 +36,7 @@
 - **插件 userConfig 对齐（05cb87a + 2c1ad9f，#93/#94）**：全仓 15 个 `VIDEONOTE_*` env 与 plugin.json 对齐（补 max_workers/stderr_log_max_mb，内部路径 3 个刻意不暴露）；`batch_generate_notes` 透传 generate_note 全部高级参数（link/视频理解/弹幕/notes_dir）；`_USER_CONFIG_MAPPED_ENV` 同步（CI 门禁拦截）。
 - **死代码清理（#95）**：`app/gpt/` 删 5 个全仓零引用模块（openai_gpt / deepseek_gpt / qwen_gpt / utils / tools——gpt_factory 走 `OpenAICompatibleProvider` 直连，上游直连类死代码）；VENDOR.md 分叉清单同步；AST 全仓死模块普查确认无其余残留。**268 passed + ruff F-clean（Wave C 13 收口）**。
 - **CLI 契约测试 + update_provider 假成功修复（#96）**：`ProviderService.update_provider` 对不存在供应商返回恒真 dict——CLI `providers set` 与 MCP `update_provider` 的「不存在」判空永不生效（不存在的 id 被报成「已更新」）；改 `updated_provider is None` 时返回 None。新 tests/test_cli.py 18 项（CLI 此前零测试覆盖：providers 加密落盘 enc:/掩码/交互取 key/错误路径、transcriber 配置闭环、export 渲染 transcript.srt、subprocess seed 验证）；另清 2 处旧 worktree 路径 docstring。**286 passed + ruff F-clean**。
+- **style/format 白名单 enum 化（#97）**：4 个工具（generate_note/prepare_note_material/summarize_note/batch_generate_notes）签名 `Literal` 化——schema 呈现 enum（Agent 可见合法值）；`_check_style_and_format` 入口显式校验兜底（FastMCP 不做运行时参数校验，直接调用传非法 style 曾静默降级成「无风格笔记」）；校验在 provider 解析前（H6：不需要 provider 的错误先报）。+7 契约测试。**293 passed + ruff F-clean + 39 工具**。
 - 文档：docs/05 第三轮 #90-#94、docs/06、CHANGELOG；skills tools.md 同步 batch 新签名。
 
 ## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）

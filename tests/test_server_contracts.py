@@ -340,6 +340,51 @@ class ExtractFramesValidationTest(unittest.TestCase):
             self.assertEqual(kwargs["video_interval"], 1)
 
 
+class StyleFormatValidationTest(unittest.TestCase):
+    """style/format 白名单（schema enum 只约束客户端，服务端入口显式校验兜底）。"""
+
+    def test_bogus_style_rejected_in_generate_note(self):
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", style="bogus-style")
+        self.assertIn("style 必须是", str(cm.exception))
+
+    def test_bogus_format_rejected_in_generate_note(self):
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", format=["bogus"])
+        self.assertIn("format 只支持", str(cm.exception))
+
+    def test_valid_style_passes_validation(self):
+        # 合法 style 应越过白名单校验，走到后续 provider 解析（报 provider 错误而非 style 错误）
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", style="detailed")
+        self.assertNotIn("style 必须是", str(cm.exception))
+
+    def test_valid_format_passes_validation(self):
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", format=["toc", "summary"])
+        self.assertNotIn("format 只支持", str(cm.exception))
+
+    def test_bogus_style_rejected_in_summarize_note(self):
+        with self.assertRaises(ValueError) as cm:
+            server.summarize_note(
+                {"language": "zh", "full_text": "x", "segments": []}, style="nope"
+            )
+        self.assertIn("style 必须是", str(cm.exception))
+
+    def test_bogus_format_rejected_in_summarize_note(self):
+        with self.assertRaises(ValueError) as cm:
+            server.summarize_note(
+                {"language": "zh", "full_text": "x", "segments": []}, format=["toc", "bad"]
+            )
+        self.assertIn("format 只支持", str(cm.exception))
+
+    def test_none_style_skips_validation(self):
+        # 默认路径（None → setup 配置）不被白名单拦截，继续走 provider 解析
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", style=None)
+        self.assertNotIn("style 必须是", str(cm.exception))
+
+
 class ConcurrencyGuardTest(unittest.TestCase):
     def test_guard_raises_when_full(self):
         # 门禁只统计「正在执行」（future.running()）——排队不占名额（docs 审计 F7）
