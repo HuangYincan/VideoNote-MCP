@@ -149,5 +149,55 @@ class InspectYtdlpTest(unittest.TestCase):
         self.assertEqual(out["entries"][0]["url"], "/tmp/foo.mp4")
 
 
+class InspectCookieInjectionTest(unittest.TestCase):
+    """#122 B3：yt-dlp 路径 cookie 改用 http_headers 注入。
+
+    旧实现写 Netscape 临时文件但域名绑死 .example.com、cookie 塞进 generic 字段，
+    yt-dlp 永远不会带上；也不留临时文件。
+    """
+
+    def _capture_opts(self, info):
+        captured = {}
+
+        class _YDL:
+            def __init__(self, opts):
+                captured["opts"] = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, download=False):
+                return info
+
+        return captured, _YDL
+
+    def test_cookie_injected_as_http_header(self):
+        captured, ydl_cls = self._capture_opts(
+            {"id": "c0000000000", "title": "t", "webpage_url": "https://www.youtube.com/watch?v=c0000000000"}
+        )
+        with mock.patch("yt_dlp.YoutubeDL", ydl_cls), mock.patch(
+            "app.services.cookie_manager.CookieConfigManager.get", return_value="SESSDATA=abc"
+        ):
+            out = inspect_mod.inspect_video("https://www.youtube.com/watch?v=c0000000000")
+        self.assertTrue(out["ok"])
+        self.assertEqual(captured["opts"]["http_headers"], {"Cookie": "SESSDATA=abc"})
+        self.assertNotIn("cookiefile", captured["opts"])  # 不再依赖 Netscape 临时文件
+
+    def test_no_cookie_no_http_headers(self):
+        captured, ydl_cls = self._capture_opts(
+            {"id": "c0000000001", "title": "t", "webpage_url": "https://www.youtube.com/watch?v=c0000000001"}
+        )
+        with mock.patch("yt_dlp.YoutubeDL", ydl_cls), mock.patch(
+            "app.services.cookie_manager.CookieConfigManager.get", return_value=""
+        ):
+            out = inspect_mod.inspect_video("https://www.youtube.com/watch?v=c0000000001")
+        self.assertTrue(out["ok"])
+        self.assertNotIn("http_headers", captured["opts"])
+        self.assertNotIn("cookiefile", captured["opts"])
+
+
 if __name__ == "__main__":
     unittest.main()

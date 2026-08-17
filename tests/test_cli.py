@@ -281,6 +281,9 @@ class _FakeInq:
     def select(self, message, choices=None, keybindings=None):
         return _InqResult(self._next("select"))
 
+    def confirm(self, message, default=False, keybindings=None):
+        return _InqResult(self._next("confirm"))
+
     def text(self, message, keybindings=None, default=""):
         return _InqResult(self._next("text"))
 
@@ -348,9 +351,74 @@ class TestWizardProviderCli:
         assert ProviderService.get_provider_by_id(pid)["api_key"] == "sk-new"
 
 
+class TestWizardCleanupGuard:
+    """#122 A6：CLI 清理向导的运行中任务守卫（与 MCP cleanup_note/cleanup_all 对齐）。
+
+    旧实现：向导无守卫，直接清理会把下载器/转写器正在写的目录删掉。
+    CLI 看不到 MCP 内存状态，以磁盘 status.json 的终态判定。
+    """
+
+    def _make_task(self, status):
+        from app.utils.task_manifest import get_note_dir
+
+        tid = f"wizguard{uuid.uuid4().hex[:8]}"
+        tdir = get_note_dir() / tid
+        tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / "status.json").write_text(json.dumps({"status": status}), encoding="utf-8")
+        return tid
+
+    def test_cleanup_all_refuses_running_without_confirm(self, capsys):
+        self._make_task("TRANSCRIBING")
+        fake = _FakeInq([("confirm", False)])  # 守卫确认：拒绝强清
+        with mock.patch("app.utils.task_manifest.cleanup_all_files") as m_clean:
+            cli._wizard_data_cleanup_all(fake)
+        m_clean.assert_not_called()
+        out = _cli_out(capsys)
+        assert "未终态" in out and "仍在运行" in out
+        assert "✓ 全局清理完成" not in out
+
+    def test_cleanup_all_proceeds_when_user_confirms(self, capsys):
+        self._make_task("TRANSCRIBING")
+        fake = _FakeInq([
+            ("confirm", True),    # 守卫确认：仍要强清
+            ("confirm", False),   # include_config
+            ("confirm", False),   # include_models
+            ("confirm", True),    # 最终确认
+        ])
+        with mock.patch("app.utils.task_manifest.cleanup_all_files") as m_clean:
+            cli._wizard_data_cleanup_all(fake)
+        m_clean.assert_called_once()
+
+    def test_cleanup_one_refuses_running_without_confirm(self, capsys):
+        tid = self._make_task("PENDING")
+        fake = _FakeInq([
+            ("select", tid),
+            ("confirm", False),  # 运行中守卫：拒绝
+        ])
+        with mock.patch("app.db.video_task_dao.list_tasks",
+                        return_value=[{"task_id": tid, "title": "x", "status": "PENDING"}]), \
+             mock.patch("app.utils.task_manifest.cleanup_task_files") as m_clean:
+            cli._wizard_data_cleanup_one(fake)
+        m_clean.assert_not_called()
+        out = _cli_out(capsys)
+        assert "仍在运行" in out
+
+    def test_cleanup_one_terminal_task_skips_guard(self, capsys):
+        tid = self._make_task("SUCCESS")
+        fake = _FakeInq([
+            ("select", tid),
+            ("confirm", False),  # include_note（终态 → 无守卫确认，直接到 include_note）
+            ("confirm", True),   # 最终确认
+        ])
+        with mock.patch("app.db.video_task_dao.list_tasks",
+                        return_value=[{"task_id": tid, "title": "x", "status": "SUCCESS"}]), \
+             mock.patch("app.utils.task_manifest.cleanup_task_files") as m_clean:
+            cli._wizard_data_cleanup_one(fake)
+        m_clean.assert_called_once()
+
+
 class TestFallbackDefaultModelCli:
     """纯文本兜底向导的默认模型选择：回车=保持现状（此前被当「清除」，#120 S4）。"""
-
     def _seed(self):
         pid = ProviderService.add_provider(
             name="Fallback1", api_key="sk-fb", base_url="https://a.com/v1",

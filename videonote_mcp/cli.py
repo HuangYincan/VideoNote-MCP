@@ -9,10 +9,12 @@ API key 的设计原则：key 由用户在独立终端写入（不经过 agent �
 """
 import argparse
 import builtins
+import json
 import os
 import re
 import sys
 from pathlib import Path
+from typing import List
 
 from videonote_mcp.config import get_app_config, remove_app_config, resolve_int_config, set_app_config, setup_environment
 
@@ -766,6 +768,33 @@ def _wizard_data_list(inq) -> None:
     _press_any_key()
 
 
+_TERMINAL_STATUSES = ("SUCCESS", "FAILED", "CANCELLED")
+
+
+def _list_running_tasks() -> List[str]:
+    """返回状态仍为「进行中」的任务（读 note_results/{task_id}/status.json）。
+
+    MCP 侧 cleanup_note/cleanup_all 用进程内 _task_futures 守卫；CLI 是独立进程
+    拿不到，改以磁盘 status.json 为准（独立步骤任务也写它，比 video_tasks 表全）。
+    进程被杀会残留中间状态——调用方须二次确认后才能清理（交互式 CLI 允许用户
+    判断后强清，与 MCP 的硬拒绝区别于此）。
+    """
+    import glob
+
+    from app.utils.task_manifest import get_note_dir
+
+    running = []
+    for sp in glob.glob(str(get_note_dir() / "*" / "status.json")):
+        try:
+            data = json.loads(Path(sp).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        st = str(data.get("status") or "").upper()
+        if st not in _TERMINAL_STATUSES:
+            running.append(Path(sp).parent.name)
+    return sorted(running)
+
+
 def _wizard_data_cleanup_one(inq) -> None:
     """选一个任务 → 确认清理（默认保留最终笔记）。"""
     from app.db.video_task_dao import list_tasks as _list
@@ -790,6 +819,27 @@ def _wizard_data_cleanup_one(inq) -> None:
 
     files = list_task_files(tid)
     print(f"{_DIM}该任务占用：{len(files.get('existing', []))} 个文件/目录{_RESET}", file=sys.stdout)
+    # 运行中任务守卫（#122 A6，与 MCP cleanup_note 的拒绝行为对齐）：
+    # 直接清理会删掉下载器/转写器正在写的目录。CLI 看不到 MCP 内存状态，
+    # 以磁盘 status.json 为准；非终态要求用户显式确认（可能被 MCP 进程占用）。
+    _task_status = ""
+    try:
+        from app.utils.task_manifest import get_note_dir
+
+        _task_status = str(
+            json.loads((get_note_dir() / str(tid) / "status.json").read_text(encoding="utf-8")).get("status", "")
+        ).upper()
+    except Exception:
+        pass
+    if _task_status and _task_status not in _TERMINAL_STATUSES:
+        if not inq.confirm(
+            message=f"任务 {tid[:8]} 状态为 {_task_status}（可能仍在运行）——确认清理？",
+            default=False,
+            keybindings=_KB,
+        ).execute():
+            print(f"{_YELLOW}已取消清理（任务仍在运行）{_RESET}", file=sys.stdout)
+            _press_any_key()
+            return
     include_note = inq.confirm(
         message="连最终笔记一起删？[n=保留笔记]",
         default=False,
@@ -825,6 +875,25 @@ def _wizard_data_cleanup_all(inq) -> None:
         f"{_YELLOW}⚠ 将清空 note_results/（所有任务产物）、static/screenshots/、logs/。{_RESET}",
         file=sys.stdout,
     )
+    # 运行中任务守卫（#122 A6，与 MCP cleanup_all 的拒绝行为对齐）：全局清空会把
+    # 运行中任务的目录一并删掉。CLI 看不到 MCP 内存状态，以磁盘 status.json 为准。
+    running = _list_running_tasks()
+    if running:
+        shown = ", ".join(t[:8] for t in running[:8])
+        if len(running) > 8:
+            shown += f" 等 {len(running)} 个"
+        print(
+            f"{_YELLOW}⚠ {len(running)} 个任务状态未终态（可能仍在运行）：{shown}{_RESET}",
+            file=sys.stdout,
+        )
+        if not inq.confirm(
+            message="有任务可能仍在运行——仍要全局清理？",
+            default=False,
+            keybindings=_KB,
+        ).execute():
+            print(f"{_YELLOW}已取消全局清理（任务仍在运行）{_RESET}", file=sys.stdout)
+            _press_any_key()
+            return
     include_config = inq.confirm(message="连 config/（LLM key / cookie）一起清？", default=False, keybindings=_KB).execute()
     include_models = inq.confirm(message="连 models/（已下载模型）一起清？", default=False, keybindings=_KB).execute()
     if not inq.confirm(message="确认全局清理？此操作不可撤销", default=False, keybindings=_KB).execute():
@@ -838,7 +907,7 @@ def _wizard_data_cleanup_all(inq) -> None:
 def _press_any_key() -> None:
     try:
         input("（按回车返回）", )
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         pass
 
 

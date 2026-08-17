@@ -672,10 +672,13 @@ class NoteGenerator:
                 if cached_media:
                     audio.file_path = cached_media
                 else:
-                    # miss 是常态（字幕路径不写媒体缓存）：悬空路径会误导下游
-                    # （素材包 audio_path 指向不存在的文件，Agent Read 失败），置 None
-                    audio.file_path = None
-                    logger.info("媒体缓存未命中，audio_path 置空（%s）", video_url)
+                    # 只有路径真实悬空（下载器拼出但文件不存在）才置 None（#119）；
+                    # skip_download 对本地文件返回真实源路径（LocalDownloader 直接回
+                    # video_url），必须保留——#119 的修复缺存在性检查，把真实路径也
+                    # 吞成 None（二次跑本地文件素材包 audio_path 恒空，#122 B1）
+                    if not audio.file_path or not Path(audio.file_path).is_file():
+                        audio.file_path = None
+                        logger.info("媒体缓存未命中，audio_path 置空（%s）", video_url)
                 audio_cache_file.write_text(
                     json.dumps(asdict(audio), ensure_ascii=False, indent=2),
                     encoding="utf-8",

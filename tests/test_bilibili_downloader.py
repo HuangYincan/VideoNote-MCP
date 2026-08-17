@@ -67,6 +67,34 @@ class CacheGlobExactMatchTest(unittest.TestCase):
             self.assertEqual(got, str(Path(tmp) / "BV1234.mp4"))
             m_ydl.assert_not_called()
 
+    def test_p2_request_does_not_hit_p1_cache(self):
+        """#122 B2：?p=2 请求只匹配 {BV}_p2.mp4——目录里只有 {BV}_p1.mp4 不命中，必须真下载。
+
+        旧实现 glob `{BV}_p*.mp4` 会把 p1 文件误配给 p2 请求（拿错集视频）。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "BV1234_p1.mp4").write_bytes(b"x")
+            with mock.patch(
+                "app.downloaders.bilibili_downloader.yt_dlp.YoutubeDL",
+                return_value=_YdlCtx({"id": "BV1234"}),
+            ) as m_ydl:
+                with self.assertRaises(FileNotFoundError):
+                    self.dl.download_video(
+                        "https://www.bilibili.com/video/BV1234?p=2", output_dir=tmp
+                    )
+            m_ydl.assert_called_once()  # p1 缓存不得命中 p2 请求
+
+    def test_p2_request_hits_exact_p2_cache(self):
+        """#122 B2：?p=2 且目录有 {BV}_p2.mp4 → 精确命中，不下载。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "BV1234_p2.mp4").write_bytes(b"x")
+            with mock.patch("app.downloaders.bilibili_downloader.yt_dlp.YoutubeDL") as m_ydl:
+                got = self.dl.download_video(
+                    "https://www.bilibili.com/video/BV1234?p=2", output_dir=tmp
+                )
+            self.assertEqual(got, str(Path(tmp) / "BV1234_p2.mp4"))
+            m_ydl.assert_not_called()
+
 
 class SubtitleFallbackCleanupTest(unittest.TestCase):
     """download_subtitles 的 yt-dlp 回退落临时目录、解析后清理（#121 B6）。

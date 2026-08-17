@@ -137,7 +137,7 @@
 
 **存储结构**（数据层重构后）：每个任务一个文件夹 `note_results/{task_id}/`，内含：
 - `raw/` —— 下载的原始材料（音频/视频/字幕/封面）；
-- `gen/` —— 生成材料（`transcript.json` / `note.md` / `Assets/` 截图 / `frames/` 帧 / 导出 srt·vtt·json）；
+- `gen/` —— 生成材料（`transcript.json` 转写缓存 / `note.md` / `Assets/` 截图 / `frames/` 帧 / 导出 `transcript.srt`·`transcript.vtt`·`transcript.export.json`）；
 - `status.json` / `result.json` / `manifest.json` —— 控制文件。
 
 全局索引在 SQLite `video_tasks` 表（含 `title/status/summary/note_dir`）。

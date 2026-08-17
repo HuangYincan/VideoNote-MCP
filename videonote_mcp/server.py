@@ -102,6 +102,7 @@ from app.services.transcriber_config_manager import TranscriberConfigManager
 from app.transcriber import model_download_state as dl_state
 from app.utils.logger import get_logger
 from app.utils.model_status import check_whisper_model_exists
+from app.utils.note_helper import strip_media_markers
 from app.utils.path_helper import get_model_dir
 from app.utils.task_manifest import (
     cleanup_all_files,
@@ -586,6 +587,16 @@ def _step_summarize(
     """summarize_note 的后台步骤：LLM 总结 → payload {kind: note, markdown, title}。"""
     _check_cancel(cancel_event)
     gpt = pipeline.get_gpt(provider_id, model_name)
+    formats = formats or []
+    # summarize_note 只有素材（转写/帧/评论），没有视频文件与 video_id——
+    # screenshot（抽帧替换）与 link（平台跳转链接）两项后处理无法执行。
+    # 剥离后 prompt 不再要求 LLM 输出这些标记（#122 A5）。
+    unsupported = [f for f in formats if f in ("screenshot", "link")]
+    formats = [f for f in formats if f not in ("screenshot", "link")]
+    if unsupported:
+        logger.info(
+            f"summarize_note 不支持 {sorted(unsupported)} 格式（无视频文件/video_id），已忽略"
+        )
     markdown = pipeline.summarize_material(
         material,
         gpt,
@@ -595,6 +606,8 @@ def _step_summarize(
         checkpoint_key=task_id,
         cancel_event=cancel_event,
     )
+    # 兜底：即使剥离了 screenshot/link，LLM 也可能自行输出标记字面量；剥掉避免残留
+    markdown = strip_media_markers(markdown)
     return {"kind": "note", "markdown": markdown, "title": material.get("title")}
 
 
@@ -1095,8 +1108,17 @@ def _load_task_transcript(task_id: str) -> Optional[dict]:
 
     规范来源：gen/transcript.json（note.py 每次成功都会写）；缺失则退 result.json。
     供 get_task_transcript 工具与 videonote://task/{id}/transcript Resource 共用（docs/05 #16）。
+    只对 SUCCESS 任务返回（#122 A3）：运行中任务转写缓存可能已写（转写完成、
+    LLM 总结前），FAILED 任务转写也常留档——docstring 承诺「未成功返回 None」，
+    否则 Agent 把失败任务读到的转写当成功产出去向用户汇报。
     """
     task_dir = NOTE_OUTPUT_DIR / str(task_id)
+    try:
+        status = json.loads((task_dir / "status.json").read_text(encoding="utf-8")).get("status", "")
+    except Exception:
+        status = ""
+    if status != "SUCCESS":
+        return None
     cache = task_dir / "gen" / "transcript.json"
     if cache.exists():
         try:
@@ -1236,7 +1258,27 @@ def cancel_note(task_id: str) -> str:
         cancelled = future.cancel()
     event.set()
     if _status_is_terminal(task_id):
-        # 任务恰好在取消时完成：终态（SUCCESS）已写，覆盖会变成「已取消且无结果」
+        # 任务恰好在取消时到达终态：终态已写，覆盖会变成「已取消且无结果」。
+        # 措辞按终态区分（#122 A8）：FAILED 报「任务已失败」——此前一律
+        # 「任务已完成」，Agent 收到误以为成功产出了笔记
+        try:
+            st = json.loads(
+                (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
+            ).get("status", "")
+        except Exception:
+            st = ""
+        if st == "FAILED":
+            return json.dumps(
+                {"ok": True, "task_id": task_id, "status": "DONE",
+                 "message": "任务已失败，无需取消"},
+                ensure_ascii=False,
+            )
+        if st == "CANCELLED":
+            return json.dumps(
+                {"ok": True, "task_id": task_id, "status": "DONE",
+                 "message": "任务已取消"},
+                ensure_ascii=False,
+            )
         logger.info(f"任务已进入终态，取消不生效 task_id={task_id}")
         return json.dumps(
             {"ok": True, "task_id": task_id, "status": "DONE",
@@ -1847,10 +1889,13 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
                  "message": "模型正在下载中，跳过重复提交"},
                 ensure_ascii=False,
             )
+        # 提交即占位（#122 A7）：检查在调用线程、mark 在 worker 内是 TOCTOU——
+        # 两次连续提交会各自起一个 worker 重下整个模型。mark 前移到 submit 前，
+        # 后续提交立刻命中「下载中」分支。
+        dl_state.mark_downloading(key)
 
         def _dl():
             try:
-                dl_state.mark_downloading(key)
                 from app.transcriber.whisper_models import resolve_whisper_model
                 from faster_whisper import WhisperModel
 
@@ -1876,17 +1921,17 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
     if transcriber_type == "mlx-whisper":
         if not (sys.platform == "darwin"):
             raise ValueError("mlx-whisper 仅在 macOS 可用，请改用 fast-whisper")
-        # 进行中去重（#121 C10）
+        # 进行中去重（#121 C10）；mark 前移到 submit 前防 TOCTOU（#122 A7）
         if dl_state.is_downloading(f"mlx-{size}"):
             return json.dumps(
                 {"started": False, "model_size": size, "transcriber_type": "mlx-whisper",
                  "message": "模型正在下载中，跳过重复提交"},
                 ensure_ascii=False,
             )
+        dl_state.mark_downloading(f"mlx-{size}")
 
         def _dl_mlx():
             try:
-                dl_state.mark_downloading(f"mlx-{size}")
                 from app.transcriber.mlx_whisper_transcriber import MLX_MODEL_MAP
                 from huggingface_hub import snapshot_download
 
@@ -2445,8 +2490,13 @@ def export_transcript(
         logger.warning("export_transcript 输出到数据目录外: %s", out)
     written = _export(transcript, formats=formats, out_dir=out, task_id=task_id)
     errors = written.pop("_errors", {}) if isinstance(written, dict) else {}
+    # 任一格式落盘失败 → ok:False（此前全部失败仍 ok:True + formats:{}，
+    # Agent 以为导出成功实际零文件，与 CLI 版对 not written 显式退出的行为不一致，#122 A1）
+    ok = not errors
+    if errors:
+        logger.warning(f"导出部分失败: {errors}")
     return json.dumps(
-        {"ok": True, "task_id": task_id, "formats": written, "errors": errors},
+        {"ok": ok, "task_id": task_id, "formats": written, "errors": errors},
         ensure_ascii=False,
     )
 

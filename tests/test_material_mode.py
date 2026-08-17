@@ -223,6 +223,58 @@ def test_skip_download_media_cache_miss_clears_audio_path():
     shutil.rmtree(task_dir, ignore_errors=True)
 
 
+def test_skip_download_keeps_real_local_path():
+    """#122 B1：skip_download 时本地文件返回的是真实源路径，必须保留。
+
+    #119 的修复缺存在性检查：`not audio.file_path`（falsy）把 skip_download 下
+    LocalDownloader 直接回的真实 video_url 也吞成 None——二次跑本地文件素材包
+    audio_path 恒空。is_file() 通过的真实路径应原样保留。
+    """
+    import tempfile
+
+    gen = NoteGenerator()
+    task_id = "media_local_task"
+    task_dir = NOTE_OUTPUT_DIR / task_id
+    cache_file = task_dir / "gen" / "audio.json"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # 真实存在的本地视频文件：LocalDownloader.download(skip_download=True) 原样返回
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as nf:
+        local_path = nf.name
+    fake_downloader = mock.Mock()
+    fake_downloader.download.return_value = AudioDownloadResult(
+        file_path=local_path,  # 存在 → 必须保留
+        title="本地视频",
+        duration=5.0,
+        cover_url=None,
+        platform="local",
+        video_id=None,
+        raw_info={},
+    )
+    with mock.patch("app.services.note.note_cache.lookup_media", return_value=None), \
+         mock.patch.object(gen, "_update_status"):
+        audio = gen._download_media(
+            downloader=fake_downloader,
+            video_url=local_path,
+            quality="fast",
+            audio_cache_file=cache_file,
+            status_phase="DOWNLOADING",
+            platform="local",
+            output_path=None,
+            screenshot=False,
+            video_understanding=False,
+            video_interval=None,
+            grid_size=None,
+            skip_download=True,
+        )
+    try:
+        # 真实存在的本地路径不被吞掉（#122 B1 修复点）
+        assert audio.file_path == local_path
+    finally:
+        Path(local_path).unlink(missing_ok=True)
+        shutil.rmtree(task_dir, ignore_errors=True)
+
+
 def test_skip_download_media_cache_hit_reuses_real_file():
     """媒体缓存命中：file_path 指向复制的真实文件（不为 None）。"""
     gen = NoteGenerator()

@@ -258,5 +258,28 @@ class GenericDownloaderTest(unittest.TestCase):
                     self._dl().download_video("https://site.example/v", output_dir=tmp)
 
 
+class YtdlpRetryContractTest(unittest.TestCase):
+    """#122 B4：ytdlp_retry 的 attempts 契约（此前 attempts=0 落到 raise None）。"""
+
+    def test_attempts_zero_raises_valueerror(self):
+        from app.downloaders.common import ytdlp_retry
+
+        with self.assertRaises(ValueError):
+            ytdlp_retry(lambda: "x", attempts=0)
+
+    def test_attempts_negative_raises_valueerror(self):
+        from app.downloaders.common import ytdlp_retry
+
+        with self.assertRaises(ValueError):
+            ytdlp_retry(lambda: "x", attempts=-1)
+
+    def test_success_no_retry_single_call(self):
+        from app.downloaders.common import ytdlp_retry
+
+        fn = mock.Mock(return_value=42)
+        self.assertEqual(ytdlp_retry(fn, attempts=3), 42)
+        fn.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

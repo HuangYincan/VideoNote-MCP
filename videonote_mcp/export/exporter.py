@@ -25,6 +25,11 @@ from .vtt import to_vtt
 logger = logging.getLogger(__name__)
 
 _FORMAT_EXT = {"srt": "srt", "vtt": "vtt", "json": "json"}
+# 导出文件名：json 用 transcript.export.json——note.py 的转写缓存规范来源就是
+# gen/transcript.json（server 的 _load_task_transcript / export fallback 都读它）。
+# 自动导出/工具缺省 out_dir 指向 gen/ 时，若也写 transcript.json 会把带 raw 等
+# 完整字段的缓存覆盖成轻量导出 JSON（#122 A2 数据损坏）。
+_FORMAT_FILENAME = {"srt": "transcript.srt", "vtt": "transcript.vtt", "json": "transcript.export.json"}
 
 
 def _segments(source) -> List:
@@ -42,7 +47,10 @@ def export_transcript(
     task_id: Optional[str] = None,
 ) -> Dict[str, str]:
     """渲染并落盘指定格式，返回 `{fmt: file://path}`；失败格式跳过并记日志。"""
-    formats = formats or ["srt"]
+    # 显式传 [] 表示「不导出任何格式」——不能用 `formats or ["srt"]`（空列表被当
+    # falsy 重解释成默认 srt，调用方以为自己空选择生效却多出一个文件，#122 A4）
+    if formats is None:
+        formats = ["srt"]
     valid = [f for f in formats if f in _FORMAT_EXT]
     unknown = set(formats) - set(_FORMAT_EXT)
     if unknown:
@@ -68,7 +76,7 @@ def export_transcript(
     written: Dict[str, str] = {}
     errors: Dict[str, str] = {}
     for fmt, content in rendered.items():
-        path = out_dir / f"transcript.{_FORMAT_EXT[fmt]}"
+        path = out_dir / _FORMAT_FILENAME[fmt]
         try:
             path.write_text(content, encoding="utf-8")
             written[fmt] = path.as_uri()
@@ -77,7 +85,7 @@ def export_transcript(
             logger.error(f"导出 {fmt} 落盘失败: {exc}")
 
     if written:
-        record_task_paths(task_id or "export", [str(out_dir / f"transcript.{_FORMAT_EXT[f]}") for f in written])
+        record_task_paths(task_id or "export", [str(out_dir / _FORMAT_FILENAME[f]) for f in written])
     if errors:
         logger.error(f"导出完成但部分失败: {errors}")
         written["_errors"] = errors  # type: ignore[assignment]

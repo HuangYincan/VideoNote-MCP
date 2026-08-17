@@ -2,6 +2,23 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave F 批 11（2026-08-17 · 第 6 轮双代理扫描 #122，500 tests）
+
+- **json 导出不再覆盖转写缓存（A2）**：自动导出/工具缺省 out_dir 指向 gen/ 时，json 导出写 `transcript.export.json`（此前写 `transcript.json` 与 note.py 转写缓存规范来源同路径，覆盖后丢 raw 等完整字段）——exporter 统一 `_FORMAT_FILENAME` 映射。
+- **json 导出保留 speaker（A2）**：`_seg_to_dict` 透传 speaker 字段（说话人分离结果进导出，会议纪要不丢信息）。
+- **分 P 缓存精确匹配（B2）**：`?p=2` 请求不再命中 `{BV}_p1.mp4`（跨 P 通配拿错集画面）——带 p 精确 `{BV}_p{p}.mp4`，无 p 匹配 `{BV}.mp4` 或 `{BV}_p1.mp4`。
+- **媒体缓存置 None 回归修复（B1）**：#119 的置 None 缺存在性检查——本地文件真实路径被吞（二次跑素材包 audio_path 恒空）；加 `is_file()` 存在才保留。
+- **导出落盘失败 ok:False（A1）**：工具层 `ok = not errors`——全部格式失败不再报 ok:True（Agent 误以为导出成功实际零文件）。
+- **inspect cookie 改 http_headers（B3）**：Netscape 临时文件绑死 `.example.com`、cookie 塞 generic 字段 yt-dlp 永不发送——改 `http_headers.Cookie` 直接注入，不再留临时文件。
+- **模型下载去重 TOCTOU（A7）**：`mark_downloading` 前移到 submit 前——连续两次提交第二次立刻命中「下载中」，不再各起一个 worker 重下。
+- **转写读取状态门禁（A3）**：`_load_task_transcript` 非 SUCCESS 返回 None——FAILED/运行中任务不再被误报成「成功拿转写」。
+- **summarize 标记残留（A5）**：剥离 screenshot/link format（无视频文件/video_id 无法后处理）+ `strip_media_markers` 兜底清洗 `*Screenshot-*`/`*Content-*` 字面标记。
+- **cancel 终态措辞区分（A8）**：FAILED →「任务已失败，无需取消」；CANCELLED →「任务已取消」——不再一律「任务已完成」误导 Agent。
+- **CLI 清理运行中守卫（A6）**：setup 向导清理路径读磁盘 status.json 判终态，运行中任务要求二次确认（交互式可强清，区别于 MCP 硬拒绝）；`_press_any_key` 捕获 OSError（非交互 stdin 不崩）。
+- **export 空列表契约（A4）**：`formats=[]` 显式零导出（不再被 `or ["srt"]` 重解释成默认 srt）。
+- **ytdlp_retry 死代码清理（B4）**：删不可达 `raise last_exc`；attempts<=0 显式 ValueError（此前 raise None）。
+- **尾部星号（B5）**：note_helper/screenshot_marker 正则消费闭合星号，`*Content-[04:16]*` 替换后不再残留尾部 `*`。
+
 ## Wave E 批 10（2026-08-17 · 自主改进轮 #121，469 tests）
 
 - **batch 并发门禁旁路（C1）**：batch_generate_notes 文档承诺「排队等待」但 worker 毫秒级把任务置 running，第 4 条起逐条被门禁拒——thread-local 旁路（批量排队靠线程池承担，max_entries ≤ 50 封顶），批量结束复位。

@@ -96,6 +96,39 @@ class JsonTest(unittest.TestCase):
         self.assertEqual(data["language"], "en")
         self.assertEqual(data["segments"][0]["end"], 2.0)
 
+    def test_preserves_speaker_on_dict_segment(self):
+        """#122 A2：说话人分离结果导出 JSON 时保留 speaker 字段。"""
+        data = json.loads(
+            to_json(
+                {
+                    "language": "zh",
+                    "full_text": "x",
+                    "segments": [
+                        {"start": 0.0, "end": 2.0, "text": "甲", "speaker": "SPEAKER_00"},
+                        {"start": 2.0, "end": 4.0, "text": "乙", "speaker": "SPEAKER_01"},
+                    ],
+                }
+            )
+        )
+        self.assertEqual(data["segments"][0]["speaker"], "SPEAKER_00")
+        self.assertEqual(data["segments"][1]["speaker"], "SPEAKER_01")
+
+    def test_preserves_speaker_on_object_segment(self):
+        """#122 A2：TranscriptResult 对象的 speaker 同样保留。"""
+        from app.models.transcriber_model import TranscriptResult
+
+        tr = TranscriptResult(
+            language="zh",
+            full_text="x",
+            segments=[
+                TranscriptSegment(0, 2, "甲", speaker="SPEAKER_00"),
+                TranscriptSegment(2, 4, "乙"),
+            ],
+        )
+        data = json.loads(to_json(tr))
+        self.assertEqual(data["segments"][0]["speaker"], "SPEAKER_00")
+        self.assertNotIn("speaker", data["segments"][1])  # 无 speaker 不产出空字段
+
 
 class ExporterTest(unittest.TestCase):
     def test_writes_all_formats_to_file_uris(self):
@@ -119,6 +152,15 @@ class ExporterTest(unittest.TestCase):
             )
             self.assertEqual(sorted(result.keys()), ["srt"])
 
+    def test_empty_formats_list_exports_nothing(self):
+        """#122 A4：显式 formats=[] 必须零导出（旧实现被 `or ["srt"]` 重解释成默认 srt）。"""
+        with tempfile.TemporaryDirectory() as d:
+            result = export_transcript(
+                {"segments": _segs()}, formats=[], out_dir=d, task_id="t4"
+            )
+            self.assertEqual(result, {})
+            self.assertFalse(list(Path(d).glob("transcript.*")))
+
     def test_manifest_recorded(self):
         with tempfile.TemporaryDirectory() as d, mock.patch(
             "videonote_mcp.export.exporter.record_task_paths"
@@ -127,6 +169,84 @@ class ExporterTest(unittest.TestCase):
             rec.assert_called_once()
             # 记录的是 srt 文件的路径
             self.assertTrue(str(rec.call_args[0][1][0]).endswith("transcript.srt"))
+
+    def test_json_export_does_not_overwrite_transcript_cache(self):
+        """#122 A2：json 导出写 transcript.export.json，绝不覆盖转写缓存 gen/transcript.json。
+
+        note.py 的转写缓存规范来源就是 gen/transcript.json（server 的读取/fallback 都读它）；
+        导出 json 若同名覆盖会把完整缓存（含 raw）替换成轻量导出 JSON。
+        """
+        with tempfile.TemporaryDirectory() as d:
+            cache = Path(d) / "transcript.json"
+            cache.write_text('{"cache": "keep-me"}', encoding="utf-8")
+            result = export_transcript(
+                {"language": "zh", "full_text": "x", "segments": _segs()},
+                formats=["json"],
+                out_dir=d,
+                task_id="t6",
+            )
+            self.assertIn("json", result)
+            self.assertEqual(cache.read_text(encoding="utf-8"), '{"cache": "keep-me"}')
+            self.assertTrue((Path(d) / "transcript.export.json").is_file())
+
+    def test_write_failure_reports_ok_false(self):
+        """#122 A1：任一格式落盘失败 → 工具层 ok:False + errors（此前全部失败仍 ok:True）。"""
+        import videonote_mcp.server as srv
+
+        tid = "exportfail01"
+        task_dir = srv.NOTE_OUTPUT_DIR / tid
+        (task_dir / "gen").mkdir(parents=True, exist_ok=True)
+        (task_dir / "gen" / "transcript.json").write_text(
+            json.dumps(
+                {
+                    "language": "zh",
+                    "full_text": "x",
+                    "segments": [{"start": 0.0, "end": 1.0, "text": "a"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            with mock.patch(
+                "videonote_mcp.export.exporter.Path.write_text",
+                side_effect=OSError("disk full"),
+            ):
+                data = json.loads(srv.export_transcript(tid, formats=["srt", "json"]))
+        finally:
+            import shutil as _sh
+
+            _sh.rmtree(task_dir, ignore_errors=True)
+        self.assertEqual(data["ok"], False)
+        self.assertEqual(data["formats"], {})
+        self.assertIn("srt", data["errors"])
+        self.assertIn("json", data["errors"])
+
+    def test_write_success_reports_ok_true(self):
+        """#122 A1：全部落盘成功 → ok:True + errors:{}（成功路径形状稳定）。"""
+        import videonote_mcp.server as srv
+
+        tid = "exportok0001"
+        task_dir = srv.NOTE_OUTPUT_DIR / tid
+        (task_dir / "gen").mkdir(parents=True, exist_ok=True)
+        (task_dir / "gen" / "transcript.json").write_text(
+            json.dumps(
+                {
+                    "language": "zh",
+                    "full_text": "x",
+                    "segments": [{"start": 0.0, "end": 1.0, "text": "a"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            data = json.loads(srv.export_transcript(tid, formats=["srt"]))
+        finally:
+            import shutil as _sh
+
+            _sh.rmtree(task_dir, ignore_errors=True)
+        self.assertEqual(data["ok"], True)
+        self.assertEqual(data["errors"], {})
+        self.assertIn("srt", data["formats"])
 
 
 class PlatformHandoffTest(unittest.TestCase):

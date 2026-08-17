@@ -147,40 +147,24 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
         "noplaylist": False,
     }
     _apply_proxy(ydl_opts)
-    cookiefile = None
+    # cookie 注入（#122 B3）：旧实现写 Netscape 临时文件但把 cookie 塞进
+    # `generic` 字段、域名绑死 .example.com，yt-dlp 永远不会带上（参考
+    # generic_downloader 同款坑）。改 http_headers.Cookie 直接注入，
+    # 对目标站点及其 CDN 分片请求统一生效。
+    cookie = ""
     try:
         from app.services.cookie_manager import CookieConfigManager
 
         cookie = CookieConfigManager().get(platform) or ""
-        if cookie:
-            import os
-            import tempfile
-
-            fd, cookiefile = tempfile.mkstemp(suffix=".txt")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write("# Netscape HTTP Cookie File\n")
-                f.write(f".example.com\tTRUE\t/\tTRUE\t0\tgeneric\t{cookie}\n")
-            try:
-                os.chmod(cookiefile, 0o600)
-            except OSError:
-                pass
-            ydl_opts["cookiefile"] = cookiefile
     except Exception:
-        cookiefile = None
+        cookie = ""
+    if cookie:
+        ydl_opts["http_headers"] = {"Cookie": cookie}
 
-    try:
-        from app.downloaders.common import ytdlp_retry
+    from app.downloaders.common import ytdlp_retry
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ytdlp_retry(ydl.extract_info, url, download=False)
-    finally:
-        if cookiefile:
-            try:
-                import os
-
-                os.unlink(cookiefile)
-            except OSError:
-                pass
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ytdlp_retry(ydl.extract_info, url, download=False)
 
     if not info:
         return {"ok": False, "platform": platform, "error": "yt-dlp 未返回信息"}

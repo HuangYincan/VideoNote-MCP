@@ -13,12 +13,14 @@ def ytdlp_retry(fn, *args, attempts: int = 3, base_delay: float = 1.5, **kwargs)
     """
     import yt_dlp
 
-    last_exc = None
+    # attempts<=0 会让 for 不执行、落到循环后的 raise None（#122 B4）；显式拒绝
+    if attempts <= 0:
+        raise ValueError(f"attempts 必须为正整数，收到: {attempts}")
+
     for i in range(attempts):
         try:
             return fn(*args, **kwargs)
         except yt_dlp.utils.DownloadError as e:
-            last_exc = e
             msg = str(e).lower()
             retriable = any(
                 k in msg
@@ -40,9 +42,9 @@ def ytdlp_retry(fn, *args, attempts: int = 3, base_delay: float = 1.5, **kwargs)
             )
             if not retriable or i == attempts - 1:
                 raise
-        except (ConnectionError, TimeoutError, OSError) as e:
-            last_exc = e
+        except (ConnectionError, TimeoutError, OSError):
             if i == attempts - 1:
                 raise
         time.sleep(base_delay * (2**i))
-    raise last_exc
+    # 循环内最后一次迭代必然 return 或 raise，正常流程到不了这里
+    raise RuntimeError("ytdlp_retry 重试耗尽但未抛异常，属不可达分支")

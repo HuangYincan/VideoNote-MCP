@@ -1703,5 +1703,110 @@ class ScreenshotLinkFormatMergeTest(unittest.TestCase):
         self.assertIs(params["screenshot"], False)
 
 
+class SummarizeStepFormatTest(unittest.TestCase):
+    """#122 A5：_step_summarize 剥离 screenshot/link 并清洗残留标记。
+
+    summarize_note 只有素材（转写/帧/评论），没有视频文件与 video_id，
+    screenshot（抽帧）与 link（平台跳转）两项后处理无法执行。
+    """
+
+    def _run(self, formats, markdown="ok"):
+        with mock.patch.object(server.pipeline, "get_gpt", return_value=object()), mock.patch.object(
+            server.pipeline, "summarize_material", return_value=markdown
+        ) as ms:
+            payload = server._step_summarize(
+                "sumfmt000001",
+                None,
+                {"title": "t", "transcript": {"full_text": "x", "segments": []}},
+                provider_id="p1",
+                model_name="m1",
+                style=None,
+                extras=None,
+                formats=formats,
+            )
+        return payload, ms
+
+    def test_screenshot_link_stripped_from_formats(self):
+        payload, ms = self._run(
+            ["toc", "screenshot", "link", "summary"],
+            "# 标题\n正文 *Content-01:23* 与 *Screenshot-[00:05]* 残留",
+        )
+        # 传给 summarize_material 的 formats 不含 screenshot/link（prompt 不再要求输出标记）
+        self.assertNotIn("screenshot", ms.call_args.kwargs["formats"])
+        self.assertNotIn("link", ms.call_args.kwargs["formats"])
+        self.assertIn("toc", ms.call_args.kwargs["formats"])
+        # 返回 markdown 无残留字面标记
+        self.assertNotIn("Content-", payload["markdown"])
+        self.assertNotIn("Screenshot-", payload["markdown"])
+        self.assertIn("# 标题", payload["markdown"])
+
+    def test_only_toc_formats_untouched(self):
+        payload, ms = self._run(["toc"], "标题 ok")
+        self.assertEqual(ms.call_args.kwargs["formats"], ["toc"])
+        self.assertEqual(payload["markdown"], "标题 ok")
+
+    def test_none_formats_empty(self):
+        payload, ms = self._run(None)
+        self.assertEqual(ms.call_args.kwargs["formats"], [])
+        self.assertEqual(payload["markdown"], "ok")
+
+
+class StripMediaMarkersTest(unittest.TestCase):
+    """#122 A5 的清洗函数：三种写法（星号/方括号/裸时间）都能剥掉。"""
+
+    def _strip(self, md):
+        from app.utils.note_helper import strip_media_markers
+
+        return strip_media_markers(md)
+
+    def test_bracketed_starred_content(self):
+        self.assertEqual(self._strip("*Content-[04:16]* 后文"), " 后文")
+
+    def test_bare_content(self):
+        self.assertEqual(self._strip("标题 Content-04:16 结尾"), "标题  结尾")
+
+    def test_bracketed_starred_screenshot(self):
+        self.assertEqual(self._strip("*Screenshot-[01:23]*"), "")
+
+    def test_bare_screenshot(self):
+        self.assertEqual(self._strip("Screenshot-00:05"), "")
+
+    def test_plain_text_untouched(self):
+        md = "# 标题\n正文不含标记"
+        self.assertEqual(self._strip(md), md)
+
+
+class ModelDownloadMarkTest(unittest.TestCase):
+    """#122 A7：download_transcriber_model 在 submit 前 mark_downloading（TOCTOU 防重）。
+
+    旧实现：is_downloading 检查在调用线程、mark 在 worker 内——两次连续提交
+    各起一个 worker 重下整个模型。
+    """
+
+    def test_second_submit_immediately_detects(self):
+        state = {"downloading": False}
+
+        def _is_downloading(key):
+            return state["downloading"]
+
+        def _mark_downloading(key):
+            state["downloading"] = True
+
+        with mock.patch(
+            "videonote_mcp.server.dl_state.is_downloading", side_effect=_is_downloading
+        ), mock.patch(
+            "videonote_mcp.server.dl_state.mark_downloading", side_effect=_mark_downloading
+        ), mock.patch("videonote_mcp.server._dl_pool.submit"):
+            first = json.loads(server.download_transcriber_model("tiny"))
+            second = json.loads(server.download_transcriber_model("tiny"))
+        self.assertTrue(first["started"])
+        self.assertFalse(second["started"])
+        self.assertIn("跳过重复提交", second["message"])
+
+    def test_invalid_size_rejected(self):
+        with self.assertRaises(ValueError):
+            server.download_transcriber_model("bogus-size")
+
+
 if __name__ == "__main__":
     unittest.main()

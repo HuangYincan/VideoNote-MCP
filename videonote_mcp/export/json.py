@@ -1,6 +1,6 @@
 """Transcript JSON 导出（纯函数，零依赖）。
 
-输出结构化 `{language, full_text, segments: [{start, end, text}]}`，与
+输出结构化 `{language, full_text, segments: [{start, end, text, speaker?}]}`，与
 `{task_id}.json` 的 transcript 字段同构，可直接被下游程序消费。
 
 与 asdict(TranscriptResult) 的差异：这里显式规整字段并做缺省兜底，
@@ -14,12 +14,20 @@ from app.models.transcriber_model import TranscriptResult
 
 def _seg_to_dict(seg) -> dict:
     if isinstance(seg, dict):
-        return {
+        speaker = seg.get("speaker")
+        out = {
             "start": round(float(seg.get("start", 0)), 3),
             "end": round(float(seg.get("end", 0)), 3),
             "text": str(seg.get("text", "")),
         }
-    return {"start": round(float(seg.start), 3), "end": round(float(seg.end), 3), "text": str(seg.text)}
+    else:
+        speaker = getattr(seg, "speaker", None)
+        out = {"start": round(float(seg.start), 3), "end": round(float(seg.end), 3), "text": str(seg.text)}
+    if speaker:
+        # 说话人标注必须保留：导出 json 常落在 gen/transcript.json（转写缓存路径），
+        # 丢失 speaker 会永久覆盖带说话人标注的缓存（#122 A2，会议纪要数据损坏）
+        out["speaker"] = speaker
+    return out
 
 
 def _to_segments(segments: Optional[List]) -> List[dict]:

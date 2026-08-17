@@ -407,3 +407,54 @@ class CancelRaceTest(unittest.TestCase):
         self.assertFalse((server.NOTE_OUTPUT_DIR / self.task_id / "status.json").exists())
 
 
+class CancelTerminalWordingTest(unittest.TestCase):
+    """cancel_note 终态措辞区分（#122 A8）。
+
+    任务恰好在取消时到达终态：此前一律「任务已完成」——FAILED 任务被 Agent
+    误读成「成功产出笔记」。按终态区分措辞。
+    """
+
+    def setUp(self):
+        self.task_id = "termword0001"
+        self.task_dir = server.NOTE_OUTPUT_DIR / self.task_id
+        self.task_dir.mkdir(parents=True, exist_ok=True)
+        from concurrent.futures import Future
+
+        self._done = Future()
+        self._done.set_result(None)
+        self._ev = threading.Event()
+        with server._tasks_lock:
+            server._task_futures[self.task_id] = self._done
+            server._task_events[self.task_id] = self._ev
+
+    def tearDown(self):
+        shutil.rmtree(self.task_dir, ignore_errors=True)
+        with server._tasks_lock:
+            server._task_futures.pop(self.task_id, None)
+            server._task_events.pop(self.task_id, None)
+
+    def _set_status(self, status):
+        (self.task_dir / "status.json").write_text(
+            json.dumps({"status": status}, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def test_failed_terminal_message(self):
+        self._set_status("FAILED")
+        resp = json.loads(server.cancel_note(self.task_id))
+        self.assertEqual(resp["status"], "DONE")
+        self.assertIn("失败", resp["message"])
+        self.assertNotIn("完成", resp["message"])
+
+    def test_cancelled_terminal_message(self):
+        self._set_status("CANCELLED")
+        resp = json.loads(server.cancel_note(self.task_id))
+        self.assertEqual(resp["status"], "DONE")
+        self.assertIn("已取消", resp["message"])
+
+    def test_success_terminal_message(self):
+        self._set_status("SUCCESS")
+        resp = json.loads(server.cancel_note(self.task_id))
+        self.assertEqual(resp["status"], "DONE")
+        self.assertIn("已完成", resp["message"])
+
+

@@ -1,5 +1,6 @@
 import os
 import json
+import glob as _glob
 import logging
 import shutil
 import tempfile
@@ -15,7 +16,7 @@ from app.downloaders.bilibili_subtitle import BilibiliSubtitleFetcher
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.utils.path_helper import get_data_dir
-from app.utils.url_parser import extract_video_id
+from app.utils.url_parser import extract_video_id, extract_bilibili_p_number
 from app.services.cookie_manager import CookieConfigManager
 
 logger = logging.getLogger(__name__)
@@ -135,13 +136,18 @@ class BilibiliDownloader(Downloader, ABC):
         video_id=extract_video_id(video_url, "bilibili")
         if not video_id:
             raise ValueError(f"无法从链接提取 B 站视频 ID: {video_url}")
-        # 多 P 视频 yt-dlp 的 id 是 {BV}_pN（缓存名 {BV}_pN.mp4），与纯 BV 不同。
+        # 多 P 视频 yt-dlp 的 id 是 {BV}_pN（缓存名 {BV}_pN.mp4），N 与 URL 的 p 参数一致。
         # 旧前缀 glob（{BV}*.mp4）会误配别的视频（BV12345_p1.mp4 命中 BV1234 的查询）；
-        # 精确枚举两种形态：单集 {BV}.mp4 / 分 P {BV}_pN.mp4（#121 B5）
-        import glob as _glob
-        existing = _glob.glob(os.path.join(output_dir, f"{video_id}.mp4")) or _glob.glob(
-            os.path.join(output_dir, f"{video_id}_p*.mp4")
-        )
+        # #121 B5 改 `{BV}_p*.mp4` 仍跨 P 通配——?p=2 请求可能命中 BV_p1.mp4（拿错集视频）。
+        # 精确匹配（#122 B2）：带 p → {BV}_p{p}.mp4；无 p → 单集 {BV}.mp4 或分 P 第 1 集
+        # {BV}_p1.mp4（都无通配，绝不误配其它视频/其它 P）
+        p_num = extract_bilibili_p_number(video_url)
+        if p_num:
+            existing = _glob.glob(os.path.join(output_dir, f"{video_id}_p{p_num}.mp4"))
+        else:
+            existing = _glob.glob(os.path.join(output_dir, f"{video_id}.mp4")) or _glob.glob(
+                os.path.join(output_dir, f"{video_id}_p1.mp4")
+            )
         if existing:
             return existing[0]
 
