@@ -90,6 +90,11 @@ class TranscriberConfigManager:
     def get_diarization(self) -> bool:
         return bool(self.get_config()["diarization"])
 
+    def get_diarization_speakers(self) -> Optional[int]:
+        """说话人数提示（可选；None=自动检测）。"""
+        v = self.get_config().get("diarization_speakers")
+        return int(v) if v else None
+
     def is_model_ready(self) -> Dict[str, Any]:
         """当前转写器是否就绪可用。
 

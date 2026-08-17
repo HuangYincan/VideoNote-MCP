@@ -1,7 +1,7 @@
 """RequestChunker 双约束（字节 + token）与拆分行为（docs/05 #32）。"""
 import unittest
 
-from app.gpt.request_chunker import ChunkPayload, RequestChunker
+from app.gpt.request_chunker import RequestChunker
 
 
 def _messages_size(messages, *_a, **_k):

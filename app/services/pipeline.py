@@ -162,12 +162,57 @@ def fetch_subtitles(video_url: str, platform: Optional[str] = None) -> Optional[
 
 # ---------------- 步骤 2：语音识别（ASR） ----------------
 
+def apply_diarization(
+    audio_file: str,
+    segments: List,
+    wav_path: Optional[str] = None,
+) -> List:
+    """配置启用说话人分离时给转写段打 speaker；未启用/失败原样返回（docs/05 #31）。
+
+    接入点：pipeline.transcribe_audio 转写完成后调用一次，generate_note 的
+    note.py 路径与 transcribe_media / prepare_note_material 全部自动生效。
+    自己归一化产生的临时 wav（_16k.wav）在 finally 中清理。
+    """
+    try:
+        from app.services.transcriber_config_manager import TranscriberConfigManager
+
+        mgr = TranscriberConfigManager()
+        if not mgr.get_diarization():
+            return segments
+        from app.services.diarization import assign_speakers, diarize_audio
+        from app.transcriber.audio_preprocess import cleanup_preprocess_files, normalize_to_wav
+
+        created = False
+        wav = wav_path
+        try:
+            if not wav:
+                wav = normalize_to_wav(audio_file)
+                created = True
+            turns = diarize_audio(wav, num_speakers=mgr.get_diarization_speakers())
+            segments = assign_speakers(segments, turns)
+            speaker_count = len(
+                {s.speaker for s in segments if getattr(s, "speaker", None)}
+            )
+            logger.info("说话人分离完成: %d 段、%d 位说话人", len(segments), speaker_count)
+            return segments
+        finally:
+            if created:
+                try:
+                    cleanup_preprocess_files(wav)
+                except Exception:  # noqa: BLE001 —— 清理失败不阻断
+                    pass
+    except Exception as exc:  # noqa: BLE001 —— diarization 失败不阻断笔记生成
+        logger.warning("说话人分离失败（跳过）: %s", exc)
+        return segments
+
+
 def transcribe_audio(audio_file: Union[str, Path], transcriber: Optional[Transcriber] = None) -> dict:
     """只做语音识别：给定音频/视频文件 → 转写结果 asdict（{language, full_text, segments}）。
 
     不配置 transcriber 时按当前转写器配置构建。
     当 setup 启用「音频预处理」（enable_preprocess）时，先归一化为 16kHz mono wav，
     超长音频按块转写并拼接（时间偏移补偿）；默认关闭时行为与之前完全一致。
+    配置启用说话人分离（diarization）时给每段打 speaker（docs/05 #31）。
     """
     audio_file = str(audio_file)
     if not Path(audio_file).exists():
@@ -177,7 +222,10 @@ def transcribe_audio(audio_file: Union[str, Path], transcriber: Optional[Transcr
 
     if not _preprocess_enabled():
         tr = transcriber.transcript(file_path=audio_file)
-        return asdict(tr)
+        segments = apply_diarization(audio_file, list(tr.segments or []))
+        return asdict(
+            TranscriptResult(language=tr.language, full_text=tr.full_text, segments=segments)
+        )
 
     # 预处理模式：归一 + 分块 → 逐块转写 + 时间偏移拼接
     return _transcribe_with_preprocess(audio_file, transcriber)
@@ -225,6 +273,9 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
                 )
             )
         offset += chunk_dur
+
+    # 说话人分离：复用已归一化的 wav，在临时文件清理前完成（docs/05 #31）
+    all_segments = apply_diarization(audio_file, all_segments, wav_path=wav)
 
     # 清理预处理临时文件（16k wav + 分块），避免污染用户目录
     try:

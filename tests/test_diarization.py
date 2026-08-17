@@ -93,3 +93,59 @@ class AssignSpeakersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestDiarizationMainPath(unittest.TestCase):
+    """#31 主路径接入：apply_diarization 开关行为 + prompt speaker 渲染。"""
+
+    def test_apply_diarization_disabled_returns_segments(self):
+        # 配置默认 diarization=off：原样返回，不碰 pyannote/normalize
+        from app.services import pipeline
+        from app.services.transcriber_config_manager import TranscriberConfigManager
+
+        if TranscriberConfigManager().get_diarization():
+            self.skipTest("测试环境配置了 diarization，跳过（默认应为关）")
+        segs = [TranscriptSegment(start=0.0, end=1.0, text="a")]
+        with mock.patch("app.transcriber.audio_preprocess.normalize_to_wav", side_effect=AssertionError("不应归一化")) as m:
+            out = pipeline.apply_diarization("/tmp/x.mp3", segs)
+        self.assertIs(out, segs)
+        m.assert_not_called()
+
+    def test_apply_diarization_failure_returns_segments(self):
+        # 启用时 pyannote 未装 → 失败回退原 segments，不抛
+        from app.services import pipeline
+        from app.services.transcriber_config_manager import TranscriberConfigManager
+
+        mgr = TranscriberConfigManager()
+        old = mgr.get_diarization()
+        segs = [TranscriptSegment(start=0.0, end=1.0, text="a")]
+        try:
+            with mock.patch.object(type(mgr), "get_diarization", return_value=True):
+                with mock.patch.object(type(mgr), "get_diarization_speakers", return_value=None):
+                    out = pipeline.apply_diarization("/tmp/x.mp3", segs)
+        finally:
+            _ = old
+        self.assertIs(out, segs)
+
+    def test_prompt_renders_speaker_when_multiple(self):
+        from app.gpt.universal_gpt import UniversalGPT
+
+        gpt = UniversalGPT.__new__(UniversalGPT)  # 不跑 __init__（避免 env/IO）
+        segs = [
+            TranscriptSegment(start=0.0, end=1.0, text="hello", speaker="SPEAKER_00"),
+            TranscriptSegment(start=1.0, end=2.0, text="world", speaker="SPEAKER_01"),
+        ]
+        text = gpt._build_segment_text(segs)
+        self.assertIn("[SPEAKER_00]", text)
+        self.assertIn("[SPEAKER_01]", text)
+
+    def test_prompt_skips_single_speaker_noise(self):
+        from app.gpt.universal_gpt import UniversalGPT
+
+        gpt = UniversalGPT.__new__(UniversalGPT)
+        segs = [
+            TranscriptSegment(start=0.0, end=1.0, text="hello", speaker="SPEAKER_00"),
+            TranscriptSegment(start=1.0, end=2.0, text="world", speaker="SPEAKER_00"),
+        ]
+        text = gpt._build_segment_text(segs)
+        self.assertNotIn("SPEAKER_00", text)

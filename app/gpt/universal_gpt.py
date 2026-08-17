@@ -41,10 +41,16 @@ class UniversalGPT(GPT):
         return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
     def _build_segment_text(self, segments: List[TranscriptSegment]) -> str:
-        return "\n".join(
-            f"{self._format_time(seg.start)} - {seg.text.strip()}"
-            for seg in segments
-        )
+        # 说话人标签只在确实有 2+ 位时渲染（docs/05 #31）：单人视频的
+        # 整片 SPEAKER_00 前缀是无信息噪音。
+        speakers = {getattr(seg, "speaker", None) for seg in segments} - {None}
+        show_speaker = len(speakers) > 1
+        lines = []
+        for seg in segments:
+            speaker = getattr(seg, "speaker", None) if show_speaker else None
+            prefix = f"[{speaker}] " if speaker else ""
+            lines.append(f"{self._format_time(seg.start)} - {prefix}{seg.text.strip()}")
+        return "\n".join(lines)
 
     def ensure_segments_type(self, segments) -> List[TranscriptSegment]:
         return [TranscriptSegment(**seg) if isinstance(seg, dict) else seg for seg in segments]
