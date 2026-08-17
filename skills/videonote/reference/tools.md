@@ -36,6 +36,7 @@
 - **默认只返回前 50 段**（`meta.truncated=true` 时用 `"50-"` 续取或 `"all"` 拿全文）。
 - `"0-50"` / `"50-"` / `"150-200"` 按段切片。
 - 返回 `{task_id, ok, language, segments, full_text, meta:{total_segments, returned_segments, total_chars, returned_chars, truncated}}`。
+- **MCP Resource `videonote://task/{task_id}/transcript`**：转写全文按时间轴渲染的纯文本（含说话人标签），适合整篇直读；工具版用于切片/结构化。
 
 ### `wait_for_note`（已废弃）
 - **不要调用**。会卡住 MCP 事件循环；现已改为立刻返回当前快照 + `deprecated`。用 `get_task_status` 轮询。
