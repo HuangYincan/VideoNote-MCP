@@ -7,7 +7,8 @@ cd "$REPO_DIR"
 
 echo "==> 1/3 安装 Python 依赖"
 if command -v uv >/dev/null 2>&1; then
-  uv sync
+  # --no-dev：生产安装不带 pytest/ruff（docs 审计 H 组）
+  uv sync --no-dev
 else
   echo "（未找到 uv，改用 python3 venv + pip）"
   python3 -m venv .venv

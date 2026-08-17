@@ -8,6 +8,10 @@ class ChunkPayload:
     image_urls: list
 
 
+# 单张图片的固定 token 估算（data URI 按字符计会高估数万 token，见 _estimate_tokens）
+_TOKENS_PER_IMAGE = 1105
+
+
 class RequestChunker:
     def __init__(
         self,
@@ -38,14 +42,30 @@ class RequestChunker:
         """消息 token 近似：汉字≈1 token，其余字符≈4字符/token。
 
         不引入 tiktoken 重依赖；对中文场景偏保守（不低估），英文按 4 字符/token。
+        结构感知：`image_url` 的 data URI 是 base64 字节流，按字符计会高估数万
+        token（960×540 JPEG ≈ 11 万-34 万字符 → 2.7 万-8.5 万「token」），导致
+        视频理解的帧图被全部判超限而静默丢弃 —— 图片按固定 _TOKENS_PER_IMAGE 估算。
         """
         if self.token_estimator:
             return self.token_estimator(messages)
-        import json
+        return self._count_tokens(messages)
 
-        text = json.dumps(messages, ensure_ascii=False)
-        cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
-        return cjk + (len(text) - cjk) // 4
+    def _count_tokens(self, obj) -> int:
+        if isinstance(obj, str):
+            cjk = sum(1 for ch in obj if "\u4e00" <= ch <= "\u9fff")
+            return cjk + (len(obj) - cjk) // 4
+        if isinstance(obj, dict):
+            if obj.get("type") == "image_url":
+                total = 0
+                for key, value in obj.items():
+                    # url 是 base64 data URI，固定计 _TOKENS_PER_IMAGE
+                    #（OpenAI detail=auto：85 + 170×tiles，960×540≈765，取上限）
+                    total += _TOKENS_PER_IMAGE if key == "url" else self._count_tokens(value)
+                return total
+            return sum(self._count_tokens(v) for v in obj.values())
+        if isinstance(obj, (list, tuple)):
+            return sum(self._count_tokens(v) for v in obj)
+        return 0
 
     def _fits(self, segments, image_urls, **kwargs) -> bool:
         """字节与 token 双约束（message_builder 只构建一次）。"""

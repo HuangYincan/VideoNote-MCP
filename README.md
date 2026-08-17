@@ -120,7 +120,7 @@ flowchart LR
 
 | 阶段 | 职责 | 典型工具 |
 |------|------|----------|
-| [0 🔄 端到端全流程](#0--端到端全流程) | 一条链接 → 一篇笔记，全自动跑完整条流水线 | `generate_note` / `wait_for_note` |
+| [0 🔄 端到端全流程](#0--端到端全流程) | 一条链接 → 一篇笔记，全自动跑完整条流水线 | `generate_note` / `get_task_status` |
 | [1 📥 下载与平台解析](#1--下载与平台解析) | 识别平台并下载音/视频，覆盖 1800+ 站点与本地文件 | `validate_url` / `fetch_subtitles` |
 | [2 🎙 语音转写（ASR）](#2--语音转写asr) | 音轨转文字，本地 / 云端多引擎可选 | `transcribe_media` / `set_transcriber` |
 | [3 🖼️ 视频画面理解（抽帧）](#3--视频画面理解抽帧) | 按间隔抽帧，多模态 LLM「看」画面 | `extract_frames` / `video_understanding` |
@@ -134,12 +134,12 @@ flowchart LR
 
 # 0 🔄 端到端全流程
 
-端到端模式只给一条链接即可：`generate_note` 异步跑完整条流水线并返回 `task_id`；用轻量 `get_task_status` 快照轮询到 `SUCCESS/FAILED/CANCELLED`（单进程最多 3 个进行中任务，不要在同一消息里并行提交），`wait_for_note` 会阻塞整个 MCP 事件循环，优先轮询。`cancel_note` 协作式取消。「AGENT 直接生成」走 `prepare_note_material` —— 只准备素材包、**不调用配置 LLM**，由 agent 自己读转写、看图、写笔记。
+端到端模式只给一条链接即可：`generate_note` 异步跑完整条流水线并返回 `task_id`；用轻量 `get_task_status` 快照轮询到 `SUCCESS/FAILED/CANCELLED`（单进程最多 3 个进行中任务，不要在同一消息里并行提交）。`wait_for_note` 已废弃（曾阻塞整个 MCP 事件循环，现只返回快照）。`cancel_note` 协作式取消。「AGENT 直接生成」走 `prepare_note_material` —— 只准备素材包、**不调用配置 LLM**，由 agent 自己读转写、看图、写笔记。
 
 | 工具 | 说明 | 类型 |
 |------|------|------|
 | `generate_note` | 一条链接 → 异步生成笔记，返回 task_id（支持视频理解 / 评论整合 / 截图便携笔记） | MCP 工具 |
-| `get_task_status` / `wait_for_note` | 轻量轮询任务状态 / 阻塞等待最终 Markdown | MCP 工具 |
+| `get_task_status` | 轻量轮询任务状态（`wait_for_note` 已废弃） | MCP 工具 |
 | `cancel_note` | 协作式取消进行中 / 排队任务 | MCP 工具 |
 | `prepare_note_material` | 只准备素材包（转写 / 抽帧 / 评论），供 AGENT 直接生成 | MCP 工具 |
 | AGENT 直接生成（`agent_direct`） | agent 读素材包自己写笔记，不走配置 LLM | SKILL / Agent 编排 |

@@ -14,12 +14,17 @@ from app.gpt.prompt import MERGE_PROMPT
 from app.gpt.request_chunker import RequestChunker
 from app.models.transcriber_model import TranscriptSegment
 from typing import List, Optional
+import logging
 import re
 
+logger = logging.getLogger(__name__)
+
 # 大纲注入上限（docs/05 #39 标题漂移）：标题数量与单条长度都截断，
-# 控制注入体积（估算切块时不带大纲，留 ~5% 余量即可容纳）
+# 控制注入体积（估算切块时预留 _OUTLINE_BUDGET 预算，见 summarize）
 _OUTLINE_MAX_ITEMS = 15
 _OUTLINE_MAX_TITLE_LEN = 40
+# outline 注入的固定预算：15 条×40 字 + 说明文 ≈ 600-750 token
+_OUTLINE_BUDGET = 600
 
 
 def extract_outline(partials: List[str], limit: int = _OUTLINE_MAX_ITEMS,
@@ -292,12 +297,22 @@ class UniversalGPT(GPT):
             lambda *_args, **_kwargs: [],
             self.max_request_bytes,
             self._estimate_messages_bytes,
-            max_tokens=self.max_tokens_per_chunk,
+            # merge 阶段不用 token 约束：partials 是已生成的笔记文本（总量远小于
+            # 45MB 字节上限），token 约束会让大 partial 两两超限、每组合并不出东西，
+            # while 循环永不收敛（docs 审计 P0-2）。收敛保障见下方防退化检查。
+            max_tokens=None,
         )
 
         current_partials = list(partials)
         while len(current_partials) > 1:
             groups = merge_chunker.group_texts_by_budget(current_partials, build_messages)
+            # 防退化：任何一轮没有真实合并（组数 == 输入数）说明无法收敛，
+            # 直接报明确错误而不是无限循环烧 LLM 调用
+            if len(groups) >= len(current_partials):
+                raise ValueError(
+                    "合并阶段无法收敛（每组合并未减少片段数），请增大 OPENAI_MAX_REQUEST_BYTES "
+                    "或拆分素材重试"
+                )
             new_partials = []
             for group_idx, group in enumerate(groups):
                 messages = build_messages(group)
@@ -341,7 +356,9 @@ class UniversalGPT(GPT):
             message_builder,
             self.max_request_bytes,
             self._estimate_messages_bytes,
-            max_tokens=self.max_tokens_per_chunk,
+            # 预留 outline 注入预算（后续 chunk 会注入已生成章节标题，估算阶段
+            # 尚无 outline）：避免实际请求超窗口报 context_length 错误（docs 审计 P1-1）。
+            max_tokens=max(1000, self.max_tokens_per_chunk - _OUTLINE_BUDGET),
         )
 
         # 评论/弹幕只在第一个 chunk 携带一次；传入 chunker 仅用于准确估算首 chunk 体积
@@ -359,6 +376,11 @@ class UniversalGPT(GPT):
                 comments_danmaku=comments_danmaku,
             )
         except ValueError:
+            if source.video_img_urls:
+                logger.warning(
+                    f"图片素材超出切块预算（{len(source.video_img_urls)} 张帧图），"
+                    f"已降级为纯文本总结 —— 视频理解不生效"
+                )
             chunks = chunker.chunk(
                 source.segment,
                 [],
@@ -373,7 +395,13 @@ class UniversalGPT(GPT):
         partials = []
         if checkpoint_key and source_signature:
             checkpoint = self._load_checkpoint(checkpoint_key, source_signature)
-            if checkpoint and isinstance(checkpoint.get("partials"), list):
+            # 只复用 summarize 阶段快照；merge 中间态（phase="merge"）的 partials
+            # 已是部分合并产物，续跑会与原始 chunk 内容重复（docs 审计 P1-2）
+            if (
+                checkpoint
+                and checkpoint.get("phase") == "summarize"
+                and isinstance(checkpoint.get("partials"), list)
+            ):
                 partials = checkpoint["partials"]
 
         if len(partials) > len(chunks):

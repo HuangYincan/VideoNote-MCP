@@ -37,11 +37,24 @@ jobs:
                   async with ClientSession(read, write) as session:
                       await session.initialize()
                       tools = await session.list_tools()
-                      names = [t.name for t in tools.tools]
-                      assert "generate_note" in names, f"missing generate_note: {names}"
-                      # 工具面收敛时同步改这里（docs/05 #70）：38 = server.py 的 @mcp.tool 数
-                      assert len(names) == 38, f"工具数漂移: {len(names)} != 38"
-                      print(f"tools/list OK: {len(names)} tools")
+                      names = sorted(t.name for t in tools.tools)
+                      # 名单断言（docs/05 #70）：数量断言放过名字漂移（get_task_status 曾
+                      # 丢失装饰器仍 38 全绿），必须精确匹配。改名/增删工具时同步这里。
+                      expected = [
+                          "_stage_label", "add_model", "add_provider", "batch_generate_notes",
+                          "cancel_note", "cleanup_all", "cleanup_note", "delete_model",
+                          "delete_provider", "diarize_media", "download_transcriber_model",
+                          "export_transcript", "extract_frames", "fetch_comments", "fetch_danmaku",
+                          "fetch_subtitles", "generate_note", "get_task_files", "get_task_status",
+                          "get_task_transcript", "get_transcriber_config", "health_check",
+                          "inspect_video", "list_models", "list_providers", "list_tasks",
+                          "list_transcriber_models", "merge_audio", "preflight",
+                          "prepare_note_material", "read_app_config", "set_downloader_cookie",
+                          "set_transcriber", "summarize_note", "test_provider", "transcribe_media",
+                          "update_provider", "validate_url", "wait_for_note",
+                      ]
+                      assert names == expected, f"工具名单漂移: {names}"
+                      print(f"tools/list OK: {len(names)} tools (名单精确匹配)")
           asyncio.run(main())
           EOF
       - name: CLI smoke

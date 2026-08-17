@@ -28,6 +28,19 @@
 - **E1 可观测性收口（1ced97a）**：stderr 日志超限轮转（`VIDEONOTE_STDERR_LOG_MAX_MB` 默认 50MB → `.log.1`，防长跑体积失控）；`_open_stderr_log` 打开失败不再静默（原因打到原始 stderr）；atexit 退出摘要记录进行中/排队任务数（排查孤儿 ffmpeg/whisper 子进程）。新测试 tests/test_stderr_log.py 7 项。
 - 文档：docs/06 新增 Wave E 章节；docs/05 #39/#44 标注更新。
 
+## Wave E 批 2（2026-08-17 · E3 扫描 + F1-F9/G1-G4/H 组，225 tests）
+
+- **E3 扫描**：4 并行代理对 Wave D/E 引入代码 + 全仓一致性做第三轮审计，4 个 P0 全部当场修复：
+  - **P0 get_task_status 装饰器丢失**：`3c0c9a67` 重构随 `_stage_label` 抽取误删 `@mcp.tool()`，工具 38→37 却随 v0.1.5 发布；CI 数量断言被 batch_generate_notes 补足未红。已恢复，CI 升级精确 39 名单。
+  - **P0 图片 token 估算回归**（6c 引入）：base64 图片按字符计数（一张 ≈ 数十万 token）致 video_understanding 静默失效。改结构感知 `_count_tokens`，`image_url.url` 按 1105 token/图固定估算。
+  - **P0 merge 永不收敛**：合并轮次复用 `max_tokens_per_chunk`，partials 超限时无限递归。改 merge_chunker `max_tokens=None` + 分组不减少即 raise 明确错误。
+  - **P0 wheel 缺 skills/**：release.yml 门禁断言 wheel 含 skills 但 include 没写 → 发布必失败。已加 `"skills/**"` 并重建验证。
+- **F4-F9/G1-G4**：CLI key 交互输入（getpass）；provider_dao 解密 None 跳过写入；并发门禁 `not f.done()`→`f.running()`（排队不占名额，batch 语义成立）+ 新增排队放行契约测试；Fernet key O_EXCL 独占创建并发安全；退出摘要写 `sys.__stderr__`（修 atexit 时 logging handler 已关的 I/O error）；conftest 隔离数据目录。
+- **G2 note_dir 契约**：`note_dir` 改指 `gen/`（note.md 真实所在），指定 `notes_dir` 时从 manifest 定位便携副本补 `portable_note_dir`。
+- **G3 素材包转写保留**：transcribe_media / prepare_note_material 的转写是主产物，`get_task_status` 默认不再剥离（仅 note 任务剥；`raw` 恒剥）。
+- **H 组 8 项**：docstring 死代码、`_local_video_exists` 空串/目录误判、started_at 损坏保护、**_absolutize_images 存量 no-op bug**（`m.group(2)` 越界致截图 absolutize 从未生效，新测试暴露）+ 路径穿越防护、stderr env 非法值回退、handoff 前置、install.sh `--no-dev`、`_stage_label` 文档。
+- 文档：docs/02/03/00 工具数 39；docs/02/04 Fernet 加密说明 + env 表补 `VIDEONOTE_STDERR_LOG_MAX_MB` + funasr 引擎；docs/04 + skills 平台数口径统一 6；README wait_for_note 废弃标注；skills tools.md/output-formats.md note_dir 与素材包契约；docs/05 第三轮 #77-#85；docs/06 Wave E 更新。
+
 ## 第二轮全库扫描（2026-08-17 · 4 个并行审计代理）
 
 - 工具层 / vendored 流水线 / 下载器 / 分发·文档·测试·CI 四路并行扫描，**无新增 P0**。

@@ -114,12 +114,22 @@ def update_provider(id: str, **kwargs):
             if hasattr(provider, key):
                 if key == "api_key":
                     # 落盘加密（docs/05 #29）。update 通常先读后写（已解密），
-                    # 但 enc: 前缀值会二次加密——先解密再加密保持幂等
+                    # 但 enc: 前缀值会二次加密——先解密再加密保持幂等。
+                    # 解密失败（key 缺失/不匹配）时跳过写入而非二次加密：
+                    # 二次加密会把 enc: 串再包一层，产生永远解不出的数据（docs 审计 G1）
                     from videonote_mcp.crypto import decrypt_value, encrypt_value
 
                     if value and str(value).startswith("enc:"):
-                        value = decrypt_value(value) or value
-                    value = encrypt_value(value)
+                        decrypted = decrypt_value(value)
+                        if decrypted is None:
+                            logger.warning(
+                                f"Provider {id} 的 api_key 无法解密（fernet.key 缺失/不匹配），"
+                                f"跳过该字段更新"
+                            )
+                            continue
+                        value = encrypt_value(decrypted)
+                    else:
+                        value = encrypt_value(value)
                 setattr(provider, key, value)
 
         db.commit()

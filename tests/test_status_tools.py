@@ -118,9 +118,11 @@ class StatusLightTest(unittest.TestCase):
             # 路径类轻量字段保留（Agent 需要它们去 Read 图/找文件）
             self.assertEqual(result["frames"], ["file:///tmp/frame_1.jpg"])
             self.assertEqual(result["video_path"], "/tmp/video.mp4")
-            # 文本重载默认剥掉
-            self.assertNotIn("transcript", result)
-            self.assertNotIn("comments_danmaku", result)
+            # 素材包契约（docs 审计 G3）：transcript/comments 是主产物，默认保留；
+            # 但 raw（原始 API 响应）恒剥
+            self.assertIn("transcript", result)
+            self.assertIn("comments_danmaku", result)
+            self.assertNotIn("raw", result["transcript"])
             # 显式要则给
             full = json.loads(server.get_task_status(mid, include_transcript=True))
             self.assertIn("transcript", full["result"])

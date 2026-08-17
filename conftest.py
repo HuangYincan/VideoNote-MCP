@@ -31,3 +31,6 @@ for _f in glob.glob(f"{_TEST_DB}*"):
 # 覆盖测试模块里可能残留的旧 DATABASE_URL 写法
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB}"
 os.environ.setdefault("NOTE_OUTPUT_DIR", str(_NOTE_OUTPUT_DIR))
+# 数据目录也隔离：server 模块级会 open(DATA_DIR/logs/mcp_stderr.log) 并 dup2(2)，
+# 不隔离会把测试 stderr 写进仓库 data/ 并污染 git 工作区（docs 审计 P2-6）
+os.environ.setdefault("VIDEONOTE_DATA_DIR", str(_TEST_ROOT / "data"))

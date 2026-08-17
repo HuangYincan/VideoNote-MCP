@@ -54,7 +54,11 @@ def _open_stderr_log(max_mb: int = 50):
     path = DATA_DIR / "logs" / "mcp_stderr.log"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        limit = max(1, int(os.getenv("VIDEONOTE_STDERR_LOG_MAX_MB", str(max_mb)))) * 1024 * 1024
+        try:
+            limit = max(1, int(os.getenv("VIDEONOTE_STDERR_LOG_MAX_MB", str(max_mb)))) * 1024 * 1024
+        except (TypeError, ValueError):
+            # env 非法值回退默认，不把整个日志重定向弄挂（docs 审计 H 组）
+            limit = max_mb * 1024 * 1024
         if path.exists() and path.stat().st_size > limit:
             path.replace(path.with_suffix(".log.1"))
         return open(path, "a", encoding="utf-8", buffering=1)
@@ -91,7 +95,13 @@ from app.transcriber import model_download_state as dl_state
 from app.utils.logger import get_logger
 from app.utils.model_status import check_whisper_model_exists
 from app.utils.path_helper import get_model_dir
-from app.utils.task_manifest import cleanup_all_files, cleanup_task_files, list_task_files, record_task_paths
+from app.utils.task_manifest import (
+    cleanup_all_files,
+    cleanup_task_files,
+    get_task_paths,
+    list_task_files,
+    record_task_paths,
+)
 
 from mcp.server.fastmcp import FastMCP
 
@@ -122,13 +132,16 @@ _task_events: Dict[str, threading.Event] = {}
 def _exit_summary() -> None:
     """正常退出（sys.exit）时记录进行中任务数，便于排查孤儿 ffmpeg/whisper 子进程。
 
+    写 sys.__stderr__（原始 fd 2，dup2 后仍指向 mcp_stderr.log）而非 logging：
+    atexit 时 logging handler 可能已关闭，logger 调用会触发
+    「Logging error: I/O operation on closed file」（docs 审计 P2-6）。
     已知限制（docs/05 #44）：线程池 worker 是 daemon 线程，SIGKILL 或客户端强杀时
     钩子不执行，转写/下载子进程会残留跑完；这是 Python 子进程管理的固有边界。
     """
     try:
         with _tasks_lock:
             active = len(_task_futures)
-        logger.info(f"VideoNote-Mcp 退出;进行中/排队任务 {active} 个")
+        sys.__stderr__.write(f"[videonote] 退出;进行中/排队任务 {active} 个\n")
     except Exception:
         pass
 
@@ -185,7 +198,10 @@ def _absolutize_images(markdown: Optional[str]) -> str:
 
     def _repl(m):
         try:
-            return f"]({(base / m.group(2)).as_uri()})"
+            rel = m.group(1)
+            target = (base / rel).resolve()
+            target.relative_to(base.resolve())  # 防路径穿越（docs 审计 H 组）
+            return f"]({target.as_uri()})"
         except Exception:
             return m.group(0)
 
@@ -229,8 +245,19 @@ def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None,
                 or (material.get("title") if material else None)
                 or ""
             )
-        # note_dir 统一指向 task_dir（note.md 恒在 gen/note.md，见 note.py）
-        payload["note_dir"] = str(task_dir)
+        # note_dir 契约（docs 审计 G2）：note.md 恒在 {task_id}/gen/note.md；
+        # 指定 notes_dir 时便携副本路径从 manifest 取（记录在 extra_paths）
+        gen_dir = task_dir / "gen"
+        payload["note_dir"] = str(gen_dir) if (gen_dir / "note.md").is_file() else str(task_dir)
+        try:
+            _portable = [
+                p for p in get_task_paths(task_id)
+                if str(p).endswith("note.md") and not str(p).startswith(str(task_dir))
+            ]
+            if _portable:
+                payload["portable_note_dir"] = str(Path(_portable[0]).parent)
+        except Exception:  # noqa: BLE001 —— manifest 读取失败不影响主结果
+            pass
         # result.json 写进任务文件夹（替代扁平 {task_id}.json）—— 原子写：
         # generate() 内部先写 SUCCESS，若轮询在 result 落盘前读到会看到半截 JSON
         _atomic_write_json(task_dir / "result.json", payload)
@@ -282,16 +309,18 @@ def _auto_export_transcript(task_id: str, transcript) -> None:
 
 
 def _guard_concurrency() -> None:
-    """并发门禁：进行中任务数达到 VIDEONOTE_MAX_WORKERS（默认 3）时拒绝新提交。
+    """并发门禁：**正在执行**的任务数达到 VIDEONOTE_MAX_WORKERS（默认 3）时拒绝新提交。
 
-    与 generate_note / prepare_note_material 内嵌的同一逻辑，供独立流水线步骤
-    （transcribe_media / extract_frames / summarize_note）复用，避免无界排队。
+    只统计 `future.running()`（已开始执行），排队的 future 不占名额 ——
+    batch_generate_notes 的「超出 worker 数则排队等待」语义依赖此判定
+    （docs 审计 F7；此前 `not f.done()` 把刚提交还在排队的任务也计入，
+    批量 >3 条时第 4 条起全部被拒）。
     """
     with _tasks_lock:
-        active = [tid for tid, f in _task_futures.items() if not f.done()]
+        active = [tid for tid, f in _task_futures.items() if f.running()]
     if len(active) >= _MAX_WORKERS:
         raise ValueError(
-            f"已有 {len(active)} 个进行中任务（上限 {_MAX_WORKERS}）：请先等其中一些完成"
+            f"已有 {len(active)} 个任务在同时执行（上限 {_MAX_WORKERS}）：请先等其中一些完成"
             f"（或 cancel_note 取消）再提交。"
         )
 
@@ -437,8 +466,12 @@ def _coerce_local_path(p: str) -> Path:
 
 
 def _local_video_exists(video_url: str) -> bool:
-    """本地路径 / file:// 是否存在（generate_note / prepare_note_material 共用）。"""
-    return _coerce_local_path(video_url).exists()
+    """本地路径 / file:// 是否是存在的文件（generate_note / prepare_note_material 共用）。
+
+    只认文件不认目录：空串会 coerce 成当前目录（Path("") == Path(".")），
+    目录路径也应报「不是视频文件」而非「存在」（docs 审计 H 组）。
+    """
+    return _coerce_local_path(video_url).is_file()
 
 
 def _resolve_default_provider_id() -> Optional[str]:
@@ -565,17 +598,13 @@ def generate_note(
     - notes_dir: 便携笔记的输出目录（可选；缺省 VIDEONOTE_NOTES_DIR 环境变量，再缺省 note_results/{task_id}/）。
 
     返回 {task_id, status, platform}。之后用 get_task_status 轮询（不要用 wait_for_note，
-    会卡住 MCP 事件循环）。SUCCESS 时 result.note_dir 指向便携笔记目录。
+    会卡住 MCP 事件循环）。SUCCESS 时 result.note_dir 指向 note.md 所在目录（{task_id}/gen/，
+    指定 notes_dir 时另有 result.portable_note_dir 指向便携副本）。
 
     只需素材（转写/帧/评论，不调 LLM 总结）供自行写笔记时，用 prepare_note_material。
     """
-    if not provider_id:
-        provider_id = _resolve_default_provider_id()
-    if not provider_id:
-        raise ValueError(
-            "需要 provider_id：先 list_providers 查看，或跑 `/videonote-setup` / "
-            "`! videonote providers set <id> --api-key '...'` 配好默认供应商"
-        )
+    # 先做平台检测/handoff/本地校验——handoff 和「本地文件不存在」不需要 provider
+    # （docs 审计 H 组：此前 provider 解析在前，unsupported 链接也会先撞 provider 报错）
     if platform is None:
         platform = _detect_platform(video_url)
     if platform == "unsupported":
@@ -585,6 +614,13 @@ def generate_note(
         if not _local_video_exists(video_url):
             raise ValueError(f"本地文件不存在: {video_url}")
         video_url = str(_coerce_local_path(video_url))
+    if not provider_id:
+        provider_id = _resolve_default_provider_id()
+    if not provider_id:
+        raise ValueError(
+            "需要 provider_id：先 list_providers 查看，或跑 `/videonote-setup` / "
+            "`! videonote providers set <id> --api-key '...'` 配好默认供应商"
+        )
 
     try:
         q = DownloadQuality(quality)
@@ -736,7 +772,10 @@ def prepare_note_material(
 
 @mcp.tool()
 def _stage_label(status: str) -> str:
-    """状态枚举 → 人类可读阶段（Agent 轮询汇报用，如「转写中，已 3 分钟」）。"""
+    """状态枚举 → 人类可读阶段（Agent 轮询汇报用，如「转写中，已 3 分钟」）。
+
+    未知状态原样返回（不抛错）；配合 get_task_status 的 stage 字段使用。
+    """
     return {
         "PENDING": "排队中",
         "INITIALIZING": "准备中",
@@ -752,6 +791,7 @@ def _stage_label(status: str) -> str:
     }.get(status, status)
 
 
+@mcp.tool()
 def get_task_status(task_id: str, include_transcript: bool = False) -> str:
     """查询笔记生成任务进度（轻量快照）。SUCCESS 时 result 含 markdown / note_dir / title。
 
@@ -780,7 +820,11 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
 
     status = data.get("status", "PENDING")
     started = data.get("started_at")
-    elapsed = round(time.time() - float(started), 1) if started else None
+    try:
+        elapsed = round(time.time() - float(started), 1) if started else None
+    except (TypeError, ValueError):
+        # started_at 损坏（旧版本/手工编辑）不影响状态查询（docs 审计 H 组）
+        elapsed = None
     result = None
     result_file = task_dir / "result.json"
     if status == "SUCCESS" and result_file.exists():
@@ -788,13 +832,16 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
             result = json.loads(result_file.read_text(encoding="utf-8"))
             if result and not include_transcript:
                 # 轻量结果：默认剥掉完整转写/评论，避免一次工具调用灌入数十万 token
-                result.pop("transcript", None)
-                result.pop("comments_danmaku", None)
-            elif result:
-                # 即便要全量转写，也剥掉 raw（原始 API 响应可能很大）
-                tr = result.get("transcript")
-                if isinstance(tr, dict):
-                    tr.pop("raw", None)
+                # （步骤任务除外——transcribe_media / prepare_note_material 的转写就是主产物，
+                #  剥掉后 get_task_status 对它们只剩空壳；docs 审计 G3）
+                kind = result.get("kind")
+                if kind not in ("transcript", "material"):
+                    result.pop("transcript", None)
+                    result.pop("comments_danmaku", None)
+            # raw（whisper 原始 API 响应）恒剥——不管转写保不保留，raw 都可能是数 MB
+            tr = result.get("transcript")
+            if isinstance(tr, dict):
+                tr.pop("raw", None)
             if result and result.get("markdown"):
                 result["markdown"] = _absolutize_images(result["markdown"])
             if result and "title" not in result:
@@ -1508,11 +1555,11 @@ def list_transcriber_models() -> str:
 
 @mcp.tool()
 def download_transcriber_model(model_size: str, transcriber_type: str = "fast-whisper") -> str:
+    """在后台下载 whisper 模型（仅本地引擎需要）。下载中/完成后用 list_transcriber_models 查询。"""
     if model_size not in WHISPER_MODEL_SIZES:
         raise ValueError(
             f"未知模型尺寸: {model_size}（可选: {', '.join(WHISPER_MODEL_SIZES)}）"
         )
-    """在后台下载 whisper 模型（仅本地引擎需要）。下载中/完成后用 list_transcriber_models 查询。"""
     size = model_size.strip().lower()
     if transcriber_type == "fast-whisper":
         key = size
@@ -1918,7 +1965,8 @@ def batch_generate_notes(
     """
     from app.services.inspect import inspect_video as _inspect
 
-    max_entries = max(1, int(max_entries or 10))
+    # 上界钳制：防止一条 MCP 调用内做上千次串行解析/排队（docs 审计 F7）
+    max_entries = max(1, min(int(max_entries or 10), 50))
     parsed = _inspect(video_url, platform=platform)
     if not parsed.get("ok"):
         return json.dumps(parsed, ensure_ascii=False)
@@ -1949,6 +1997,7 @@ def batch_generate_notes(
         )
 
     truncated = len(entries) > max_entries
+    total = int(parsed.get("total") or len(entries))
     entries = entries[:max_entries]
     submitted, errors, tasks = 0, [], []
     for e in entries:
@@ -1962,9 +2011,10 @@ def batch_generate_notes(
     return json.dumps(
         {
             "ok": submitted > 0,
-            "total": len(entries),
+            "total": total,          # 解析出的真实总集数（截断前），配合 truncated/remaining 判断是否续跑
             "submitted": submitted,
             "truncated": truncated,
+            "remaining": max(0, total - len(entries)),
             "errors": errors,
             "tasks": tasks,
         },

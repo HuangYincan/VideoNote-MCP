@@ -47,7 +47,12 @@ def get_key() -> Optional[bytes]:
 
 
 def _ensure_key() -> Optional[bytes]:
-    """读或创建密钥（0600）。创建失败（只读目录等）返回 None。"""
+    """读或创建密钥（0600）。创建失败（只读目录等）返回 None。
+
+    并发安全：用 O_CREAT|O_EXCL 独占创建，两个进程/线程同时首写时只有一个赢，
+    败者重读现有 key —— 避免「各自生成 K1/K2、后 replace 者赢，先加密的值永不可解」
+    （配置绝不丢的红线，docs 审计 G1）。
+    """
     key = get_key()
     if key:
         return key
@@ -57,12 +62,20 @@ def _ensure_key() -> Optional[bytes]:
         path = _key_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         key = Fernet.generate_key()
-        tmp = path.with_suffix(".key.tmp")
-        tmp.write_bytes(key)
-        os.chmod(tmp, 0o600)
-        tmp.replace(path)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            os.write(fd, key)
+        finally:
+            os.close(fd)
         logger.info("已生成机器级加密密钥 %s", path)
         return key
+    except FileExistsError:
+        # 并发首写：另一个进程刚建好，用它的 key（已加密值用它加密）
+        key = get_key()
+        if key:
+            return key
+        logger.warning("fernet.key 并发创建冲突且重读失败")
+        return None
     except Exception as exc:  # noqa: BLE001 —— 加密不可用不阻断，回退明文
         logger.warning("生成 fernet.key 失败，回退明文存储: %s", exc)
         return None

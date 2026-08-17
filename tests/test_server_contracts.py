@@ -34,6 +34,44 @@ class CoerceLocalPathTest(unittest.TestCase):
         p = server._coerce_local_path("file:///tmp/hello%20world.mp4")
         self.assertEqual(p, Path("/tmp/hello world.mp4"))
 
+    def test_local_video_exists_rejects_empty_and_dir(self):
+        # docs 审计 H 组：空串 → Path(".") 不应误判存在；目录也不该算视频
+        self.assertFalse(server._local_video_exists(""))
+        with tempfile.TemporaryDirectory() as td:
+            self.assertFalse(server._local_video_exists(td))
+
+    def test_local_video_exists_accepts_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "clip.mp4"
+            f.write_bytes(b"x")
+            self.assertTrue(server._local_video_exists(str(f)))
+            self.assertTrue(server._local_video_exists(f.as_uri()))
+
+
+class AbsolutizeImagesTest(unittest.TestCase):
+    def setUp(self):
+        self._old = server.DATA_DIR
+        server.DATA_DIR = Path(tempfile.mkdtemp(prefix="vn_absolutize_"))
+
+    def tearDown(self):
+        shutil.rmtree(server.DATA_DIR, ignore_errors=True)
+        server.DATA_DIR = self._old
+
+    def test_normal_screenshot_absolutized(self):
+        shot = server.DATA_DIR / "static" / "screenshots"
+        shot.mkdir(parents=True)
+        md = "![x](static/screenshots/a.png)"
+        out = server._absolutize_images(md)
+        self.assertIn("file://", out)
+        self.assertIn("screenshots/a.png", out)
+
+    def test_traversal_kept_verbatim(self):
+        # docs 审计 H 组：../ 逃逸解析到数据目录外 → 原样保留，不生成 file:// 泄露路径
+        # rel 前缀 static/screenshots/ 会先消耗两级 ..；要逃出 DATA_DIR/static/screenshots
+        # 需 4 级 ..：static/screenshots/..→static→DATA_DIR，再 ..→再上一级
+        md = "![x](static/screenshots/../../../../etc/passwd)"
+        self.assertEqual(server._absolutize_images(md), md)
+
 
 class TaskStatusNotFoundTest(unittest.TestCase):
     def test_unknown_task_is_not_found(self):
@@ -60,6 +98,31 @@ class StepTaskSuccessTest(unittest.TestCase):
         resp = json.loads(server.get_task_status("stepok000001"))
         self.assertEqual(resp["status"], "SUCCESS")
         self.assertEqual(resp["result"]["kind"], "transcript")
+
+    def test_step_task_keeps_transcript_by_default(self):
+        # docs 审计 G3：transcribe_media 的转写是主产物，get_task_status 默认不剥
+        def step(task_id, cancel_event):
+            return {"kind": "transcript", "transcript": {"full_text": "hi", "segments": []}}
+
+        server._run_step_task("stepok000002", None, step_fn=step)
+        resp = json.loads(server.get_task_status("stepok000002"))
+        self.assertEqual(resp["result"]["transcript"]["full_text"], "hi")
+
+    def test_note_result_strips_transcript_by_default(self):
+        # 笔记任务（无 kind）默认剥掉转写，include_transcript=True 才保留
+        tid = "notestr000001"
+        try:
+            server._atomic_write_json(
+                server.NOTE_OUTPUT_DIR / tid / "result.json",
+                {"markdown": "# 笔记", "transcript": {"full_text": "secret", "segments": []}},
+            )
+            server._write_status(tid, "SUCCESS", message="完成")
+            resp = json.loads(server.get_task_status(tid))
+            self.assertNotIn("transcript", resp["result"])
+            resp2 = json.loads(server.get_task_status(tid, include_transcript=True))
+            self.assertEqual(resp2["result"]["transcript"]["full_text"], "secret")
+        finally:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
 
     def test_index_step_task_visible_in_list(self):
         tid = "stepidx000001"
@@ -164,8 +227,9 @@ class ListModelsShapeTest(unittest.TestCase):
 
 class ConcurrencyGuardTest(unittest.TestCase):
     def test_guard_raises_when_full(self):
+        # 门禁只统计「正在执行」（future.running()）——排队不占名额（docs 审计 F7）
         fake = mock.Mock()
-        fake.done.return_value = False
+        fake.running.return_value = True
         old = dict(server._task_futures)
         try:
             with server._tasks_lock:
@@ -174,7 +238,23 @@ class ConcurrencyGuardTest(unittest.TestCase):
                     server._task_futures[f"busy{i}"] = fake
             with self.assertRaises(ValueError) as ctx:
                 server._guard_concurrency()
-            self.assertIn("进行中任务", str(ctx.exception))
+            self.assertIn("同时执行", str(ctx.exception))
+        finally:
+            with server._tasks_lock:
+                server._task_futures.clear()
+                server._task_futures.update(old)
+
+    def test_guard_allows_queued_not_yet_running(self):
+        # 排队中的 future（未 running）不占名额：batch_generate_notes 的批量排队语义
+        fake = mock.Mock()
+        fake.running.return_value = False
+        old = dict(server._task_futures)
+        try:
+            with server._tasks_lock:
+                server._task_futures.clear()
+                for i in range(server._MAX_WORKERS * 2):
+                    server._task_futures[f"queued{i}"] = fake
+            server._guard_concurrency()  # 不抛异常即通过
         finally:
             with server._tasks_lock:
                 server._task_futures.clear()

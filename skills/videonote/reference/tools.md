@@ -28,7 +28,7 @@
 - 之后逐个 `get_task_status` 轮询（多任务逐个汇报进度，不要同时并行轮询过多）。
 
 ### `get_task_status(task_id, include_transcript=False)`
-- 轻量快照轮询。返回 `{status, stage, elapsed_secs, message, task_id, result?}`；`stage` 是中文阶段（如「转写中」），`elapsed_secs` 是任务已耗时——轮询汇报可用「转写中，已 3 分钟」。`SUCCESS` 时 `result` 含 `markdown`（或 material 模式的 `frames`/`video_path`/`audio_path`）、`note_dir`、`title`。
+- 轻量快照轮询。返回 `{status, stage, elapsed_secs, message, task_id, result?}`；`stage` 是中文阶段（如「转写中」），`elapsed_secs` 是任务已耗时——轮询汇报可用「转写中，已 3 分钟」。`SUCCESS` 时 `result` 含 `markdown`（或 material 模式的 `frames`/`video_path`/`audio_path`）、`note_dir`、`title`。`note_dir` 指向 `note.md` 所在目录（默认 `{task_id}/gen/`）；生成时指定了 `notes_dir` 会另有 `portable_note_dir` 指向便携副本（`<notes_dir>/<标题>/`）。**默认剥转写**：note 任务要全文用 `include_transcript=True` 或 `get_task_transcript`；material/transcribe 任务的转写是主产物，默认直接返回。
 - **默认不含完整转写**——转写可能数万 token，一次工具调用就会撑爆 context。需要转写文本用 `get_task_transcript(task_id)` 按需取；或传 `include_transcript=True` 一次性拿全量（长视频慎用）。
 
 ### `get_task_transcript(task_id, segment_range="")`
@@ -49,7 +49,7 @@
 ### `prepare_note_material(video_url, platform?, video_understanding?, video_interval?, grid_size?, include_comments?, comments_limit?)`
 - **只准备素材、不调用配置 LLM**：跑下载 → 转写 →（可选）抽帧 →（可选）评论/弹幕，返回素材包（`kind: "material"`）。
 - 参数与 `generate_note` 对应；不传 `video_understanding` / `video_interval` / `include_comments` / `comments_limit` 时套 setup 默认（视频理解默认关 / 6s，评论默认关 / 20 条）。
-- 返回 `{task_id, status: "PENDING", platform}`；`get_task_status` 轮询到 `SUCCESS` 时 `result` 结构（**默认轻量**：`transcript`/`comments_danmaku` 需 `include_transcript=True` 才有）：
+- 返回 `{task_id, status: "PENDING", platform}`；`get_task_status` 轮询到 `SUCCESS` 时 `result` 结构（**素材包契约**：`transcript`/`comments_danmaku` 是主产物，默认直接返回；仅 note 任务才默认剥转写）：
   ```json
   {
     "kind": "material",
@@ -65,7 +65,7 @@
     "audio_path": "/绝对/路径/audio.mp3"
   }
   ```
-- 用途：**AGENT 直接生成**（agent_direct）—— AGENT 自己读转写、用 Read 看 `frames` 图片、按 `comments_danmaku` 写「观众观点」章节，不经配置 LLM。转写文本优先用 `get_task_transcript(task_id, segment_range=...)` 按需取（超长分段，避免撑爆 context）；评论/弹幕用 `get_task_status(task_id, include_transcript=True)` 取。
+- 用途：**AGENT 直接生成**（agent_direct）—— AGENT 自己读转写、用 Read 看 `frames` 图片、按 `comments_danmaku` 写「观众观点」章节，不经配置 LLM。转写文本优先用 `get_task_transcript(task_id, segment_range=...)` 按需取（超长分段，避免撑爆 context）；评论/弹幕默认已在素材包 result 里（`raw` 恒剥）。
 
 ## 模块解耦（独立步骤工具）
 
@@ -180,7 +180,7 @@
 
 - `health_check()` —— `server_version` / ffmpeg / db / 队列 / keyed_providers / `skill_refresh`。
 - `preflight(url?, platform?, provider_id?)` —— 提交前体检：ffmpeg / 磁盘剩余 / 转写器就绪 / 供应商 key+模型 / 队列，url 非空时预解析时长。`ok=false` 时先修 detail 再提交，避免长任务半路失败。
-- `validate_url(url)` —— 识别平台（bilibili/youtube/douyin/tiktok/kuaishou/local）。内置 5 平台之外返回 `{supported: true, platform: "generic"}`（yt-dlp 通用提取，覆盖 1800+ 站点）；仅当 yt-dlp 也失败时 Agent 接手解析。
+- `validate_url(url)` —— 识别平台（bilibili/youtube/douyin/tiktok/kuaishou/local 共 6 种）。内置平台之外返回 `{supported: true, platform: "generic"}`（yt-dlp 通用提取，覆盖 1800+ 站点）；仅当 yt-dlp 也失败时 Agent 接手解析。
 - `set_downloader_cookie` —— **拒绝写入 Cookie**。B 站：`! videonote login bilibili` / `! videonote setup`。
 - `fetch_comments(video_url, limit=20)` —— B 站热门评论（供生成前预览）。
 - `fetch_danmaku(video_url)` —— B 站弹幕汇总（高密度时段 + 高频词）。
@@ -205,5 +205,5 @@
 | 音频预处理（setup ②） | `transcriber preprocess on/off` 或 setup ② 勾选；16kHz 归一 + 超长分块（默认关，零依赖） |
 | 说话人分离（setup ②） | `transcriber diarization on/off` 或 setup ② 勾选；pyannote 可选重依赖 + HF_TOKEN + 模型授权 |
 | 切中文转写（funasr） | `set_transcriber("funasr")`；需 `uvx --with funasr --with torch`（重依赖可选），模型自动下载 |
-| 其他平台（非内置 5 平台） | `validate_url` 返回 `platform:"generic"` → 自动走 yt-dlp 通用提取（覆盖 1800+ 站点） |
+| 其他平台（非内置 6 平台） | `validate_url` 返回 `platform:"generic"` → 自动走 yt-dlp 通用提取（覆盖 1800+ 站点） |
 | AGENT 直接生成 | `prepare_note_material(video_url, ...)` → 轮询 SUCCESS → 读素材包 → **AGENT 自己写笔记**（不调用配置 LLM） |

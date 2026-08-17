@@ -90,3 +90,28 @@ def test_setup_environment_purges_then_fills_defaults():
     # 占位符被剔除后，setdefault 重新填上默认值
     assert os.environ["TRANSCRIBER_TYPE"] == "fast-whisper"
     del os.environ["TRANSCRIBER_TYPE"]
+
+
+def test_plugin_json_env_keys_match_mapping():
+    """plugin.json 的 mcpServers env 键与 _USER_CONFIG_MAPPED_ENV 精确一致，
+    且占位符指向存在的 userConfig 键（docs 审计 P1-3：漂移会把
+    `${user_config.x}` 字面量透传成真实配置）。"""
+    import json
+    from pathlib import Path
+
+    from videonote_mcp.config import _USER_CONFIG_MAPPED_ENV
+
+    plugin = json.loads(
+        (Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json").read_text()
+    )
+    env = plugin["mcpServers"]["videonote"]["env"]
+    assert set(env) == set(_USER_CONFIG_MAPPED_ENV), (
+        f"env 键漂移: plugin={sorted(env)} config={sorted(_USER_CONFIG_MAPPED_ENV)}"
+    )
+    for k, v in env.items():
+        key_name = v.removeprefix("${user_config.").removesuffix("}")
+        assert key_name in plugin["userConfig"], f"{k} 的占位符指向不存在的 userConfig: {key_name}"
+    suffix = {k.removeprefix("VIDEONOTE_").lower() for k in env}
+    assert suffix == set(plugin["userConfig"]), (
+        f"userConfig 与 env 不对应: env={sorted(suffix)} plugin={sorted(plugin['userConfig'])}"
+    )
