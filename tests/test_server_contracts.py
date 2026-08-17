@@ -1351,5 +1351,50 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
             self._restore(old)
 
 
+class TranscriptUnavailableReasonTest(unittest.TestCase):
+    """「无转写」文案按 status.json 区分原因：运行中→建议等终态；失败/取消→如实报；
+    不存在→状态不可读。此前一律「可能未成功」——运行中的任务被误报成失败（#114）。"""
+
+    def _status(self, tid, status=None):
+        d = server.NOTE_OUTPUT_DIR / tid
+        d.mkdir(parents=True, exist_ok=True)
+        if status:
+            (d / "status.json").write_text(json.dumps({"status": status}), encoding="utf-8")
+        return d
+
+    def tearDown(self):
+        for d in server.NOTE_OUTPUT_DIR.iterdir():
+            if d.name.startswith("tx"):
+                shutil.rmtree(d, ignore_errors=True)
+
+    def test_export_running_task_advises_waiting(self):
+        self._status("tx0001", "DOWNLOADING")
+        resp = json.loads(server.export_transcript("tx0001"))
+        self.assertIn("仍在运行", resp["error"])
+        self.assertIn("DOWNLOADING", resp["error"])
+        self.assertIn("get_task_status", resp["error"])
+
+    def test_export_failed_task_reports_failure(self):
+        self._status("tx0002", "FAILED")
+        resp = json.loads(server.export_transcript("tx0002"))
+        self.assertIn("未成功（FAILED）", resp["error"])
+
+    def test_export_missing_task_reports_unreadable(self):
+        resp = json.loads(server.export_transcript("tx0003"))
+        self.assertIn("不可读", resp["error"])
+
+    def test_resource_running_task_advises_waiting(self):
+        self._status("tx0004", "TRANSCRIBING")
+        out = server.transcript_resource("tx0004")
+        self.assertIn("仍在运行", out)
+        self.assertIn("TRANSCRIBING", out)
+
+    def test_get_task_transcript_running_task(self):
+        self._status("tx0005", "SUMMARIZING")
+        resp = json.loads(server.get_task_transcript("tx0005"))
+        self.assertFalse(resp["ok"])
+        self.assertIn("仍在运行", resp["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -244,6 +244,26 @@ def _status_is_terminal(task_id: str) -> bool:
         return False
 
 
+def _transcript_unavailable_reason(task_id: str) -> str:
+    """「任务没有可读转写」的准确原因：读 status.json 区分不存在/运行中/未成功/成功无转写。
+
+    get_task_transcript / MCP Resource / export_transcript 共用——运行中的任务此前被
+    笼统报「尚未成功或已清理」，Agent 可能误向用户报告「任务失败了」（#114）。
+    """
+    try:
+        data = json.loads(
+            (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
+        )
+        status = data.get("status") or "UNKNOWN"
+    except Exception:
+        return "任务状态不可读（可能已清理）"
+    if status == "SUCCESS":
+        return "任务成功但没有转写"
+    if status in ("FAILED", "CANCELLED"):
+        return f"任务未成功（{status}）"
+    return f"任务仍在运行（{status}）：先 get_task_status 等终态"
+
+
 def _absolutize_images(markdown: Optional[str], base_dir: Optional[str] = None) -> str:
     """把 Markdown 里的相对图片路径改写为 file:// 绝对路径。
 
@@ -1052,13 +1072,7 @@ def transcript_resource(task_id: str) -> str:
         return f"task_id 无效: {e}"
     transcript = _load_task_transcript(task_id)
     if not transcript:
-        status = "UNKNOWN"
-        try:
-            st = json.loads((NOTE_OUTPUT_DIR / task_id / "status.json").read_text(encoding="utf-8"))
-            status = st.get("status", "UNKNOWN")
-        except Exception:
-            pass
-        return f"该任务没有可读转写（status={status}，尚未成功或已清理）"
+        return f"该任务没有可读转写（{_transcript_unavailable_reason(task_id)}）"
     segments = transcript.get("segments") or []
     if not segments:
         return transcript.get("full_text") or ""
@@ -1100,7 +1114,7 @@ def get_task_transcript(task_id: str, segment_range: str = "") -> str:
                 "task_id": task_id,
                 "ok": False,
                 "status": status,
-                "message": "该任务没有可读转写（尚未成功或已清理）",
+                "message": f"该任务没有可读转写（{_transcript_unavailable_reason(task_id)}）",
             },
             ensure_ascii=False,
         )
@@ -2286,7 +2300,10 @@ def export_transcript(
                 transcript = None
     if transcript is None:
         return json.dumps(
-            {"task_id": task_id, "error": f"找不到任务 {task_id} 的转写结果（任务可能未成功）"},
+            {
+                "task_id": task_id,
+                "error": f"找不到任务 {task_id} 的转写结果（{_transcript_unavailable_reason(task_id)}）",
+            },
             ensure_ascii=False,
         )
 
