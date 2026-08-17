@@ -796,5 +796,33 @@ class ListTasksPaginationTest(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
 
 
+class SetTranscriberValidationTest(unittest.TestCase):
+    """set_transcriber 未知引擎：持久化后运行时 get_transcriber 静默回退 fast-whisper——
+    用户以为配了云端引擎实际跑本地；入口显式报错（#103）。"""
+
+    def test_unknown_type_rejected(self):
+        with self.assertRaises(ValueError) as cm:
+            server.set_transcriber("bogus-engine")
+        self.assertIn("transcriber_type 必须是", str(cm.exception))
+        self.assertIn("fast-whisper", str(cm.exception))
+
+    def test_valid_types_pass(self):
+        for t in ("fast-whisper", "groq", "bcut", "kuaishou", "mlx-whisper", "funasr"):
+            with mock.patch.object(
+                server.TranscriberConfigManager,
+                "update_config",
+                return_value={"transcriber_type": t, "whisper_model_size": "small"},
+            ) as m:
+                resp = json.loads(server.set_transcriber(t))
+            m.assert_called_once()
+            self.assertEqual(resp["transcriber_type"], t)
+
+    def test_whitelist_matches_enum(self):
+        # 白名单与 TranscriberType 枚举同源——防止两处漂移
+        from app.transcriber.transcriber_provider import TranscriberType
+
+        self.assertEqual(set(server._TRANSCRIBER_TYPES), {e.value for e in TranscriberType})
+
+
 if __name__ == "__main__":
     unittest.main()

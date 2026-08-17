@@ -42,6 +42,7 @@
 - **grid_size 入口显式校验（#100）**：extract_frames 工具校验 grid_size，但 generate_note / prepare_note_material 直传——非法值（[0,0] / [1] / [1,2,3]）在流水线深处 VideoReader 才炸成「视频处理失败」泛化错误；校验提取为共享助手 `_check_grid_size`（与 style/format 同口径：None/空不拦、入口显式报错），接入 generate_note / prepare_note_material / extract_frames 三处；顺带清 note.py 2 处裸 `except:`。+7 契约测试。**306 passed + ruff F-clean**。
 - **num_speakers 无效值显式提示（#101）**：`diarize_audio` 的 `kwargs = {"num_speakers": n} if n else {}`——0 / 负值 / 非 int 静默回退自动检测（用户显式传了无效值却无声无息）；入口校验打 warning 后回退，合法值照常透传。+4 单元测试。**310 passed + ruff F-clean**。
 - **list_tasks 分页（#102）**：无上限返回全量（每行含 200 字 summary，长跑用户任务上百条时响应膨胀）；加可选 `limit` / `offset`（缺省全量，向后兼容；limit 钳制 ≥1，offset 钳制 ≥0）；skills tools.md 同步新签名。+4 契约测试。**314 passed + ruff F-clean**。
+- **set_transcriber 引擎白名单（#103）**：未知 `transcriber_type` 被持久化后，运行时 `get_transcriber` 的 `TranscriberType(...)` 解析失败**静默回退 fast-whisper**——用户以为配了 groq/bcut 云端引擎，实际在跑本地 whisper；入口白名单校验（与 style/format 同口径；CLI 侧 argparse choices 本就安全），白名单与 TranscriberType 枚举同源防漂移。+3 契约测试。**317 passed + ruff F-clean**。
 - 文档：docs/05 第三轮 #90-#94、docs/06、CHANGELOG；skills tools.md 同步 batch 新签名；docs/05 Wave B 第 6 条过时 ⏸ 标记修正（Resource 6f 已落地）。
 
 ## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）

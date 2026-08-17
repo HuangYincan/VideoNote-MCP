@@ -120,6 +120,8 @@ _STYLE_VALUES = (
     "life_journal", "task_oriented", "business", "meeting_minutes",
 )
 _FORMAT_VALUES = ("toc", "link", "screenshot", "summary")
+# 与 app/transcriber/transcriber_provider.py 的 TranscriberType 枚举、cli.py _TRANSCRIBER_ENGINES 同源
+_TRANSCRIBER_TYPES = ("fast-whisper", "groq", "bcut", "kuaishou", "mlx-whisper", "funasr")
 
 
 def _check_style_and_format(style, formats) -> None:
@@ -1626,6 +1628,12 @@ def set_transcriber(
     - diarization: 说话人分离开关（pyannote 可选，默认关）；
     - diarization_speakers: 说话人数提示（可选，自动检测时省略）。
     """
+    # 未知类型会被持久化，运行时 get_transcriber 静默回退 fast-whisper——
+    # 用户以为配了云端引擎实际跑本地 whisper；入口显式报错（与 style/format 同口径）
+    if transcriber_type not in _TRANSCRIBER_TYPES:
+        raise ValueError(
+            f"transcriber_type 必须是 {' / '.join(_TRANSCRIBER_TYPES)} 之一，收到: {transcriber_type!r}"
+        )
     mgr = TranscriberConfigManager()
     cfg = mgr.update_config(
         transcriber_type,
