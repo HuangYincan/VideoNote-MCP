@@ -69,6 +69,40 @@ class BatchGenerateTest(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertIn("解析失败", out["error"])
 
+    def test_passes_through_advanced_params(self):
+        """批量应透传 generate_note 的全部高级参数（视频理解/弹幕/link/notes_dir 等）。"""
+        entries = [
+            {"p": 1, "title": "P1", "duration": 100, "url": "u1", "video_id": "v1"},
+        ]
+        captured = {}
+
+        def _capture(url, **kwargs):
+            captured.update(kwargs)
+            return _fake_generate_note(url, **kwargs)
+
+        with mock.patch("app.services.inspect.inspect_video", return_value={
+            "ok": True, "platform": "bilibili", "kind": "multi",
+            "title": "合集", "total": 1, "truncated": False, "entries": entries,
+        }), mock.patch.object(server, "generate_note", side_effect=_capture) as gn:
+            server.batch_generate_notes(
+                "u1",
+                link=True,
+                video_understanding=True,
+                video_interval=4,
+                grid_size=[3, 3],
+                include_comments=True,
+                comments_limit=30,
+                notes_dir="/tmp/notes",
+            )
+        self.assertEqual(gn.call_count, 1)
+        self.assertTrue(captured["link"])
+        self.assertTrue(captured["video_understanding"])
+        self.assertEqual(captured["video_interval"], 4)
+        self.assertEqual(captured["grid_size"], [3, 3])
+        self.assertTrue(captured["include_comments"])
+        self.assertEqual(captured["comments_limit"], 30)
+        self.assertEqual(captured["notes_dir"], "/tmp/notes")
+
 
 if __name__ == "__main__":
     unittest.main()

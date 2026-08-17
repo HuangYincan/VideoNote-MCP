@@ -1986,13 +1986,22 @@ def batch_generate_notes(
     style: Optional[str] = None,
     screenshot: Optional[bool] = None,
     extras: Optional[str] = None,
+    link: bool = False,
+    video_understanding: Optional[bool] = None,
+    video_interval: Optional[int] = None,
+    grid_size: Optional[List[int]] = None,
+    include_comments: Optional[bool] = None,
+    comments_limit: Optional[int] = None,
+    notes_dir: Optional[str] = None,
 ) -> str:
     """对播放列表/合集/分 P 链接批量提交笔记任务（服务端逐个排队，遵守并发门禁）。
 
     - video_url: 必填，B 站分 P / YouTube 播放列表等可展开为多集的链接；
     - max_entries: 最多提交条数（默认 10，防 200 集播放列表一次全排；超出截断并标记 truncated）；
-    - 其余参数与 generate_note 一致（quality/provider_id/model_name/style/format/screenshot/extras），
-      批量共享同一套风格与格式设置；单集链接退化为单个 generate_note 任务。
+    - 其余参数与 generate_note 一致（quality/provider_id/model_name/style/format/screenshot/
+      extras/link/video_understanding/video_interval/grid_size/include_comments/
+      comments_limit/notes_dir），批量共享同一套风格与格式设置；单集链接退化为单个
+      generate_note 任务。
 
     内部先 inspect_video 展开条目再逐条提交（同一并发门禁，超出 worker 数的排队等待；
     与 SKILL「多集用 subagent 逐个提交」纪律不同——本工具把展开+排队收敛到服务端）。
@@ -2021,6 +2030,13 @@ def batch_generate_notes(
             style=style,
             screenshot=screenshot,
             extras=extras,
+            link=link,
+            video_understanding=video_understanding,
+            video_interval=video_interval,
+            grid_size=grid_size,
+            include_comments=include_comments,
+            comments_limit=comments_limit,
+            notes_dir=notes_dir,
         )
         r = json.loads(raw)
         return {**entry, "task_id": r.get("task_id"), "status": r.get("status")}
