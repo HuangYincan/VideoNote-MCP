@@ -72,11 +72,23 @@ class TestOpenStderrLog:
 class TestExitSummary:
     def test_writes_active_task_count_to_stderr(self):
         with mock.patch.object(server.sys, "__stderr__") as fake_stderr, \
-             mock.patch.object(server, "_task_futures", {"a": object(), "b": object()}):
+             mock.patch.object(server, "_task_futures", {"a": object(), "b": object()}), \
+             mock.patch.object(server, "_task_events", {}):
             server._exit_summary()
             fake_stderr.write.assert_called_once()
             assert "2" in fake_stderr.write.call_args[0][0]
 
+    def test_sets_cancel_on_active_tasks(self):
+        # docs 审计 G5：退出时给进行中/排队任务发取消，缩短子进程残留窗口
+        ev1, ev2 = mock.Mock(), mock.Mock()
+        with mock.patch.object(server.sys, "__stderr__"), \
+             mock.patch.object(server, "_task_futures", {"a": object()}), \
+             mock.patch.object(server, "_task_events", {"a": ev1, "b": ev2}):
+            server._exit_summary()
+            ev1.set.assert_called_once()
+            ev2.set.assert_called_once()
+
     def test_never_raises(self):
-        with mock.patch.object(server.sys, "__stderr__", side_effect=OSError("closed")):
+        with mock.patch.object(server.sys, "__stderr__", side_effect=OSError("closed")), \
+             mock.patch.object(server, "_task_events", {"a": mock.Mock(side_effect=RuntimeError)}):
             server._exit_summary()  # 不抛异常即通过

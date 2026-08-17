@@ -184,5 +184,61 @@ class SummarizeMaterialTest(unittest.TestCase):
         self.assertEqual(result, "x")
 
 
+class TestYoutubeCookie(unittest.TestCase):
+    """docs/05 #34：YouTube 下载器吃 setup ③ 填的 youtube cookie（Netscape 文件）。"""
+
+    def _dl(self, cookie, tmp_name):
+        import app.downloaders.youtube_downloader as mod
+
+        with mock.patch.object(mod.CookieConfigManager, "get", return_value=cookie):
+            fake = mock.Mock()
+            fake.name = tmp_name
+            fake.close = mock.Mock()
+            with mock.patch("app.downloaders.youtube_downloader.tempfile") as m_tmp:
+                m_tmp.NamedTemporaryFile.return_value = fake
+                dl = mod.YoutubeDownloader()
+        return dl, fake
+
+    def test_no_cookie_no_file(self):
+        import app.downloaders.youtube_downloader as mod
+
+        with mock.patch.object(mod.CookieConfigManager, "get", return_value=""):
+            dl = mod.YoutubeDownloader()
+        self.assertIsNone(dl._cookiefile)
+
+    def test_cookie_writes_netscape(self):
+        import app.downloaders.youtube_downloader as mod
+
+        tmp = tempfile.mktemp(suffix=".txt")
+        dl, fake = self._dl("LOGIN_INFO=abc; SID=def", tmp)
+        self.assertEqual(dl._cookiefile, tmp)
+        content = fake.writelines.call_args[0][0]
+        self.assertTrue(any(".youtube.com" in line and "LOGIN_INFO" in line for line in content))
+        self.assertTrue(any(".youtube.com" in line and "SID" in line for line in content))
+        dl._cleanup_cookie_file()
+        self.assertFalse(Path(tmp).exists())
+
+    def test_download_injects_cookiefile(self):
+        import app.downloaders.youtube_downloader as mod
+
+        tmp = tempfile.mktemp(suffix=".txt")
+        dl, _ = self._dl("SID=x", tmp)
+        ydl = mock.Mock()
+        ydl.__enter__ = mock.Mock(return_value=ydl)
+        ydl.__exit__ = mock.Mock(return_value=False)
+        ydl.extract_info.return_value = {"id": "vid1", "title": "t", "duration": 1, "ext": "m4a"}
+        captured = {}
+
+        def _fake_ydl(opts):
+            captured.update(opts)
+            return ydl
+
+        with mock.patch("app.downloaders.youtube_downloader.yt_dlp.YoutubeDL", side_effect=_fake_ydl), \
+             mock.patch.object(mod, "get_data_dir", return_value=tempfile.gettempdir()):
+            dl.download("https://youtu.be/vid1")
+        self.assertEqual(captured["cookiefile"], tmp)
+        dl._cleanup_cookie_file()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

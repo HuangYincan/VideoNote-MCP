@@ -137,11 +137,21 @@ def _exit_summary() -> None:
     「Logging error: I/O operation on closed file」（docs 审计 P2-6）。
     已知限制（docs/05 #44）：线程池 worker 是 daemon 线程，SIGKILL 或客户端强杀时
     钩子不执行，转写/下载子进程会残留跑完；这是 Python 子进程管理的固有边界。
+
+    额外（docs 审计 G5）：退出时 set 所有进行中/排队任务的 cancel_event——
+    解释器退出前会 join 非 daemon 线程池线程，任务在阶段边界检查取消后尽快收敛，
+    缩短 ffmpeg/whisper 子进程残留窗口。纯增益、零风险（任务已能处理取消）。
     """
     try:
         with _tasks_lock:
             active = len(_task_futures)
-        sys.__stderr__.write(f"[videonote] 退出;进行中/排队任务 {active} 个\n")
+            events = list(_task_events.values())
+        for ev in events:
+            try:
+                ev.set()
+            except Exception:
+                pass
+        sys.__stderr__.write(f"[videonote] 退出;进行中/排队任务 {active} 个(已发送取消)\n")
     except Exception:
         pass
 

@@ -1,4 +1,5 @@
 import os
+import tempfile
 import logging
 from abc import ABC
 from typing import Union, Optional, List
@@ -10,6 +11,7 @@ from app.downloaders.common import ytdlp_retry
 from app.downloaders.youtube_subtitle import YouTubeSubtitleFetcher
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
+from app.services.cookie_manager import CookieConfigManager
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.path_helper import get_data_dir
 from app.utils.url_parser import extract_video_id
@@ -28,8 +30,43 @@ def _apply_proxy(ydl_opts: dict) -> dict:
 
 class YoutubeDownloader(Downloader, ABC):
     def __init__(self):
-
         super().__init__()
+        # YouTube Cookie（docs/05 #34）：经 setup ③「平台 Cookie」填 youtube；
+        # 高清/年龄限制/地区限制视频需要登录态，匿名时照常降级
+        self._cookie_mgr = CookieConfigManager()
+        self._cookie = self._cookie_mgr.get('youtube')
+        self._cookiefile = self._write_netscape_cookie_file()
+
+    def _write_netscape_cookie_file(self) -> Optional[str]:
+        """将 Cookie 写入 Netscape 格式临时文件，返回文件路径（供 yt-dlp cookiefile 使用）。"""
+        if not self._cookie:
+            return None
+        lines = ["# Netscape HTTP Cookie File\n"]
+        for pair in self._cookie.split("; "):
+            if "=" in pair:
+                key, value = pair.split("=", 1)
+                lines.append(f".youtube.com\tTRUE\t/\tFALSE\t0\t{key}\t{value}\n")
+        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
+        tmp.writelines(lines)
+        tmp.close()
+        try:
+            os.chmod(tmp.name, 0o600)
+        except OSError:
+            pass
+        logger.info("已生成 YouTube Netscape Cookie 文件（条目: %d）", len(lines) - 1)
+        return tmp.name
+
+    def _cleanup_cookie_file(self) -> None:
+        path = getattr(self, "_cookiefile", None)
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self._cookiefile = None
+
+    def __del__(self):
+        self._cleanup_cookie_file()
 
     def download(
         self,
@@ -53,6 +90,8 @@ class YoutubeDownloader(Downloader, ABC):
             'noplaylist': True,
             'quiet': False,
         }
+        if self._cookiefile:
+            ydl_opts['cookiefile'] = self._cookiefile
 
         if skip_download:
             ydl_opts['skip_download'] = True
@@ -102,6 +141,8 @@ class YoutubeDownloader(Downloader, ABC):
             'quiet': False,
             'merge_output_format': 'mp4',  # 确保合并成 mp4
         }
+        if self._cookiefile:
+            ydl_opts['cookiefile'] = self._cookiefile
 
         _apply_proxy(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
