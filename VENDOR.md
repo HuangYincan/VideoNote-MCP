@@ -15,7 +15,7 @@
 |------|------|
 | `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, **bilibili_comment**, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, **generic_downloader**（xiaoyuzhoufm_download **已删除** 2026-08-17：未接入且 yt-dlp 通用提取已覆盖小宇宙） |
 | `app/transcriber/` | base, transcriber_provider, whisper, groq, bcut, kuaishou, mlx_whisper_transcriber, **funasr_transcriber**, **audio_preprocess**, model_download_state, whisper_models |
-| `app/gpt/` | base, gpt_factory, openai_gpt, deepseek_gpt, qwen_gpt, universal_gpt, prompt, prompt_builder, request_chunker, utils, tools（不含 test.py）+ `app/gpt/provider/OpenAI_compatible_provider.py`（gpt_factory 依赖） |
+| `app/gpt/` | base, gpt_factory, universal_gpt, prompt, prompt_builder, request_chunker + `app/gpt/provider/OpenAI_compatible_provider.py`（gpt_factory 依赖）（openai_gpt / deepseek_gpt / qwen_gpt / utils / tools **已删除** 2026-08-17：全仓零引用——gpt_factory 走 OpenAICompatibleProvider 直连，上游直连类死代码） |
 | `app/db/` | engine, init_db, sqlite_client, provider_dao, model_dao, video_task_dao + `app/db/models/`（models, providers, video_tasks） |
 | `app/models/` | audio_model, gpt_model, model_config, notes_model, provide_model, transcriber_model, video_record |
 | `app/enmus/` | exception, note_enums, task_status_enums |

@@ -34,6 +34,7 @@
 - **DB 路径修复（5ba8497，#91）**：`app/db/engine.py` 默认 `sqlite:///video_note.db` 是相对 CWD 路径——裸脚本/单文件测试在仓库根分裂出 DB（根目录残留垃圾的真实根因）；改 `get_data_dir()` 稳定路径；`cache_data` 弃用 vendored 旧 `DATA_DIR` env。
 - **下载器集成测试（364e7ad，#92）**：真实下载器类 + mock yt-dlp 的全流程 15 项（字段契约/quality 映射/skip_download/多 P glob 缓存/ytdlp_retry 语义）；顺带修 `download_video` 提取失败 `None.mp4` 误导报错（改 ValueError）与 douyin tuple 错误形状。
 - **插件 userConfig 对齐（05cb87a + 2c1ad9f，#93/#94）**：全仓 15 个 `VIDEONOTE_*` env 与 plugin.json 对齐（补 max_workers/stderr_log_max_mb，内部路径 3 个刻意不暴露）；`batch_generate_notes` 透传 generate_note 全部高级参数（link/视频理解/弹幕/notes_dir）；`_USER_CONFIG_MAPPED_ENV` 同步（CI 门禁拦截）。
+- **死代码清理（#95）**：`app/gpt/` 删 5 个全仓零引用模块（openai_gpt / deepseek_gpt / qwen_gpt / utils / tools——gpt_factory 走 `OpenAICompatibleProvider` 直连，上游直连类死代码）；VENDOR.md 分叉清单同步；AST 全仓死模块普查确认无其余残留。**268 passed + ruff F-clean（Wave C 13 收口）**。
 - 文档：docs/05 第三轮 #90-#94、docs/06、CHANGELOG；skills tools.md 同步 batch 新签名。
 
 ## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）
