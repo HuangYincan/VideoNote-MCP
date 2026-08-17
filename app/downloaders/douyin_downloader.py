@@ -305,7 +305,7 @@ class DouyinDownloader(Downloader):
             return output_path
         except Exception as e:
             logger.warning("抖音下载请求失败: %s", e)
-            raise ValueError("请求失败:", e)
+            raise ValueError(f"抖音下载请求失败: {e}") from e
 
 
 

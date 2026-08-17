@@ -132,6 +132,8 @@ class BilibiliDownloader(Downloader, ABC):
         os.makedirs(output_dir, exist_ok=True)
         logger.debug("video_url=%s", video_url)
         video_id=extract_video_id(video_url, "bilibili")
+        if not video_id:
+            raise ValueError(f"无法从链接提取 B 站视频 ID: {video_url}")
         # 多 P 视频 yt-dlp 的 id 是 {BV}_pN（缓存名 {BV}_pN.mp4），与纯 BV 不同 →
         # 用前缀 glob 匹配，否则缓存永远不命中、每次重新下载
         import glob as _glob

@@ -128,6 +128,8 @@ class YoutubeDownloader(Downloader, ABC):
         if output_dir is None:
             output_dir = get_data_dir()
         video_id = extract_video_id(video_url, "youtube")
+        if not video_id:
+            raise ValueError(f"无法从链接提取 YouTube 视频 ID: {video_url}")
         video_path = os.path.join(output_dir, f"{video_id}.mp4")
         if os.path.exists(video_path):
             return video_path
