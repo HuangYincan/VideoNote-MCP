@@ -207,8 +207,6 @@ class TestYoutubeCookie(unittest.TestCase):
         self.assertIsNone(dl._cookiefile)
 
     def test_cookie_writes_netscape(self):
-        import app.downloaders.youtube_downloader as mod
-
         tmp = tempfile.mktemp(suffix=".txt")
         dl, fake = self._dl("LOGIN_INFO=abc; SID=def", tmp)
         self.assertEqual(dl._cookiefile, tmp)

@@ -72,6 +72,28 @@ class AbsolutizeImagesTest(unittest.TestCase):
         md = "![x](static/screenshots/../../../../etc/passwd)"
         self.assertEqual(server._absolutize_images(md), md)
 
+    def test_assets_relative_absolutized_with_base_dir(self):
+        # 便携笔记模式：markdown 里 Assets/ 相对引用（相对 note_dir=gen/）→ file://
+        gen = server.DATA_DIR / "t1" / "gen"
+        gen.mkdir(parents=True)
+        md = "![帧](Assets/frame_0001.jpg)"
+        out = server._absolutize_images(md, base_dir=str(gen))
+        self.assertIn("file://", out)
+        self.assertIn("Assets/frame_0001.jpg", out)
+
+    def test_assets_without_base_dir_untouched(self):
+        # 无 base_dir（旧路径兼容）时 Assets/ 不处理
+        md = "![帧](Assets/frame_0001.jpg)"
+        self.assertEqual(server._absolutize_images(md), md)
+
+    def test_assets_traversal_kept_verbatim(self):
+        gen = server.DATA_DIR / "t2" / "gen"
+        gen.mkdir(parents=True)
+        md = "![x](Assets/../../secret.png)"
+        out = server._absolutize_images(md, base_dir=str(gen))
+        # Assets/.. 逃出 gen/ → 原样保留
+        self.assertEqual(out, md)
+
 
 class TaskStatusNotFoundTest(unittest.TestCase):
     def test_unknown_task_is_not_found(self):

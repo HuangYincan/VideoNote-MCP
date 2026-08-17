@@ -200,8 +200,14 @@ def _status_is_terminal(task_id: str) -> bool:
         return False
 
 
-def _absolutize_images(markdown: Optional[str]) -> str:
-    """把 Markdown 里相对 /static/screenshots/... 的图片路径改写为 file:// 绝对路径。"""
+def _absolutize_images(markdown: Optional[str], base_dir: Optional[str] = None) -> str:
+    """把 Markdown 里的相对图片路径改写为 file:// 绝对路径。
+
+    两类来源（note.py _insert_screenshots）：
+    1. 旧全局模式：`/static/screenshots/...` → DATA_DIR/static/screenshots；
+    2. 便携笔记模式：`Assets/xxx.jpg`（相对 note_dir=gen/，见 G2）→ base_dir/Assets/...。
+    两者都做 resolve + 目录内校验（防路径穿越），逃逸路径原样保留。
+    """
     if not markdown:
         return markdown
     base = DATA_DIR / "static" / "screenshots"
@@ -215,7 +221,20 @@ def _absolutize_images(markdown: Optional[str]) -> str:
         except Exception:
             return m.group(0)
 
-    return re.sub(r"\]\(/?(static/screenshots/[^)]+)\)", _repl, markdown)
+    out = re.sub(r"\]\(/?(static/screenshots/[^)]+)\)", _repl, markdown)
+    if base_dir:
+        root = Path(base_dir).resolve()
+
+        def _repl_assets(m):
+            try:
+                target = (root / m.group(1)).resolve()
+                target.relative_to(root)
+                return f"]({target.as_uri()})"
+            except Exception:
+                return m.group(0)
+
+        out = re.sub(r"\]\((Assets/[^)]+)\)", _repl_assets, out)
+    return out
 
 
 def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None, **params) -> None:
@@ -853,7 +872,9 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
             if isinstance(tr, dict):
                 tr.pop("raw", None)
             if result and result.get("markdown"):
-                result["markdown"] = _absolutize_images(result["markdown"])
+                # 便携笔记模式 markdown 里是 Assets/ 相对引用（相对 note_dir=gen/，见 G2）；
+                # base_dir=note_dir 让 Agent 拿到的 markdown 图片可被直接 Read
+                result["markdown"] = _absolutize_images(result["markdown"], base_dir=result.get("note_dir"))
             if result and "title" not in result:
                 # 补语义标题（旧任务 result 可能无 title；从 audio_meta 兜底）
                 am = result.get("audio_meta") or {}
