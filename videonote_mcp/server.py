@@ -723,6 +723,10 @@ def generate_note(
 
     task_id = uuid.uuid4().hex
     _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
+    notes_dir_out = notes_dir or get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or None
+    # 便携笔记可写数据目录外（用户显式意图），只提示不拦截（与 export/merge 同口径，docs/05 #45）
+    if notes_dir_out and not Path(notes_dir_out).resolve().is_relative_to(DATA_DIR.resolve()):
+        logger.warning("generate_note 便携笔记输出到数据目录外: %s", notes_dir_out)
     params = dict(
         video_url=video_url,
         platform=platform,
@@ -739,7 +743,7 @@ def generate_note(
         video_understanding=video_understanding,
         video_interval=video_interval,
         grid_size=grid_size or [],
-        notes_dir=notes_dir or get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or None,
+        notes_dir=notes_dir_out,
     )
     cancel_event = threading.Event()
     future = _pool.submit(_run_note_task, task_id, cancel_event, **params)

@@ -38,7 +38,8 @@
 - **CLI 契约测试 + update_provider 假成功修复（#96）**：`ProviderService.update_provider` 对不存在供应商返回恒真 dict——CLI `providers set` 与 MCP `update_provider` 的「不存在」判空永不生效（不存在的 id 被报成「已更新」）；改 `updated_provider is None` 时返回 None。新 tests/test_cli.py 18 项（CLI 此前零测试覆盖：providers 加密落盘 enc:/掩码/交互取 key/错误路径、transcriber 配置闭环、export 渲染 transcript.srt、subprocess seed 验证）；另清 2 处旧 worktree 路径 docstring。**286 passed + ruff F-clean**。
 - **style/format 白名单 enum 化（#97）**：4 个工具（generate_note/prepare_note_material/summarize_note/batch_generate_notes）签名 `Literal` 化——schema 呈现 enum（Agent 可见合法值）；`_check_style_and_format` 入口显式校验兜底（FastMCP 不做运行时参数校验，直接调用传非法 style 曾静默降级成「无风格笔记」）；校验在 provider 解析前（H6：不需要 provider 的错误先报）。+7 契约测试。**293 passed + ruff F-clean + 39 工具**。
 - **fetch_comments limit 钳制（#98）**：`limit<=0` 令 fetcher 的 `len(seen) >= limit` 恒真——第一页即停止，**静默返回空评论**（ok:true 无数据，Agent 误判视频无评论）；入口钳制 `max(1, int(limit))`。+3 契约测试。**296 passed + ruff F-clean**。
-- 文档：docs/05 第三轮 #90-#94、docs/06、CHANGELOG；skills tools.md 同步 batch 新签名。
+- **notes_dir 数据目录外提示（#99）**：export/merge 的「只提示不拦截」warning（#45 口径）唯一漏网的是 notes_dir——便携笔记写任意绝对路径静默无声；generate_note 解析完缺省链（参数 → app_config → VIDEONOTE_NOTES_DIR）后统一校验，数据目录外打 warning（便携笔记是显式用户意图，不拦截；batch_generate_notes 委托 generate_note 自动继承）。+3 契约测试。**299 passed + ruff F-clean**。
+- 文档：docs/05 第三轮 #90-#94、docs/06、CHANGELOG；skills tools.md 同步 batch 新签名；docs/05 Wave B 第 6 条过时 ⏸ 标记修正（Resource 6f 已落地）。
 
 ## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）
 

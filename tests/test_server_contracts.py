@@ -4,6 +4,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from unittest import mock
 
@@ -659,6 +660,54 @@ class PreflightTest(unittest.TestCase):
         self.assertEqual(server._fmt_duration(3661), "1:01:01")
         self.assertEqual(server._fmt_duration(None), "未知")
         self.assertEqual(server._fmt_duration(0), "未知")
+
+
+class NotesDirWarningTest(unittest.TestCase):
+    """notes_dir 写数据目录外只提示不拦截（与 export/merge 同口径，docs/05 #45 收口）。"""
+
+    @staticmethod
+    def _submit_generate(notes_dir):
+        """stub provider/模型/线程池，让 generate_note 干净走到提交点。"""
+        done = Future()
+        done.set_result(None)
+        with mock.patch(
+            "videonote_mcp.server._resolve_default_provider_id", return_value="t-provider"
+        ), mock.patch(
+            "videonote_mcp.server.get_models_by_provider", return_value=[{"model_name": "t-model"}]
+        ), mock.patch("videonote_mcp.server._pool.submit", return_value=done):
+            return server.generate_note("https://example.com/v", notes_dir=notes_dir)
+
+    def test_outside_data_dir_warns(self):
+        out_dir = tempfile.mkdtemp(prefix="vn_notes_out_")
+        try:
+            with self.assertLogs("videonote_mcp.server", level="WARNING") as logs:
+                resp = self._submit_generate(out_dir)
+            self.assertTrue(any("数据目录外" in m for m in logs.output))
+            self.assertIn('"status": "PENDING"', resp)  # 不拦截，任务照常提交
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    def test_inside_data_dir_silent(self):
+        with mock.patch.object(server.logger, "warning") as w:
+            resp = self._submit_generate(str(server.DATA_DIR))
+        self.assertFalse(
+            any("数据目录外" in str(c) for c in w.call_args_list)
+        )
+        self.assertIn('"status": "PENDING"', resp)
+
+    def test_env_fallback_warns_once(self):
+        # 缺省链 notes_dir → app_config → VIDEONOTE_NOTES_DIR 解析后仍校验
+        out_dir = tempfile.mkdtemp(prefix="vn_notes_env_")
+        try:
+            with mock.patch.object(server, "get_app_config", return_value={}), mock.patch.dict(
+                "os.environ", {"VIDEONOTE_NOTES_DIR": out_dir}, clear=False
+            ):
+                with self.assertLogs("videonote_mcp.server", level="WARNING") as logs:
+                    resp = self._submit_generate(None)
+            self.assertTrue(any("数据目录外" in m for m in logs.output))
+            self.assertIn('"status": "PENDING"', resp)
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
