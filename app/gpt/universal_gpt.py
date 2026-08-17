@@ -24,6 +24,9 @@ class UniversalGPT(GPT):
         self.screenshot = False
         self.link = False
         self.max_request_bytes = int(os.getenv("OPENAI_MAX_REQUEST_BYTES", str(45 * 1024 * 1024)))
+        # token 级切块上限（docs/05 #32）：按窗口切，而不是 45MB 字节一整块。
+        # 汉字≈1 token 的保守估计，默认 12000 留足输出余量（8-16k 窗口兼容）。
+        self.max_tokens_per_chunk = int(os.getenv("OPENAI_MAX_TOKENS_PER_CHUNK", "12000"))
         self.checkpoint_dir = Path(os.getenv("NOTE_OUTPUT_DIR", "note_results"))
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         # 初始化时缓存重试配置，避免每次请求重复读取环境变量
@@ -116,6 +119,7 @@ class UniversalGPT(GPT):
             "model": self.model,
             "temperature": self.temperature,
             "max_request_bytes": self.max_request_bytes,
+            "max_tokens_per_chunk": self.max_tokens_per_chunk,
             "title": source.title,
             "tags": source.tags,
             "format": source._format,
@@ -250,7 +254,8 @@ class UniversalGPT(GPT):
         merge_chunker = RequestChunker(
             lambda *_args, **_kwargs: [],
             self.max_request_bytes,
-            self._estimate_messages_bytes
+            self._estimate_messages_bytes,
+            max_tokens=self.max_tokens_per_chunk,
         )
 
         current_partials = list(partials)
@@ -295,7 +300,12 @@ class UniversalGPT(GPT):
         def message_builder(segments, image_urls, **kwargs):
             return self.create_messages(segments, video_img_urls=image_urls, **kwargs)
 
-        chunker = RequestChunker(message_builder, self.max_request_bytes, self._estimate_messages_bytes)
+        chunker = RequestChunker(
+            message_builder,
+            self.max_request_bytes,
+            self._estimate_messages_bytes,
+            max_tokens=self.max_tokens_per_chunk,
+        )
 
         # 评论/弹幕只在第一个 chunk 携带一次；传入 chunker 仅用于准确估算首 chunk 体积
         comments_danmaku = getattr(source, "comments_danmaku", None)
