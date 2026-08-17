@@ -2,6 +2,32 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave D 批 1-5（2026-08-17 · 52 项全部落地，198 tests）
+
+- **批 1 安全（c5c65d2）**：print 全清（抖音/快手/helper/groq/video_helper——含 Cookie 打印）；tiktok 平台映射→generic；requests 全带 timeout；下载器惰性工厂 `get_downloader()` 每次新建实例 + atexit 兜底清理 cookie 文件（模块级单例 `__del__` 永不触发）；bilibili SRT 解析 CRLF 归一化。
+- **批 2 发布（6c3ffa1）**：Dockerfile 删失效 `COPY events/`；pyproject 去掉 `events/**`；`fastmcp>=3,<4` pin；release.yml 加 test gate（ruff + pytest）、三处版本核对、`uv build --no-sources` + wheel 内容验证。
+- **批 3 状态机（5a9755b）**：default_model 分支检查 key；cancel_note 竞态（`_status_is_terminal` 已终态不覆盖 SUCCESS）；result.json 原子写（tmp+replace）；`_parse_segment_range` 抛 ValueError→UNKNOWN；preflight 队列满提示；`_write_app_config` 加锁原子写。
+- **批 4 可靠性（9ed1b47）**：ffmpeg 全带 timeout=120/600 + 失败反馈（generate_screenshot unlink 半成品）；note_cache 媒体 100MB 上限；缓存键 Windows 安全（`_fs_safe` 冒号→连字符）；时间戳正则 `\d+`；local cover 默认数据目录、douyin stream 分块下载 + aweme_id 校验、generic 下载后 exists 校验；ytdlp_retry 补 2 处（inspect/url 探测）。
+- **批 5 分发/门禁/卫生（aaee3a8）**：install.sh 回退修复（marketplace 成功清用户级 mcp add、插件已装跳过 add、步骤 1/3）；plugin.json userConfig 补满 12 个 env；conftest 按 pid 隔离测试目录；CI Python 3.11/3.12/3.13 矩阵 + ruff/pytest 进 `[dependency-groups] dev`（版本随 lock 固定）+ tools/list 断言工具数；CLI export task_id 正则校验、登录失败只打印域名（不泄 crossDomain URL）；server 细节（_MAX_WORKERS 容错、is_file、model_size 校验、extract_frames 收敛 `_submit_step_task`、参数下限钳制）；universal_gpt content None 防护；openai_client http_client weakref.finalize 释放；transcriber rebuild 防御性 close 旧实例。
+
+## 大型改动 6a-6i（2026-08-17 · 9 项全部落地）
+
+- **6a 引擎与默认模型（8b78f65）**：whisper 默认 tiny→small；HF_HUB_DOWNLOAD_TIMEOUT 10→60；health_check 模型行区分 downloaded/downloading/failed(+error)/missing；新增 engine_advice（fast-whisper 配 tiny/base 时建议升级）。#39 语言自动选引擎评估后不做自动切换（需先跑推理才知语言、funasr 非默认安装），改显式建议。
+- **6b 视频理解成本（3147ed3）**：`effective_frame_interval` 帧组封顶（≤24 组 3×3 网格，超限自适应拉大间隔不截尾）；截图/视频理解模式视频已下载后从本地提取音频，免第二次网络下载。
+- **6c token 级切块（5e620d7）**：RequestChunker 双约束（字节 + token，汉字≈1 token 保守估计）；`OPENAI_MAX_TOKENS_PER_CHUNK` 默认 12000；merge 分组同步；source_signature 含切块策略（旧 checkpoint 不复用）。
+- **6d 说话人分离进主路径（5ade3ed）**：`pipeline.apply_diarization` 转写完成后自动打 speaker（预处理/非预处理两路径，generate_note 与 transcribe_media/prepare_note_material 全部生效）；失败只 warning 不阻断；prompt 在 2+ 说话人时渲染 `[SPEAKER_00]` 前缀（会议纪要风格真正吃到 speaker）。
+- **6e 播放列表批量（35f900e）**：新工具 `batch_generate_notes`（服务端 inspect 展开 + 逐个排队、max_entries 默认 10、单条失败收集继续）；工具数 37→38。
+- **6f 工具面收敛（fa2c89c）**：MCP Resource `videonote://task/{task_id}/transcript`（时间轴纯文本含 speaker）；`_load_task_transcript` 公共函数。
+- **6g 敏感信息加密（ce51514）**：新 `videonote_mcp/crypto.py`（Fernet 机器级密钥 `config/fernet.key` 0600、`enc:` 前缀、明文兼容迁移、key 丢失回退 None 不抛）；providers.api_key 与 app_config.hf_token 落盘加密；Claude builtin base_url `https://`→`https://api.anthropic.com/v1/`；`providers add --api-key` 改可选 + getpass 交互；export/merge 数据目录外输出 warning；VENDOR.md 标注 abogus.py GPL-3.0 来源。依赖新增 `cryptography>=42`。
+- **6h vendor 边界（864fe9c）**：docs/02 同步纪律（冻结清单引用、惰性 import 约定）；docs/04 修正「所有方式共用同一数据目录」错误说法。
+- **6i 插件更新路径（5745a84）**：plugin.json 加 version（版本维护点 3 处）；health_check 返回 plugin_version + 落后时 skill_refresh 点名提示；release 四处版本核对（pyproject/__init__/plugin.json/tag）。
+
+## Wave E（2026-08-17 · E2 + E1 落地，216 tests）
+
+- **E2 大纲传递（af4a198）**：多 chunk 笔记标题漂移根治——新增 `extract_outline`（从已生成 partials 提取 `#`~`####` 标题、清理 markdown 记号与 `*Content-[mm:ss]` 后缀、去重、上限 15 条/40 字）；summarize 循环给每个后续 chunk 的 prompt 注入「已生成的章节大纲」块（含 checkpoint 恢复的 partials，首个 chunk 不注入）；`generate_base_prompt` 新增 outline 参数；MERGE_PROMPT 加强（同义章节合并保留最早标题、分散内容按时间归并）。切块估算不含大纲（留 ~5% 余量）。新测试 tests/test_outline.py 11 项。
+- **E1 可观测性收口（1ced97a）**：stderr 日志超限轮转（`VIDEONOTE_STDERR_LOG_MAX_MB` 默认 50MB → `.log.1`，防长跑体积失控）；`_open_stderr_log` 打开失败不再静默（原因打到原始 stderr）；atexit 退出摘要记录进行中/排队任务数（排查孤儿 ffmpeg/whisper 子进程）。新测试 tests/test_stderr_log.py 7 项。
+- 文档：docs/06 新增 Wave E 章节；docs/05 #39/#44 标注更新。
+
 ## 第二轮全库扫描（2026-08-17 · 4 个并行审计代理）
 
 - 工具层 / vendored 流水线 / 下载器 / 分发·文档·测试·CI 四路并行扫描，**无新增 P0**。
