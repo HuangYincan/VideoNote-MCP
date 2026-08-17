@@ -28,6 +28,14 @@
 - **E1 可观测性收口（1ced97a）**：stderr 日志超限轮转（`VIDEONOTE_STDERR_LOG_MAX_MB` 默认 50MB → `.log.1`，防长跑体积失控）；`_open_stderr_log` 打开失败不再静默（原因打到原始 stderr）；atexit 退出摘要记录进行中/排队任务数（排查孤儿 ffmpeg/whisper 子进程）。新测试 tests/test_stderr_log.py 7 项。
 - 文档：docs/06 新增 Wave E 章节；docs/05 #39/#44 标注更新。
 
+## Wave E 批 4（2026-08-17 · 自主改进轮，268 tests）
+
+- **下载器健壮性（f5bdc8b，#90）**：#36 剩余 4 子项——kuaishou 失败点抛明确 RuntimeError（原 TypeError/AttributeError/IndexError 三连）；Bcut 轮询指数退避 `min(1<<i, 5)` + 5 处 HTTP 补 timeout；generic cookie 从「写死 example.com 的 Netscape 文件（永不生效）」改 `http_headers` 直接注入；audio.json 实体悬空视为缓存失效重新下载。tests/test_downloader_robustness.py 16 项。
+- **DB 路径修复（5ba8497，#91）**：`app/db/engine.py` 默认 `sqlite:///video_note.db` 是相对 CWD 路径——裸脚本/单文件测试在仓库根分裂出 DB（根目录残留垃圾的真实根因）；改 `get_data_dir()` 稳定路径；`cache_data` 弃用 vendored 旧 `DATA_DIR` env。
+- **下载器集成测试（364e7ad，#92）**：真实下载器类 + mock yt-dlp 的全流程 15 项（字段契约/quality 映射/skip_download/多 P glob 缓存/ytdlp_retry 语义）；顺带修 `download_video` 提取失败 `None.mp4` 误导报错（改 ValueError）与 douyin tuple 错误形状。
+- **插件 userConfig 对齐（05cb87a + 2c1ad9f，#93/#94）**：全仓 15 个 `VIDEONOTE_*` env 与 plugin.json 对齐（补 max_workers/stderr_log_max_mb，内部路径 3 个刻意不暴露）；`batch_generate_notes` 透传 generate_note 全部高级参数（link/视频理解/弹幕/notes_dir）；`_USER_CONFIG_MAPPED_ENV` 同步（CI 门禁拦截）。
+- 文档：docs/05 第三轮 #90-#94、docs/06、CHANGELOG；skills tools.md 同步 batch 新签名。
+
 ## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）
 
 - **G2 收尾（06f011c）**：video_tasks 表 note 任务列 `note_dir` 改指 `gen/`（与 get_task_status 的 result.note_dir 一致），list_tasks 与 get_task_status 口径统一；NoteDirContractTest 2 项。
