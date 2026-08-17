@@ -710,5 +710,52 @@ class NotesDirWarningTest(unittest.TestCase):
             shutil.rmtree(out_dir, ignore_errors=True)
 
 
+class GridSizeValidationTest(unittest.TestCase):
+    """grid_size 非法值（[0,0]/[1]/[1,2,3]）在 VideoReader 深处才炸成泛化错误——
+    与 style/format 同口径，入口显式校验（#100）。"""
+
+    def test_bogus_grid_rejected_in_generate_note(self):
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", grid_size=[0, 0])
+        self.assertIn("grid_size 必须是两个正整数", str(cm.exception))
+
+    def test_short_grid_rejected_in_generate_note(self):
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", grid_size=[3])
+        self.assertIn("grid_size 必须是两个正整数", str(cm.exception))
+
+    def test_long_grid_rejected_in_generate_note(self):
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", grid_size=[2, 2, 2])
+        self.assertIn("grid_size 必须是两个正整数", str(cm.exception))
+
+    def test_bogus_grid_rejected_in_prepare_material(self):
+        with self.assertRaises(ValueError) as cm:
+            server.prepare_note_material("https://example.com/v", grid_size=[0, 3])
+        self.assertIn("grid_size 必须是两个正整数", str(cm.exception))
+
+    def test_valid_grid_passes_to_provider_resolution(self):
+        # 合法 grid_size 应越过校验，走到后续 provider 解析（报 provider 错误而非 grid 错误）
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", grid_size=[3, 3])
+        self.assertNotIn("grid_size 必须是", str(cm.exception))
+
+    def test_none_grid_skips_validation(self):
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", grid_size=None)
+        self.assertNotIn("grid_size 必须是", str(cm.exception))
+
+    def test_extract_frames_uses_shared_helper(self):
+        # extract_frames 换用共享校验后行为不变：非法值仍在入口被拒（文件存在检查在前）
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+        tmp.close()
+        try:
+            with self.assertRaises(ValueError) as cm:
+                server.extract_frames(tmp.name, grid_size=[1, 2, 3])
+            self.assertIn("grid_size 必须是两个正整数", str(cm.exception))
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     unittest.main()

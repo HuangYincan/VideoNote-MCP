@@ -136,6 +136,19 @@ def _check_style_and_format(style, formats) -> None:
         if unknown:
             raise ValueError(f"format 只支持 toc / link / screenshot / summary，收到: {unknown}")
 
+
+def _check_grid_size(grid_size) -> None:
+    """grid_size 必须是两个正整数（如 [3,3]），否则入口显式报错。
+
+    非法值（[0,0] / [1] / [1,2,3]）会在流水线深处的 VideoReader 才炸成
+    「视频处理失败」泛化错误；与 style/format 同口径，入口尽早报清楚。
+    None/空走默认（调用方兜底 [2,2]/[3,3]），不拦。
+    """
+    if not grid_size:
+        return
+    if not (len(grid_size) == 2 and all(isinstance(n, int) and n >= 1 for n in grid_size)):
+        raise ValueError(f"grid_size 必须是两个正整数（如 [3,3]），收到: {grid_size!r}")
+
 # 确保数据库表存在（幂等，init_db 使用 create_all）；空库时预置内置供应商
 # （openai/deepseek/qwen/groq/ollama…，固定 id + 正确 base_url + 空 key，用 update_provider 填 key）
 init_db()
@@ -673,6 +686,7 @@ def generate_note(
             raise ValueError(f"本地文件不存在: {video_url}")
         video_url = str(_coerce_local_path(video_url))
     _check_style_and_format(style, format or [])
+    _check_grid_size(grid_size)
     if not provider_id:
         provider_id = _resolve_default_provider_id()
     if not provider_id:
@@ -807,6 +821,7 @@ def prepare_note_material(
     comments_limit = max(1, int(comments_limit or 20))  # 下限钳制
 
     # 并发上限：与 generate_note 一致
+    _check_grid_size(grid_size)
     _guard_concurrency()
 
     task_id = uuid.uuid4().hex
@@ -1307,8 +1322,7 @@ def extract_frames(
         interval = max(1, int(video_interval))
     except (TypeError, ValueError):
         interval = 6
-    if not (len(grid_size) == 2 and all(isinstance(n, int) and n >= 1 for n in grid_size)):
-        raise ValueError(f"grid_size 必须是两个正整数（如 [3,3]），收到: {grid_size!r}")
+    _check_grid_size(grid_size)
     task_id = _submit_step_task(
         "frames",
         _step_extract_frames,

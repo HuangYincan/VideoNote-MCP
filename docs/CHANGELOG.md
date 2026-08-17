@@ -39,6 +39,7 @@
 - **style/format 白名单 enum 化（#97）**：4 个工具（generate_note/prepare_note_material/summarize_note/batch_generate_notes）签名 `Literal` 化——schema 呈现 enum（Agent 可见合法值）；`_check_style_and_format` 入口显式校验兜底（FastMCP 不做运行时参数校验，直接调用传非法 style 曾静默降级成「无风格笔记」）；校验在 provider 解析前（H6：不需要 provider 的错误先报）。+7 契约测试。**293 passed + ruff F-clean + 39 工具**。
 - **fetch_comments limit 钳制（#98）**：`limit<=0` 令 fetcher 的 `len(seen) >= limit` 恒真——第一页即停止，**静默返回空评论**（ok:true 无数据，Agent 误判视频无评论）；入口钳制 `max(1, int(limit))`。+3 契约测试。**296 passed + ruff F-clean**。
 - **notes_dir 数据目录外提示（#99）**：export/merge 的「只提示不拦截」warning（#45 口径）唯一漏网的是 notes_dir——便携笔记写任意绝对路径静默无声；generate_note 解析完缺省链（参数 → app_config → VIDEONOTE_NOTES_DIR）后统一校验，数据目录外打 warning（便携笔记是显式用户意图，不拦截；batch_generate_notes 委托 generate_note 自动继承）。+3 契约测试。**299 passed + ruff F-clean**。
+- **grid_size 入口显式校验（#100）**：extract_frames 工具校验 grid_size，但 generate_note / prepare_note_material 直传——非法值（[0,0] / [1] / [1,2,3]）在流水线深处 VideoReader 才炸成「视频处理失败」泛化错误；校验提取为共享助手 `_check_grid_size`（与 style/format 同口径：None/空不拦、入口显式报错），接入 generate_note / prepare_note_material / extract_frames 三处；顺带清 note.py 2 处裸 `except:`。+7 契约测试。**306 passed + ruff F-clean**。
 - 文档：docs/05 第三轮 #90-#94、docs/06、CHANGELOG；skills tools.md 同步 batch 新签名；docs/05 Wave B 第 6 条过时 ⏸ 标记修正（Resource 6f 已落地）。
 
 ## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）

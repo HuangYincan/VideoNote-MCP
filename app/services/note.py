@@ -564,7 +564,7 @@ class NoteGenerator:
             try:
                 with status_file.open('w', encoding='utf-8') as f:
                     f.write(f"Error writing status: {str(e)}")
-            except:
+            except Exception:
                 logger.error(f"写入错误  {e}")
 
     def _handle_exception(self, task_id, exc):
@@ -573,7 +573,7 @@ class NoteGenerator:
         if isinstance(error_message, dict):
             try:
                 error_message = json.dumps(error_message, ensure_ascii=False)
-            except:
+            except Exception:
                 error_message = str(error_message)
         self._update_status(task_id, TaskStatus.FAILED, message=error_message)
 
