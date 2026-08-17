@@ -24,7 +24,7 @@
 
 ### `batch_generate_notes(video_url, max_entries=10, quality?, provider_id?, model_name?, format?, style?, screenshot?, extras?, link?, video_understanding?, video_interval?, grid_size?, include_comments?, comments_limit?, notes_dir?)`
 - **播放列表/合集/分 P 批量提交**：内部先 `inspect_video` 展开，再逐条提交笔记任务（同一并发门禁，超出 worker 数的排队等待）。高级参数与 `generate_note` 一致（视频理解/弹幕/notes_dir 批量共享同一套设置）。
-- 返回 `{ok, total, submitted, truncated?, errors:[{p, title, url, error}], tasks:[{p, title, duration, url, task_id, status}]}`；单条失败不阻断其余。
+- 返回 `{ok, total, submitted, truncated?, errors:[{p, title, url, error}], tasks:[{p, title, duration, url, task_id, status}]}`；单条失败不阻断其余，inspect 失败也走同一形状（`total:0, submitted:0, errors:[...]`）。
 - 之后逐个 `get_task_status` 轮询（多任务逐个汇报进度，不要同时并行轮询过多）。
 
 ### `get_task_status(task_id, include_transcript=False)`
@@ -103,7 +103,8 @@
 - 把已完成任务的转写导出为**确定性格式**（srt/vtt/json），**不耗 LLM**。同步返回。
 - `formats` 缺省取 setup 配置的「导出格式默认」（任务成功后也会自动导出这些格式）。
 - `out_dir` 缺省 `{task_id}/gen/`；支持 `file://` URI。
-- 返回 `{task_id, formats: {fmt: "file://绝对路径"}, errors}`，文件可 Read 直接使用。
+- 返回 `{task_id, formats: {fmt: "file://绝对路径"}, errors}`，文件可 Read 直接使用；
+  找不到转写时返回 `{ok: False, task_id, error}`（含运行中/失败/已清理的原因，不抛异常）。
 - 适用：字幕文件（SRT/VTT）、结构化转写（JSON）、下游程序消费。
 - **创意格式**（思维导图/闪卡/LaTeX/typst/用户自定义模板）不在这里——由 Agent 基于
   MD 底稿生成，见 [`output-formats.md`](output-formats.md)。
@@ -167,7 +168,7 @@
 
 - `list_providers()` —— 供应商列表（key 掩码）。空 key 让用户在终端 `videonote providers set <id> --api-key '...'`。
 - `add_provider(name, base_url, type)` / `update_provider(provider_id, name?, base_url?, enabled?)` —— 只改非敏感字段；**传 api_key 会被拒绝**。填 key：`! videonote providers set <id> --api-key '...'`。
-- `delete_provider(provider_id)` / `delete_model(provider_id, model_name)` —— 删供应商/模型（同时清默认设置）。
+- `delete_provider(provider_id)` / `delete_model(provider_id, model_name)` —— 删供应商/模型（只清「删的就是默认模型」的默认设置，删非默认不动）。
 - `test_provider(provider_id)` —— 用已存 key 探测连接并列出模型（不接受 key 参数）。
 - `read_app_config()` —— setup 持久化的默认值（默认供应商/模型、视频理解/弹幕开关、风格、导出格式、notes_dir）；敏感项不返回。
 - `list_models(provider_id)` —— `{ok, source, models:[{id, name}]}`。实时 /v1/models，回退本地 DB。
