@@ -20,6 +20,12 @@
 - **只解析、不下载、不提交**。B 站分 P / YouTube 播放列表 / 单集。
 - 返回 `{ok, platform, kind: single|multi, title, current_p?, total, truncated, entries:[{p, title, duration, url, video_id}]}`。
 - `kind=multi` 时把每条 `entries[].url` 当独立视频，按单集流程（subagent）提交；用户只要一集就用对应那条 url。超过 200 条 `truncated=true`。
+- **批量**：多集要全出笔记用 `batch_generate_notes(url, max_entries=10)` 一次排队（服务端逐个提交），省去逐条 subagent。
+
+### `batch_generate_notes(video_url, max_entries=10, quality?, provider_id?, model_name?, format?, style?, screenshot?, extras?)`
+- **播放列表/合集/分 P 批量提交**：内部先 `inspect_video` 展开，再逐条提交笔记任务（同一并发门禁，超出 worker 数的排队等待）。
+- 返回 `{ok, total, submitted, truncated?, errors:[{p, title, url, error}], tasks:[{p, title, duration, url, task_id, status}]}`；单条失败不阻断其余。
+- 之后逐个 `get_task_status` 轮询（多任务逐个汇报进度，不要同时并行轮询过多）。
 
 ### `get_task_status(task_id, include_transcript=False)`
 - 轻量快照轮询。返回 `{status, stage, elapsed_secs, message, task_id, result?}`；`stage` 是中文阶段（如「转写中」），`elapsed_secs` 是任务已耗时——轮询汇报可用「转写中，已 3 分钟」。`SUCCESS` 时 `result` 含 `markdown`（或 material 模式的 `frames`/`video_path`/`audio_path`）、`note_dir`、`title`。

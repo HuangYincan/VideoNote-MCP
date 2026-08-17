@@ -1766,6 +1766,88 @@ def inspect_video(url: str, platform: Optional[str] = None) -> str:
 
 
 @mcp.tool()
+def batch_generate_notes(
+    video_url: str,
+    max_entries: int = 10,
+    platform: Optional[str] = None,
+    quality: str = "medium",
+    provider_id: Optional[str] = None,
+    model_name: Optional[str] = None,
+    format: Optional[List[str]] = None,
+    style: Optional[str] = None,
+    screenshot: Optional[bool] = None,
+    extras: Optional[str] = None,
+) -> str:
+    """对播放列表/合集/分 P 链接批量提交笔记任务（服务端逐个排队，遵守并发门禁）。
+
+    - video_url: 必填，B 站分 P / YouTube 播放列表等可展开为多集的链接；
+    - max_entries: 最多提交条数（默认 10，防 200 集播放列表一次全排；超出截断并标记 truncated）；
+    - 其余参数与 generate_note 一致（quality/provider_id/model_name/style/format/screenshot/extras），
+      批量共享同一套风格与格式设置；单集链接退化为单个 generate_note 任务。
+
+    内部先 inspect_video 展开条目再逐条提交（同一并发门禁，超出 worker 数的排队等待；
+    与 SKILL「多集用 subagent 逐个提交」纪律不同——本工具把展开+排队收敛到服务端）。
+    返回 {ok, total, submitted, truncated?, errors:[{p, title, url, error}],
+    tasks:[{p, title, duration, url, task_id, status}]}。
+    单条失败不阻断其余；全部失败时 ok=false。之后逐个 get_task_status 轮询。
+    """
+    from app.services.inspect import inspect_video as _inspect
+
+    max_entries = max(1, int(max_entries or 10))
+    parsed = _inspect(video_url, platform=platform)
+    if not parsed.get("ok"):
+        return json.dumps(parsed, ensure_ascii=False)
+    entries = list(parsed.get("entries") or [])
+    plat = platform or parsed.get("platform")
+
+    def _submit(entry: dict) -> dict:
+        raw = generate_note(
+            entry["url"],
+            platform=plat,
+            quality=quality,
+            provider_id=provider_id,
+            model_name=model_name,
+            format=format,
+            style=style,
+            screenshot=screenshot,
+            extras=extras,
+        )
+        r = json.loads(raw)
+        return {**entry, "task_id": r.get("task_id"), "status": r.get("status")}
+
+    if parsed.get("kind") == "single" or not entries:
+        # 单集链接：退化为单任务，不引入条目语义
+        task = _submit({"p": 1, "title": parsed.get("title"), "url": video_url, "duration": None})
+        return json.dumps(
+            {"ok": True, "total": 1, "submitted": 1, "errors": [], "tasks": [task]},
+            ensure_ascii=False,
+        )
+
+    truncated = len(entries) > max_entries
+    entries = entries[:max_entries]
+    submitted, errors, tasks = 0, [], []
+    for e in entries:
+        try:
+            tasks.append(_submit(e))
+            submitted += 1
+        except Exception as exc:  # noqa: BLE001 —— 单条失败收集继续
+            errors.append(
+                {"p": e.get("p"), "title": e.get("title"), "url": e.get("url"), "error": str(exc)}
+            )
+    return json.dumps(
+        {
+            "ok": submitted > 0,
+            "total": len(entries),
+            "submitted": submitted,
+            "truncated": truncated,
+            "errors": errors,
+            "tasks": tasks,
+        },
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
 def set_downloader_cookie(platform: str, cookie: str = "") -> str:
     """**不要经本工具传 Cookie**（SESSDATA 会进对话上游）。
 
