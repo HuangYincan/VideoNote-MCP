@@ -121,6 +121,25 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
         pass
 
 
+def _atomic_write_json(path: Path, payload) -> None:
+    """原子写 JSON（tmp + replace）：避免轮询读到半截文件（docs/05 #54）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _status_is_terminal(task_id: str) -> bool:
+    """status.json 是否已到终态（SUCCESS/FAILED/CANCELLED）。"""
+    try:
+        data = json.loads(
+            (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
+        )
+        return data.get("status") in ("SUCCESS", "FAILED", "CANCELLED")
+    except Exception:
+        return False
+
+
 def _absolutize_images(markdown: Optional[str]) -> str:
     """把 Markdown 里相对 /static/screenshots/... 的图片路径改写为 file:// 绝对路径。"""
     if not markdown:
@@ -175,11 +194,12 @@ def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None,
             )
         # note_dir 统一指向 task_dir（note.md 恒在 gen/note.md，见 note.py）
         payload["note_dir"] = str(task_dir)
-        # result.json 写进任务文件夹（替代扁平 {task_id}.json）
-        (task_dir / "result.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
+        # result.json 写进任务文件夹（替代扁平 {task_id}.json）—— 原子写：
+        # generate() 内部先写 SUCCESS，若轮询在 result 落盘前读到会看到半截 JSON
+        _atomic_write_json(task_dir / "result.json", payload)
+        # result.json 落盘完成后再补写一次 SUCCESS，把「SUCCESS 可见但结果未就绪」
+        # 的窗口压缩到毫秒级（generate() 的 SUCCESS 在 result 写盘之前，见 #54）
+        _write_status(task_id, TaskStatus.SUCCESS, message="完成")
         # 记录结果/状态/任务夹到 manifest（尽力而为，失败不阻断）
         record_task_paths(task_id, [
             task_dir,
@@ -258,10 +278,7 @@ def _run_step_task(
         payload = step_fn(task_id, cancel_event, **kwargs)
         task_dir = NOTE_OUTPUT_DIR / str(task_id)
         task_dir.mkdir(parents=True, exist_ok=True)
-        (task_dir / "result.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
+        _atomic_write_json(task_dir / "result.json", payload)
         # 记录结果/状态 JSON 到 manifest（尽力而为，失败不阻断）
         record_task_paths(task_id, [
             task_dir,
@@ -403,9 +420,12 @@ def _resolve_default_provider_id() -> Optional[str]:
         pid = row.get("id")
         if not pid:
             continue
-        if cfg.get(f"default_model:{pid}"):
-            return pid
         key = (row.get("api_key") or "").strip()
+        if cfg.get(f"default_model:{pid}"):
+            # 默认模型分支也必须校验 key：key 被清空/过期时不选中（否则跑到总结才 401）
+            if key and "*" not in key:
+                return pid
+            continue
         if key and "*" not in key:
             keyed.append(pid)
     if len(keyed) == 1:
@@ -788,7 +808,9 @@ def _parse_segment_range(spec: str, total: int) -> tuple:
         return (0, min(_TRANSCRIPT_DEFAULT_SEGMENTS, total))
     m = re.fullmatch(r"(\d*)\s*-\s*(\d*)|(\d+)", spec)
     if not m:
-        return (0, total)
+        raise ValueError(
+            f"segment_range 非法: {spec!r}（支持 'a-b' / 'a-' / '-b' / 'a' / 'all' / 空=前 {_TRANSCRIPT_DEFAULT_SEGMENTS} 段）"
+        )
     if m.group(3) is not None:  # 单段
         a = int(m.group(3))
         a = max(0, min(a, total))
@@ -851,7 +873,13 @@ def get_task_transcript(task_id: str, segment_range: str = "") -> str:
     full_text = transcript.get("full_text") or ""
     total = len(segments)
 
-    lo, hi = _parse_segment_range(segment_range, total)
+    try:
+        lo, hi = _parse_segment_range(segment_range, total)
+    except ValueError as e:
+        return json.dumps(
+            {"task_id": task_id, "ok": False, "status": "UNKNOWN", "message": str(e)},
+            ensure_ascii=False,
+        )
     if (lo, hi) == (0, total):
         out_segments = segments
         out_text = full_text
@@ -898,6 +926,14 @@ def cancel_note(task_id: str) -> str:
     if future is not None and not future.done():
         cancelled = future.cancel()
     event.set()
+    if _status_is_terminal(task_id):
+        # 任务恰好在取消时完成：终态（SUCCESS）已写，覆盖会变成「已取消且无结果」
+        logger.info(f"任务已进入终态，取消不生效 task_id={task_id}")
+        return json.dumps(
+            {"ok": True, "task_id": task_id, "status": "DONE",
+             "message": "任务已完成，取消不生效"},
+            ensure_ascii=False,
+        )
     _write_status(task_id, TaskStatus.CANCELLED, message="任务已取消")
     if cancelled:
         # 排队中（未启动）任务：_run_note_task/_run_step_task 不会执行，
@@ -1640,7 +1676,13 @@ def preflight(
 
     with _tasks_lock:
         queue_len = len(_task_futures)
-    checks.append({"name": "queue", "ok": True, "detail": f"{queue_len}/{_MAX_WORKERS} 进行中"})
+    queue_ok = queue_len < _MAX_WORKERS
+    checks.append({
+        "name": "queue",
+        "ok": queue_ok,
+        "detail": f"{queue_len}/{_MAX_WORKERS} 进行中"
+        + ("" if queue_ok else "（已满，请等任务完成或 cancel_note 后再提交）"),
+    })
 
     duration_secs: Optional[float] = None
     if url:

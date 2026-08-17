@@ -12,6 +12,7 @@ DATABASE_URL / NOTE_OUTPUT_DIR 等环境变量。
 可用环境变量 VIDEONOTE_DATA_DIR 可显式覆盖。
 """
 import os
+import threading
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -146,6 +147,9 @@ def setup_environment() -> Path:
 
     return data_dir
 
+_APP_CONFIG_LOCK = threading.Lock()
+
+
 def get_app_config() -> dict:
     """读取持久化应用配置（如默认笔记位置），存于 VIDEONOTE_CONFIG_DIR/app_config.json。"""
     import json
@@ -159,19 +163,27 @@ def get_app_config() -> dict:
     return {}
 
 
-def set_app_config(key: str, value) -> None:
-    """持久化应用配置。"""
+def _write_app_config(cfg: dict) -> None:
+    """原子写 app_config.json（tmp + replace），带 0600 权限。"""
     import json
 
     path = Path(os.environ.get("VIDEONOTE_CONFIG_DIR", "config")) / "app_config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    cfg = get_app_config()
-    cfg[key] = value
-    path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
-        path.chmod(0o600)
+        tmp.chmod(0o600)
     except OSError:
         pass
+    tmp.replace(path)
+
+
+def set_app_config(key: str, value) -> None:
+    """持久化应用配置（进程内锁 + 原子写，多线程/双进程不丢更新）。"""
+    with _APP_CONFIG_LOCK:
+        cfg = get_app_config()
+        cfg[key] = value
+        _write_app_config(cfg)
 
 
 def remove_app_config(key: str) -> None:
@@ -179,17 +191,9 @@ def remove_app_config(key: str) -> None:
 
     用于「清除默认模型」等场景：必须删 key，而不是写成 null。
     """
-    import json
-
-    path = Path(os.environ.get("VIDEONOTE_CONFIG_DIR", "config")) / "app_config.json"
-    if not path.exists():
-        return
-    cfg = get_app_config()
-    if key not in cfg:
-        return
-    cfg.pop(key)
-    path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    with _APP_CONFIG_LOCK:
+        cfg = get_app_config()
+        if key not in cfg:
+            return
+        cfg.pop(key)
+        _write_app_config(cfg)

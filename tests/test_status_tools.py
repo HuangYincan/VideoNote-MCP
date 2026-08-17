@@ -18,6 +18,7 @@
 import json
 import shutil
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -285,6 +286,55 @@ class WaitForNoteTest(unittest.TestCase):
             self.assertTrue(resp.get("deprecated"))
         finally:
             shutil.rmtree(pdir, ignore_errors=True)
+
+    def test_invalid_segment_range_errors(self):
+        """非法 segment_range 报 {ok:false}，而不是静默回退全文（#55）。"""
+        resp = json.loads(server.get_task_transcript(self.task_id, segment_range="abc"))
+        self.assertFalse(resp["ok"])
+        self.assertIn("非法", resp["message"])
+        resp2 = json.loads(server.get_task_transcript(self.task_id, segment_range="50--60"))
+        self.assertFalse(resp2["ok"])
+
+    def test_status_terminal_detection(self):
+        """_status_is_terminal：终态 True，进行中/缺失 False（#53）。"""
+        pid = "termcheck0001"
+        pdir = server.NOTE_OUTPUT_DIR / pid
+        pdir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.assertFalse(server._status_is_terminal(pid))  # 无 status.json
+            (pdir / "status.json").write_text(
+                json.dumps({"status": "TRANSCRIBING"}, ensure_ascii=False), encoding="utf-8"
+            )
+            self.assertFalse(server._status_is_terminal(pid))
+            (pdir / "status.json").write_text(
+                json.dumps({"status": "SUCCESS"}, ensure_ascii=False), encoding="utf-8"
+            )
+            self.assertTrue(server._status_is_terminal(pid))
+        finally:
+            shutil.rmtree(pdir, ignore_errors=True)
+
+    def test_cancel_on_terminal_keeps_success(self):
+        """终态任务再 cancel：不覆盖 SUCCESS（#53 竞态修复）。"""
+        _make_success_task(self.task_id)
+        # 模拟竞态窗口：任务已 SUCCESS（终态已写）但 registry 尚未弹出
+        from concurrent.futures import Future
+
+        done = Future()
+        done.set_result(None)
+        with server._tasks_lock:
+            server._task_futures[self.task_id] = done
+            server._task_events[self.task_id] = threading.Event()
+        try:
+            resp = json.loads(server.cancel_note(self.task_id))
+        finally:
+            with server._tasks_lock:
+                server._task_futures.pop(self.task_id, None)
+                server._task_events.pop(self.task_id, None)
+        self.assertEqual(resp["status"], "DONE")
+        status = json.loads(
+            (server.NOTE_OUTPUT_DIR / self.task_id / "status.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(status["status"], "SUCCESS")  # 未被改写成 CANCELLED
 
 
 if __name__ == "__main__":
