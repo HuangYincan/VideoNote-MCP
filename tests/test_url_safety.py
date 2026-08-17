@@ -15,7 +15,7 @@ from app.utils.url_safety import (
 )
 
 
-class IsPublicHttpUrlLiteralIpTest:
+class TestIsPublicHttpUrlLiteralIp:
     """字面 IP 走 ipaddress 直接判定，无需 DNS。"""
 
     @pytest.mark.parametrize(
@@ -45,7 +45,7 @@ class IsPublicHttpUrlLiteralIpTest:
         assert is_public_http_url(url) is True
 
 
-class IsPublicHttpUrlSchemeTest:
+class TestIsPublicHttpUrlScheme:
     @pytest.mark.parametrize(
         "url",
         [
@@ -62,7 +62,7 @@ class IsPublicHttpUrlSchemeTest:
         assert is_public_http_url(url) is False
 
 
-class IsPublicHttpUrlHostnameTest:
+class TestIsPublicHttpUrlHostname:
     """域名依赖 DNS：显式 patch 覆盖解析分支。"""
 
     def test_host_resolves_to_private_blocked(self):
@@ -84,7 +84,7 @@ class IsPublicHttpUrlHostnameTest:
             assert is_public_http_url("http://no-such-host.invalid/v") is True
 
 
-class AssertPublicHttpUrlTest:
+class TestAssertPublicHttpUrl:
     def test_blocked_raises_valueerror(self):
         with pytest.raises(ValueError) as ei:
             assert_public_http_url("http://169.254.169.254/latest/meta-data/")
@@ -94,7 +94,7 @@ class AssertPublicHttpUrlTest:
         assert_public_http_url("http://8.8.8.8/v")  # 不抛即通过
 
 
-class SanitizeUrlTest:
+class TestSanitizeUrl:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
@@ -108,3 +108,41 @@ class SanitizeUrlTest:
     )
     def test_sanitize(self, raw, expected):
         assert sanitize_url(raw) == expected
+
+
+class TestShortUrlResolverGuard:
+    """#133 A1：短链解析器对任意 URL 直连 requests.head——调用方只按
+    "b23.tv" / "v.douyin.com" 子串分流，攻击者 URL 会原样进来，须先过 SSRF 守卫。
+    """
+
+    def test_bilibili_resolver_blocks_private_ip(self):
+        from app.utils.url_parser import resolve_bilibili_short_url
+
+        with pytest.raises(ValueError, match="SSRF"):
+            resolve_bilibili_short_url("http://169.254.169.254/?x=b23.tv")
+
+    def test_bilibili_resolver_blocks_loopback(self):
+        from app.utils.url_parser import resolve_bilibili_short_url
+
+        with pytest.raises(ValueError, match="SSRF"):
+            resolve_bilibili_short_url("http://127.0.0.1/xxx")
+
+    def test_douyin_resolver_blocks_private_ip(self):
+        from app.utils.url_parser import resolve_douyin_short_url
+
+        with pytest.raises(ValueError, match="SSRF"):
+            resolve_douyin_short_url("http://10.0.0.1/v.douyin.com/abc")
+
+    def test_resolver_public_url_still_resolves(self):
+        # 合法短链（conftest DNS 桩为公网）不被误拦，走到 requests.head（被 mock）
+        import requests
+
+        from app.utils.url_parser import resolve_bilibili_short_url
+
+        with mock.patch.object(
+            requests, "head",
+            return_value=mock.Mock(url="https://www.bilibili.com/video/BV1xx"),
+        ) as m_head:
+            out = resolve_bilibili_short_url("https://b23.tv/xxxxxx")
+        assert out == "https://www.bilibili.com/video/BV1xx"
+        m_head.assert_called_once()

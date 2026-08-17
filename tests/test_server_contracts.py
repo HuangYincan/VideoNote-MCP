@@ -1161,7 +1161,9 @@ class SetTranscriberSizeValidationTest(unittest.TestCase):
 
 class SummarizeTranscriptShapeTest(unittest.TestCase):
     """summarize_note 的 transcript 形状：缺 segments/full_text 时曾静默拿空素材让 LLM
-    凭空生成笔记（还烧配额）；入口显式报错（#104）。"""
+    凭空生成笔记（还烧配额）；入口显式报错（#104）。#133 B3 收口：总结流水线只消费
+    segments（_build_segment_text），只传 full_text 也拒绝——segments 必须是列表
+    （空列表=静音视频合法转写，不拦）。"""
 
     @staticmethod
     def _submit(transcript):
@@ -1178,32 +1180,35 @@ class SummarizeTranscriptShapeTest(unittest.TestCase):
     def test_empty_dict_rejected(self):
         with self.assertRaises(ValueError) as cm:
             self._submit({})
-        self.assertIn("transcript 缺少内容字段", str(cm.exception))
+        self.assertIn("segments 必须是分段列表", str(cm.exception))
 
     def test_missing_content_fields_rejected(self):
         # 传 fetch 结果外层（{"ok": ...}）是常见传错——必须报错而不是拿空素材总结
         with self.assertRaises(ValueError) as cm:
             self._submit({"ok": True, "language": "zh"})
-        self.assertIn("segments 或 full_text", str(cm.exception))
+        self.assertIn("segments 必须是分段列表", str(cm.exception))
 
     def test_garbage_json_string_rejected(self):
         with self.assertRaises(ValueError) as cm:
             self._submit('{"not": "a transcript"}')
-        self.assertIn("transcript 缺少内容字段", str(cm.exception))
+        self.assertIn("segments 必须是分段列表", str(cm.exception))
 
     def test_non_dict_rejected(self):
         with self.assertRaises(ValueError) as cm:
             self._submit(42)
-        self.assertIn("transcript 缺少内容字段", str(cm.exception))
+        self.assertIn("segments 必须是分段列表", str(cm.exception))
 
     def test_empty_but_shaped_transcript_accepted(self):
         # 静音视频的合法转写（segments 为空但字段在）不拦截——是否总结是用户的决定
         resp = self._submit({"language": "zh", "segments": [], "full_text": ""})
         self.assertIn('"status": "PENDING"', resp)
 
-    def test_full_text_only_accepted(self):
-        resp = self._submit({"full_text": "hello"})
-        self.assertIn('"status": "PENDING"', resp)
+    def test_full_text_only_rejected(self):
+        # #133 B3：只传 full_text 曾放行（#104 只查「字段存在」），但流水线只消费
+        # segments——LLM 拿零素材凭空生成。现在显式拒绝
+        with self.assertRaises(ValueError) as cm:
+            self._submit({"full_text": "hello"})
+        self.assertIn("segments 必须是分段列表", str(cm.exception))
 
     def test_segments_only_accepted(self):
         resp = self._submit({"segments": [{"start": 0, "end": 1, "text": "hi"}]})
@@ -2180,6 +2185,139 @@ class UpdateProviderKeyInvalidationTest(unittest.TestCase):
 
         for ok in ("https://api.openai.com/v1", "http://localhost:11434/v1", "http://127.0.0.1:8000/v1"):
             self.assertEqual(ProviderService._validate_base_url(ok), ok)
+
+
+class SsrfEntryGuardTest(unittest.TestCase):
+    """#133 A1：显式 platform 的入口级 SSRF 守卫。
+
+    #132 A1 只在 generic/youtube 下载器内部校验——显式传 platform=bilibili/
+    kuaishou/douyin 时下载器/短链解析直接对 URL 发出站请求，可打内网/云元数据。
+    generate_note / prepare_note_material / fetch_subtitles / inspect_video
+    入口统一拦截；本地路径（local 分支）不受影响。
+    """
+
+    def test_generate_note_blocks_private_ip_with_explicit_platform(self):
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("http://169.254.169.254/latest/meta-data/", platform="bilibili")
+        self.assertIn("SSRF", str(cm.exception))
+
+    def test_generate_note_blocks_before_provider_check(self):
+        # 全新环境（无 provider）：URL 错误应先于 provider 错误（H6）
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("http://169.254.169.254/", platform="bilibili")
+        self.assertIn("SSRF", str(cm.exception))
+        self.assertNotIn("provider", str(cm.exception))
+
+    def test_prepare_note_material_blocks_private_ip(self):
+        with self.assertRaises(ValueError) as cm:
+            server.prepare_note_material("http://10.0.0.1/x.mp4", platform="kuaishou")
+        self.assertIn("SSRF", str(cm.exception))
+
+    def test_fetch_subtitles_blocks_private_ip(self):
+        resp = json.loads(server.fetch_subtitles("http://169.254.169.254/", platform="bilibili"))
+        self.assertFalse(resp["ok"])
+        self.assertIn("SSRF", resp["error"])
+
+    def test_inspect_blocks_private_ip(self):
+        resp = json.loads(server.inspect_video("http://169.254.169.254/", platform="bilibili"))
+        self.assertFalse(resp["ok"])
+        self.assertIn("SSRF", resp["error"])
+
+    def test_public_url_not_blocked(self):
+        # conftest 把域名解析桩成公网（8.8.8.8）：合法 URL 不被误拦，
+        # 应继续走到 provider 解析（报「需要 provider_id」而非 SSRF）
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", platform="generic")
+        self.assertNotIn("SSRF", str(cm.exception))
+
+    def test_local_path_not_blocked(self):
+        # 本地路径在 local 分支分流，不触 SSRF 守卫（缺 provider 也轮不到它）
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "clip.mp4"
+            f.write_bytes(b"x")
+            with self.assertRaises(ValueError) as cm:
+                server.generate_note(str(f))
+        self.assertIn("provider_id", str(cm.exception))
+
+
+class ExplicitProviderKeyCheckTest(unittest.TestCase):
+    """#133 B1：显式 provider_id 校验 key 已填（#52 只修了默认解析分支）。
+
+    空 key 的内置行（openai/groq seed）显式传入曾放行，下载+转写全跑完后
+    才在 SUMMARIZING 报「API Key 未配置」，浪费整轮流水线。
+    """
+
+    def test_explicit_provider_with_masked_key_rejected(self):
+        with mock.patch(
+            "videonote_mcp.server.ProviderService.get_provider_by_id",
+            return_value={"id": "p1", "api_key": "****"},
+        ):
+            with self.assertRaises(ValueError) as cm:
+                server.generate_note("https://example.com/v", platform="generic", provider_id="p1")
+        self.assertIn("key 为空", str(cm.exception))
+
+    def test_explicit_provider_with_empty_key_rejected(self):
+        with mock.patch(
+            "videonote_mcp.server.ProviderService.get_provider_by_id",
+            return_value={"id": "p1", "api_key": ""},
+        ):
+            with self.assertRaises(ValueError) as cm:
+                server.generate_note("https://example.com/v", platform="generic", provider_id="p1")
+        self.assertIn("key 为空", str(cm.exception))
+
+    def test_explicit_provider_not_found_rejected(self):
+        with mock.patch(
+            "videonote_mcp.server.ProviderService.get_provider_by_id", return_value=None
+        ):
+            with self.assertRaises(ValueError) as cm:
+                server.generate_note("https://example.com/v", platform="generic", provider_id="ghost")
+        self.assertIn("供应商不存在", str(cm.exception))
+
+    def test_explicit_provider_with_key_passes(self):
+        done = Future()
+        done.set_result(None)
+        with mock.patch(
+            "videonote_mcp.server.ProviderService.get_provider_by_id",
+            return_value={"id": "p1", "api_key": "sk-test"},
+        ), mock.patch(
+            "videonote_mcp.server.get_models_by_provider", return_value=[{"model_name": "t-model"}]
+        ), mock.patch("videonote_mcp.server._pool.submit", return_value=done):
+            resp = server.generate_note("https://example.com/v", platform="generic", provider_id="p1")
+        self.assertIn('"status": "PENDING"', resp)
+
+
+class InspectLocalFileUriTest(unittest.TestCase):
+    """#133 B2：inspect_video/preflight/batch 的 local 分支认 file://。
+
+    曾是全工具面唯一不认 file:// 的本地入口（#105/#107 输入规整的漏网点）——
+    同一文件 validate_url/generate_note 可用、inspect 却报「本地文件不存在」。
+    entries[].url 应透传规整后的纯路径（generate_note 才能直接消费）。
+    """
+
+    def test_inspect_accepts_file_uri_with_space(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "我的 视频.mp4"
+            f.write_bytes(b"x")
+            out = json.loads(server.inspect_video(f.as_uri()))  # %20/非 ASCII 编码
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["platform"], "local")
+        self.assertEqual(out["entries"][0]["url"], str(f))
+
+    def test_inspect_missing_file_uri_reports_not_found(self):
+        out = json.loads(server.inspect_video("file:///tmp/videonote_never_exists_133.mp4"))
+        self.assertFalse(out["ok"])
+        self.assertIn("本地文件不存在", out["error"])
+
+
+class GenerateNoteQualityOrderTest(unittest.TestCase):
+    """#133 B7：quality 校验在 provider 解析前（H6：参数错误先报）。"""
+
+    def test_quality_error_before_provider_error(self):
+        # 全新环境（无 provider）：quality 拼错应报 quality 而不是「需要 provider_id」
+        with self.assertRaises(ValueError) as cm:
+            server.generate_note("https://example.com/v", platform="generic", quality="bogus")
+        self.assertIn("quality 必须为", str(cm.exception))
+        self.assertNotIn("provider", str(cm.exception))
 
 
 if __name__ == "__main__":

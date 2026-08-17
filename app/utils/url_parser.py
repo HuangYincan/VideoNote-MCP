@@ -55,6 +55,11 @@ def resolve_bilibili_short_url(short_url: str) -> Optional[str]:
     :param short_url: Bilibili短链接（如"https://b23.tv/xxxxxx"）
     :return: 真实的视频链接或None
     """
+    # SSRF 入口守卫（#133 A1）：调用方只按 "b23.tv" 子串分流，攻击者 URL
+    # （如 http://169.254.169.254/?x=b23.tv）会原样走到 requests.head
+    from app.utils.url_safety import assert_public_http_url
+
+    assert_public_http_url(short_url)
     try:
         response = requests.head(short_url, allow_redirects=True, timeout=(5, 10))
         return response.url
@@ -70,6 +75,10 @@ def resolve_douyin_short_url(short_url: str) -> Optional[str]:
     HEAD 重定向到真实分享页/视频页（可能被反爬 403/405）——失败返回 None，
     调用方保持「解析不出 → 不命中缓存」的原有行为（#125 B1）。
     """
+    # SSRF 入口守卫（#133 A1）：与 resolve_bilibili_short_url 同口径
+    from app.utils.url_safety import assert_public_http_url
+
+    assert_public_http_url(short_url)
     try:
         response = requests.head(short_url, allow_redirects=True, timeout=(5, 10))
         return response.url

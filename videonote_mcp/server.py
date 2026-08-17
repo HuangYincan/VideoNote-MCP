@@ -692,6 +692,18 @@ def _local_video_exists(video_url: str) -> bool:
     return _coerce_local_path(video_url).is_file()
 
 
+def _guard_remote_url(url: str, platform: str) -> None:
+    """非本地平台入口统一 SSRF 校验（#133 A1）。
+
+    #132 A1 只在 generic/youtube 下载器内部校验——显式传 platform=bilibili/
+    kuaishou/douyin 时，下载器/短链解析直接对 URL 发出站请求（yt-dlp
+    extract_info / requests.head），恶意/被注入的 agent 可打内网/云元数据
+    （169.254.169.254）。本地路径已在上游分流（local 分支），不在此校验。
+    """
+    if platform != "local":
+        assert_public_http_url(url)
+
+
 def _resolve_default_provider_id() -> Optional[str]:
     """从 app_config / 已填 key 的供应商推断默认 provider_id。
 
@@ -838,8 +850,22 @@ def generate_note(
         if not _local_video_exists(video_url):
             raise ValueError(f"本地文件不存在: {video_url}")
         video_url = str(_coerce_local_path(video_url))
+    # SSRF 入口校验（#133 A1）：显式 platform=bilibili/kuaishou/douyin 曾绕过
+    # 下载器内部的 #132 A1 检查（url_parser 短链解析另已内置守卫）
+    _guard_remote_url(video_url, platform)
     _check_style_and_format(style, format or [])
     _check_grid_size(grid_size)
+    try:
+        q = DownloadQuality(quality)
+    except ValueError:
+        raise ValueError(f"quality 必须为 fast / medium / slow，收到: {quality}")
+    # 默认解析分支（#52）只返回已填 key 的供应商，无须重复校验；
+    # 显式 provider_id 则校验 key 已填（#133 B1）——否则空 key 的内置行
+    # （openai/groq seed）显式传入会在下载+转写全跑完后才在 SUMMARIZING 报
+    # 「API Key 未配置」，浪费整轮流水线。与 _preflight_provider 的 key 口径
+    # 一致（provider 存在 + key 非空 + 不含 `*`）；模型检查不在这里做——
+    # model_name 可显式传入（preflight 工具无此参数，才连带检查模型）。
+    _explicit_provider = bool(provider_id)
     if not provider_id:
         provider_id = _resolve_default_provider_id()
     if not provider_id:
@@ -847,11 +873,19 @@ def generate_note(
             "需要 provider_id：先 list_providers 查看，或跑 `/videonote-setup` / "
             "`! videonote providers set <id> --api-key '...'` 配好默认供应商"
         )
-
-    try:
-        q = DownloadQuality(quality)
-    except ValueError:
-        raise ValueError(f"quality 必须为 fast / medium / slow，收到: {quality}")
+    if _explicit_provider:
+        try:
+            _prow = ProviderService.get_provider_by_id(provider_id)
+        except Exception:
+            _prow = None
+        if not _prow:
+            raise ValueError(f"供应商不存在: {provider_id}")
+        _pkey = (_prow.get("api_key") or "").strip()
+        if not _pkey or "*" in _pkey:
+            raise ValueError(
+                f"供应商 {provider_id} 的 key 为空：请用 `! videonote providers set {provider_id} --api-key '...'`"
+                "（不要经 MCP 传 key）"
+            )
 
     if not model_name:
         model_name = get_app_config().get(f"default_model:{provider_id}") or ""
@@ -971,6 +1005,8 @@ def prepare_note_material(
         if not _local_video_exists(video_url):
             raise ValueError(f"本地文件不存在: {video_url}")
         video_url = str(_coerce_local_path(video_url))
+    # SSRF 入口校验（#133 A1，与 generate_note 同口径）
+    _guard_remote_url(video_url, platform)
 
     # 视频理解（抽帧）默认：参数没传（None）时用 setup ③ 配置的默认（默认关 / 0→6s）；
     # 显式传 False/0/具体秒数仍是显式值，覆盖默认
@@ -1556,6 +1592,10 @@ def fetch_subtitles(video_url: str, platform: Optional[str] = None) -> str:
             raise ValueError(
                 f"platform 只支持 {' / '.join(_KNOWN_PLATFORMS)}，收到: {platform!r}"
             )
+        # SSRF 入口校验（#133 A1）：显式非本地平台拦截内网/元数据 URL；
+        # platform=None 时靠各抓取器内部的短链解析守卫兜底（url_parser）
+        if platform is not None and platform != "local":
+            assert_public_http_url(video_url)
         transcript = pipeline.fetch_subtitles(video_url, platform)
         if transcript is None:
             return json.dumps(
@@ -1673,15 +1713,14 @@ def summarize_note(
     """
     _check_style_and_format(style, format or [])
     transcript = _coerce_transcript(transcript)
-    if not isinstance(transcript, dict) or not (
-        transcript.get("segments") is not None or transcript.get("full_text") is not None
-    ):
-        # 传错形状（fetch 结果外层 {"ok": ...}、纯 {"language": ...}、垃圾串）会静默拿空素材
-        # 让 LLM 凭空生成笔记——入口显式报错，不消耗 LLM 配额
+    if not isinstance(transcript, dict) or not isinstance(transcript.get("segments"), list):
+        # 只传 full_text 时入口曾放行（#104 只查「字段存在」），但总结流水线只消费
+        # segments（pipeline._build_segment_text）——LLM 拿零素材凭空生成笔记还烧
+        # 配额（#133 B3）。segments 可为空列表（静音视频合法转写），缺键/非列表才拒绝
         raise ValueError(
-            "transcript 缺少内容字段（需要 segments 或 full_text 之一）：请传 "
-            "transcribe_media / fetch_subtitles 的返回，或 prepare_note_material 的 "
-            "result.transcript 字段"
+            "transcript.segments 必须是分段列表（每段含 start/end/text）：只传 full_text "
+            "或空 dict 会让总结无素材可依。请传 transcribe_media / fetch_subtitles 的返回，"
+            "或 prepare_note_material 的 result.transcript 字段"
         )
     if not provider_id:
         provider_id = _resolve_default_provider_id()
@@ -2513,8 +2552,10 @@ def batch_generate_notes(
     """
     from app.services.inspect import inspect_video as _inspect
 
-    # 上界钳制：防止一条 MCP 调用内做上千次串行解析/排队（docs 审计 F7）
-    max_entries = _coerce_int(max_entries or 10, 10, clamp_min=1)
+    # 上界钳制：防止一条 MCP 调用内做上千次串行解析/排队（docs 审计 F7）。
+    # #133 B8：max_entries=0 曾被 `or 10` 吞成提交 10 条——显式 0 与 list_tasks
+    # 同口径（提交 0 条，仅展开）；负数钳到 0。
+    max_entries = _coerce_int(max_entries if max_entries is not None else 10, 10, clamp_min=0)
     max_entries = min(max_entries, 50)  # 上界钳制
     parsed = _inspect(video_url, platform=platform)
     if not parsed.get("ok"):

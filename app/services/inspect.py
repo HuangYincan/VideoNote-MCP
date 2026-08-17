@@ -6,7 +6,6 @@ Agent 按单视频流程处理；本模块不批量提交。
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -37,14 +36,26 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
+    # SSRF 入口守卫（#133 A1）：本地路径已在上面分流；其余平台（bilibili/
+    # kuaishou/douyin 的短链解析、yt-dlp generic 展开）统一校验，防显式
+    # platform 参数绕过 #132 A1（原只覆盖 generic/youtube 下载器内部）
+    if plat != "local":
+        try:
+            assert_public_http_url(raw)
+        except ValueError as exc:
+            return {"ok": False, "platform": plat, "error": str(exc)}
+
     try:
         if plat == "bilibili":
             return _inspect_bilibili(raw)
         if plat == "local":
-            # 存在性检查：不存在的路径返回 ok:false——否则 Agent 拿到 ok:true 后把
-            # 幻影路径喂给 generate_note 才报「本地文件不存在」（#130 A5，generate_note
-            # 等入口都有守卫，inspect 层漏了）
-            local_path = Path(raw).expanduser()
+            # file:// URI 先规整（#133 B2）：#130 A5 用裸 Path(raw) 漏了 file://——
+            # inspect 曾是全工具面唯一不认 file:// 的本地入口（#105/#107 系列输入
+            # 规整的漏网点），同一文件 validate_url/generate_note 可用、inspect
+            # 却报「本地文件不存在」。entries[].url 透传规整后的路径。
+            from videonote_mcp.server import _coerce_local_path
+
+            local_path = _coerce_local_path(raw)
             if not local_path.is_file():
                 return {
                     "ok": False,
@@ -60,7 +71,7 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
                 "video_id": None,
                 "total": 1,
                 "truncated": False,
-                "entries": [{"p": 1, "title": "", "duration": None, "url": raw, "video_id": None}],
+                "entries": [{"p": 1, "title": "", "duration": None, "url": str(local_path), "video_id": None}],
             }
         return _inspect_ytdlp(raw, plat)
     except Exception as exc:  # noqa: BLE001

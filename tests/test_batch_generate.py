@@ -182,3 +182,37 @@ class BatchGenerateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BatchMaxEntriesZeroTest(unittest.TestCase):
+    """#133 B8：max_entries=0 曾被子 `or 10` 吞成提交 10 条——显式 0 与
+    list_tasks 同口径（提交 0 条，仅展开），不静默提交。"""
+
+    def test_zero_submits_nothing(self):
+        entries = [
+            {"p": 1, "title": "P1", "duration": 100, "url": "https://b23.tv/BV1x", "video_id": "BV1x"},
+            {"p": 2, "title": "P2", "duration": 200, "url": "https://b23.tv/BV1x?p=2", "video_id": "BV1x"},
+        ]
+        with mock.patch("app.services.inspect.inspect_video", return_value={
+            "ok": True, "platform": "bilibili", "kind": "multi",
+            "title": "合集", "total": 2, "truncated": False, "entries": entries,
+        }), mock.patch.object(server, "generate_note", side_effect=_fake_generate_note) as gn:
+            out = json.loads(server.batch_generate_notes("https://b23.tv/BV1x", max_entries=0))
+        self.assertEqual(out["submitted"], 0)
+        self.assertEqual(out["tasks"], [])
+        self.assertTrue(out["truncated"])
+        gn.assert_not_called()
+
+    def test_default_still_ten(self):
+        # 缺省路径不受影响：仍走默认 10
+        entries = [
+            {"p": i, "title": f"P{i}", "duration": 100, "url": f"u{i}", "video_id": f"v{i}"}
+            for i in range(1, 13)
+        ]
+        with mock.patch("app.services.inspect.inspect_video", return_value={
+            "ok": True, "platform": "bilibili", "kind": "multi",
+            "title": "合集", "total": 12, "truncated": False, "entries": entries,
+        }), mock.patch.object(server, "generate_note", side_effect=_fake_generate_note) as gn:
+            out = json.loads(server.batch_generate_notes("https://b23.tv/BV1x"))
+        self.assertEqual(out["submitted"], 10)
+        self.assertEqual(gn.call_count, 10)
