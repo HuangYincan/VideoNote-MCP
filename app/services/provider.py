@@ -148,11 +148,15 @@ class ProviderService:
             print('更新模型供应商', _log_data)
             update_provider(id, **filtered_data)
             # 获取更新后的供应商信息：get_provider_by_id 是模块级导入的 DAO，
-            # 返回 ORM 对象，用属性访问（.get 反而会 AttributeError）
+            # 返回 ORM 对象，用属性访问（.get 反而会 AttributeError）。
+            # 供应商不存在时必须返回 None（此前返回 {'id':…, 'enabled': None} 恒真，
+            # CLI/MCP 的 `if not updated` 判空永不生效，会把不存在报成「已更新」）。
             updated_provider = get_provider_by_id(id)
+            if updated_provider is None:
+                return None
             return {
                 'id': id,
-                'enabled': updated_provider.enabled if updated_provider else None,
+                'enabled': updated_provider.enabled,
             }
 
         except Exception as e:

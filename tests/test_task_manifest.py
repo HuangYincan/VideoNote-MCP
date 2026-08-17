@@ -1,10 +1,8 @@
 """
 task_manifest 清理功能测试（不碰真实网络/数据库，只用临时目录）。
 
-运行：
-    cd /Users/acccan/.claude/jobs/80e51cb0/tmp/wt-an-cleanup
-    PYTHONPATH=/Users/acccan/.claude/jobs/80e51cb0/tmp/wt-an-cleanup \
-    /Users/acccan/hyc/tools/VideoNote-Mcp/.venv/bin/python tests/test_task_manifest.py
+运行（仓库根目录）：
+    PYTHONPATH=. .venv/bin/python tests/test_task_manifest.py
 """
 
 import os

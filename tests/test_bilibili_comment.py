@@ -1,11 +1,9 @@
 """
 BilibiliCommentFetcher 测试（mock requests.get，不碰真实网络）。
 
-运行：
-    cd /Users/acccan/.claude/jobs/80e51cb0/tmp/wt-fetcher
-    PYTHONPATH=/Users/acccan/.claude/jobs/80e51cb0/tmp/wt-fetcher \
-    VIDEONOTE_CONFIG_DIR=/tmp/bn_test_cfg VIDEONOTE_DATA_DIR=/tmp/bn_test_data \
-    /Users/acccan/hyc/tools/VideoNote-Mcp/.venv/bin/python tests/test_bilibili_comment.py
+运行（仓库根目录）：
+    PYTHONPATH=. VIDEONOTE_CONFIG_DIR=/tmp/bn_test_cfg VIDEONOTE_DATA_DIR=/tmp/bn_test_data \
+    .venv/bin/python tests/test_bilibili_comment.py
 """
 
 import json
