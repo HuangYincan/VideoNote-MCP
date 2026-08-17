@@ -36,15 +36,17 @@ jobs:
         run: |
           pkg_version="$(grep -m1 '^version' pyproject.toml | sed -E 's/version = "([^"]+)"/\1/')"
           init_version="$(grep -m1 '__version__' videonote_mcp/__init__.py | sed -E 's/__version__ = "([^"]+)"/\1/')"
+          plugin_version="$(grep -m1 '"version"' .claude-plugin/plugin.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
           tag_version="${GITHUB_REF_NAME#v}"
           echo "pyproject version:      $pkg_version"
           echo "__init__ version:       $init_version"
+          echo "plugin.json version:    $plugin_version"
           echo "tag version:            $tag_version"
-          if [ "$pkg_version" != "$tag_version" ] || [ "$init_version" != "$tag_version" ]; then
-            echo "::error::版本不一致（pyproject=$pkg_version / __init__=$init_version / tag=${GITHUB_REF_NAME}），拒绝发布"
+          if [ "$pkg_version" != "$tag_version" ] || [ "$init_version" != "$tag_version" ] || [ "$plugin_version" != "$tag_version" ]; then
+            echo "::error::版本不一致（pyproject=$pkg_version / __init__=$init_version / plugin=$plugin_version / tag=${GITHUB_REF_NAME}），拒绝发布"
             exit 1
           fi
-          echo "✅ 三处版本一致，继续发布"
+          echo "✅ 四处版本一致，继续发布"
       - name: Build wheel and verify contents
         run: |
           uv build --no-sources

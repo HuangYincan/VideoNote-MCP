@@ -1105,7 +1105,7 @@ def _providers_cli(argv) -> None:
         # key 缺省走 getpass 交互：不落 shell history / 进程列表（docs/05 #45）
         key = opts.api_key
         if not key:
-            key = _prompt_secret(f"{opts.name} 的 API key（输入不回显）")
+            key = _ask_secret(f"{opts.name} 的 API key（输入不回显）")
         new_id = ProviderService.add_provider(
             name=opts.name, api_key=key, base_url=opts.base_url, logo="custom", type_=opts.type
         )

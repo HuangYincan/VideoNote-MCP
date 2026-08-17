@@ -1536,6 +1536,34 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
     raise ValueError(f"仅支持本地模型下载：fast-whisper / mlx-whisper，收到: {transcriber_type}")
 
 
+def _installed_plugin_version() -> Optional[str]:
+    """读本机已装 videonote 插件的 version（marketplace 按 git commit 缓存目录）。
+
+    多个缓存版本时取最近安装的（mtime 最大）；读不到返回 None（非插件方式安装）。
+    """
+    import glob
+
+    pattern = os.path.expanduser(
+        "~/.claude/plugins/cache/videonote/videonote/*/.claude-plugin/plugin.json"
+    )
+    try:
+        hits = sorted(
+            glob.glob(pattern),
+            key=lambda f: Path(f).stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+    for p in hits:
+        try:
+            data = json.loads(Path(p).read_text(encoding="utf-8"))
+            if data.get("version"):
+                return str(data["version"])
+        except Exception:
+            continue
+    return None
+
+
 @mcp.tool()
 def health_check() -> str:
     """检查 MCP 运行环境：版本、FFmpeg、数据库、转写器、可选依赖、队列长度。"""
@@ -1590,6 +1618,7 @@ def health_check() -> str:
     return json.dumps(
         {
             "server_version": _SERVER_VERSION,
+            "plugin_version": _installed_plugin_version(),
             "ffmpeg": "ok" if ffmpeg_ok else "missing",
             "db": "ok" if db_ok else f"error: {db_err}",
             "transcriber": {
@@ -1612,14 +1641,25 @@ def health_check() -> str:
             "queue_length": queue_len,
             "max_workers": _MAX_WORKERS,
             "data_dir": str(DATA_DIR),
-            "skill_refresh": (
-                "MCP（uvx）跟 git HEAD；Skill/插件不自动更新。"
-                "工作流对不上时：`claude plugin disable videonote@videonote` "
-                "然后 `claude plugin install videonote@videonote`，再开新会话。"
-            ),
+            "skill_refresh": _skill_refresh_advice(),
         },
         ensure_ascii=False,
     )
+
+
+def _skill_refresh_advice() -> str:
+    """插件/Skill 刷新提示（docs/05 #24）：server 与插件版本不一致时点名提示。"""
+    base = (
+        "MCP（uvx）跟 git HEAD；Skill/插件不自动更新。"
+        "工作流对不上时：`claude plugin disable videonote@videonote` "
+        "然后 `claude plugin install videonote@videonote`，再开新会话。"
+    )
+    plugin_version = _installed_plugin_version()
+    if plugin_version and plugin_version != _SERVER_VERSION:
+        return (
+            f"检测到插件版本 {plugin_version} 落后于 server {_SERVER_VERSION}：{base}"
+        )
+    return base
 
 
 @mcp.tool()
