@@ -1,11 +1,10 @@
-
 from abc import ABC, abstractmethod
 from typing import Optional, Union
 
 from app.enmus.note_enums import DownloadQuality
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
-from os import getenv
+from app.utils.path_helper import get_data_dir
 QUALITY_MAP = {
     "fast": "32",
     "medium": "64",
@@ -15,7 +14,8 @@ QUALITY_MAP = {
 
 class Downloader(ABC):
     def __init__(self):
-        self.cache_data=getenv('DATA_DIR')
+        # 与各下载器 download() 的 get_data_dir() 兜底同值（vendored 旧 DATA_DIR env 已废弃）
+        self.cache_data = get_data_dir()
 
     @abstractmethod
     def download(self, video_url: str, output_dir: str = None,

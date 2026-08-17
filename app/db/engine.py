@@ -3,11 +3,16 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
+from app.utils.path_helper import get_data_dir
+
 if not os.environ.get("VIDEONOTE_DATA_DIR"):
     load_dotenv()
 
-# 默认 SQLite，如果想换 PostgreSQL 或 MySQL，可以直接改 .env
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///video_note.db")
+# 默认 SQLite，如果想换 PostgreSQL 或 MySQL，可以直接改 .env。
+# 默认路径固定到稳定数据目录（与 videonote_mcp.config 的 setdefault 同值）——
+# 相对路径 `sqlite:///video_note.db` 会随进程 CWD 漂移，在仓库根/其它目录
+# 跑脚本或测试会分裂出多个互不相通的 DB（本仓库根目录曾泄漏出 video_note.db）。
+DATABASE_URL = os.getenv("DATABASE_URL") or f"sqlite:///{os.path.join(get_data_dir(), 'video_note.db')}"
 
 # SQLite 需要特定连接参数，其他数据库不需要
 engine_args = {}
