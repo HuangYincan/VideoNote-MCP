@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import re
+import threading
 from typing import Optional, Union
 from urllib.parse import quote, urlencode
 
@@ -10,12 +11,14 @@ import requests
 from pydantic import BaseModel
 
 from app.downloaders.base import Downloader
+from app.downloaders.common import stream_download
 from app.downloaders.douyin_helper.abogus import ABogus
 from app.enmus.note_enums import DownloadQuality
 from app.models.audio_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
+from app.utils.url_safety import sanitize_url
 
 logger = get_logger(__name__)
 from dotenv import load_dotenv
@@ -24,7 +27,16 @@ if not os.environ.get("VIDEONOTE_DATA_DIR"):
     load_dotenv()
 DOUYIN_DOMAIN = "https://www.douyin.com"
 
-cfm=CookieConfigManager()
+cfm = None  # 惰性单例（B13）：import 不构造 CookieConfigManager，避免落空 downloader.json
+
+
+def _get_cfm():
+    global cfm
+    if cfm is None:
+        cfm = CookieConfigManager()
+    return cfm
+
+
 def get_timestamp(unit: str = "milli"):
     """
     根据给定的单位获取当前时间 (Get the current time based on the given unit)
@@ -117,11 +129,17 @@ class DouyinDownloader(Downloader):
     def __init__(self, cookie=None):
         super().__init__()
         self.headers_config = DouyinConfig.HEADERS.copy()
-        self.headers_config["Cookie"] = cfm.get('douyin')
+        self.headers_config["Cookie"] = _get_cfm().get('douyin')
         # 不要 print headers：Cookie 会进 mcp_stderr.log / 会话日志
         self.proxies_config = DouyinConfig.PROXIES.copy()
         self.ttwid_config = DouyinConfig.TTWID.copy()
         self.ms_token_config = DouyinConfig.MS_TOKEN.copy()
+        # C2（docs/05 第 16 轮）：同一任务内 download_video + download(skip_download)
+        # 各调一次 fetch_video_info——memo 按 aweme_id 复用，省 1 次 msToken POST +
+        # aweme GET + 签名（msToken 分钟级有效，任务内复用安全）
+        self._info_cache: dict = {}
+        self._ms_token: Optional[str] = None
+        self._bogus = ABogus()
 
     @staticmethod
     def find_url(string: str) -> list:
@@ -149,6 +167,10 @@ class DouyinDownloader(Downloader):
         return ""
 
     def gen_real_msToken(self) -> str:
+        # msToken 是分钟级有效会话 cookie（docs/05 第 16 轮 C2）：任务内复用，
+        # 不再每次 fetch_video_info 都 POST mssdk.bytedance.com
+        if self._ms_token:
+            return self._ms_token
         try:
             payload = json.dumps(
                 {
@@ -175,6 +197,7 @@ class DouyinDownloader(Downloader):
                     if len(msToken) not in [120, 128]:
                         raise ValueError("响应内容：{0}， Douyin msToken API 的响应内容不符合要求。".format(msToken))
 
+                    self._ms_token = msToken
                     return msToken
                 except Exception as e:
                     raise ValueError("Douyin msToken API 请求失败：{0}".format(e))
@@ -182,16 +205,17 @@ class DouyinDownloader(Downloader):
             raise ValueError("Douyin msToken API{0}".format(e))
 
     def fetch_video_info(self, video_url: str) -> json:
+        # memo（docs/05 第 16 轮 C2）：download_video 与 download(skip) 同任务双调时复用
+        aweme_id = self.extract_video_id(video_url)
+        if aweme_id and aweme_id in self._info_cache:
+            return self._info_cache[aweme_id]
         try:
-
-            aweme_id = self.extract_video_id(video_url)
             kwargs = self.headers_config
             base_params = BaseRequestModel().model_dump()
             base_params["msToken"] = self.gen_real_msToken()
 
             base_params["aweme_id"] = aweme_id
-            bogus = ABogus()
-            ab_value = bogus.get_value(base_params)
+            ab_value = self._bogus.get_value(base_params)
             a_bogus = quote(ab_value, safe='')
             logger.debug("a_bogus 签名已生成")
             query_str = urlencode(base_params)
@@ -201,7 +225,10 @@ class DouyinDownloader(Downloader):
 
             response = requests.get(full_url, headers=kwargs, timeout=(5, 10))
 
-            return response.json()
+            result = response.json()
+            if aweme_id:
+                self._info_cache[aweme_id] = result
+            return result
         except Exception as e:
             logger.warning("抖音视频信息请求失败: %s", e)
             # 旧写法 ValueError("请求失败:", e) 是元组参数——str() 输出
@@ -216,8 +243,10 @@ class DouyinDownloader(Downloader):
             quality: DownloadQuality = "fast",
             need_video: Optional[bool] = False,
             skip_download: bool = False,
+            cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
-        logger.info("正在下载视频: %s，保存路径: %s，质量: %s", video_url, output_dir, quality)
+        # 日志只打脱敏 URL（可能含签名 token，docs/05 第 16 轮 A5）
+        logger.info("正在下载视频: %s，保存路径: %s，质量: %s", sanitize_url(video_url), output_dir, quality)
         if output_dir is None:
             output_dir = get_data_dir()
         if not output_dir:
@@ -245,11 +274,10 @@ class DouyinDownloader(Downloader):
                 raise RuntimeError("抖音接口未返回音频播放地址")
             # 用 self.headers_config（已注入 cookie）而非类级 DOUYIN HEADERS——
             # 类属性 Cookie 恒 None，用户配置的 cookie 对音频请求不生效（#124 B5）
-            with requests.get(url, headers=self.headers_config, timeout=30, stream=True) as audio_data:
-                audio_data.raise_for_status()
-                with open(output_path, 'wb') as f:
-                    for chunk in audio_data.iter_content(1024 * 1024):
-                        f.write(chunk)
+            # 连接/读分离超时 + 退避重试 + 取消检查（docs/05 第 16 轮 B4/B1）
+            stream_download(
+                url, output_path, headers=self.headers_config, cancel_event=cancel_event
+            )
 
         # 封面：优先 cover_original_scale → cover → dynamic_cover；
         # 旧代码的 else 分支引用了不存在的顶层 video_data['video']，会 KeyError
@@ -274,7 +302,12 @@ class DouyinDownloader(Downloader):
             video_path=None  # ❗音频下载不包含视频路径
         )
 
-    def download_video(self, video_url: str, output_dir: Union[str, None] = None) -> str:
+    def download_video(
+        self,
+        video_url: str,
+        output_dir: Union[str, None] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
 
         try:
 
@@ -286,8 +319,14 @@ class DouyinDownloader(Downloader):
 
             video_id = self.extract_video_id(video_url)
             video_path = os.path.join(output_dir, f"{video_id}.mp4")
-            if os.path.exists(video_path):
+            if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
                 return video_path
+            # 0 字节/半截残留（上次中断，docs/05 第 16 轮 B11）：删掉重下
+            if os.path.exists(video_path):
+                try:
+                    os.unlink(video_path)
+                except OSError:
+                    pass
 
             # 直接 Path 拼接（#123 B10）：旧实现 output_path % {...} 对整个字符串做
             # %-格式化——output_dir 含字面 %（如 /tmp/100%off/）→ ValueError 下载失败。
@@ -304,11 +343,10 @@ class DouyinDownloader(Downloader):
             if not url_list:
                 raise RuntimeError("抖音接口未返回视频下载地址")
             url = url_list[0]
-            with requests.get(url, allow_redirects=True, headers=self.headers_config, timeout=30, stream=True) as _data:
-                _data.raise_for_status()
-                with open(output_path, 'wb') as f:
-                    for chunk in _data.iter_content(1024 * 1024):
-                        f.write(chunk)
+            # 连接/读分离超时 + 退避重试 + 取消检查（docs/05 第 16 轮 B4/B1）
+            stream_download(
+                url, output_path, headers=self.headers_config, cancel_event=cancel_event
+            )
 
             return output_path
         except Exception as e:

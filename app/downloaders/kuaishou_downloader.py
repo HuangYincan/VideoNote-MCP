@@ -1,11 +1,11 @@
 import os
 import subprocess
+import threading
 from abc import ABC
 from typing import Optional, Union
 
-import requests
-
 from app.downloaders.base import Downloader
+from app.downloaders.common import stream_download
 from app.downloaders.kuaishou_helper.kuaishou import KuaiShou
 from app.models.audio_model import AudioDownloadResult
 from app.utils.logger import get_logger
@@ -36,18 +36,19 @@ class KuaiShouDownloader(Downloader, ABC):
             raise RuntimeError("快手接口返回缺少 photo.id")
         return photo
 
-    def _download_mp4(self, photo_info: dict, mp4_path: str) -> None:
+    def _download_mp4(
+        self, photo_info: dict, mp4_path: str, cancel_event: Optional[threading.Event] = None
+    ) -> None:
         """下载 mp4 视频到 mp4_path；HTTP 非 200 抛明确异常。"""
         photo_url = photo_info.get("photoUrl")
         if not photo_url:
             raise RuntimeError("快手接口返回缺少 photoUrl（下载地址）")
+        # 连接/读分离超时 + 退避重试 + 取消检查（docs/05 第 16 轮 B4/B1）；
         # with 托管响应关闭：裸 requests.get 的 stream 响应直到 GC 才释放连接
         #（每次下载泄漏一个连接池条目，#124 B8）
-        with requests.get(photo_url, stream=True, timeout=30) as resp:
-            resp.raise_for_status()
-            with open(mp4_path, "wb") as f:
-                for chunk in resp.iter_content(1024 * 1024):
-                    f.write(chunk)
+        stream_download(
+            photo_url, mp4_path, cancel_event=cancel_event
+        )
 
     def download(
             self,
@@ -56,6 +57,7 @@ class KuaiShouDownloader(Downloader, ABC):
             quality: str = "fast",
             need_video: Optional[bool] = False,
             skip_download: bool = False,
+            cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
         if output_dir is None:
             output_dir = get_data_dir()
@@ -95,7 +97,7 @@ class KuaiShouDownloader(Downloader, ABC):
             # #124 B1：零字节/半成品 mp3（ffmpeg 中断残留）不被 exists 当成功产物。
             if not os.path.exists(mp4_path):
                 logger.info("[已存在] mp3 命中但 mp4 缺失，重新下载视频: %s", mp4_path)
-                self._download_mp4(photo_info, mp4_path)
+                self._download_mp4(photo_info, mp4_path, cancel_event=cancel_event)
             return AudioDownloadResult(
                 file_path=mp3_path,
                 title=title,
@@ -110,7 +112,7 @@ class KuaiShouDownloader(Downloader, ABC):
             )
 
         # 下载 mp4 视频
-        self._download_mp4(photo_info, mp4_path)
+        self._download_mp4(photo_info, mp4_path, cancel_event=cancel_event)
 
         # 使用 ffmpeg 转换为 mp3
         try:
@@ -143,6 +145,7 @@ class KuaiShouDownloader(Downloader, ABC):
             self,
             video_url: str,
             output_dir: Union[str, None] = None,
+            cancel_event: Optional[threading.Event] = None,
     ) -> str:
         # 只下载视频、不转 mp3：need_video 场景（截图/视频理解）之后会从 mp4 提取
         # 音频；旧实现走完整 download() 必然白做一次全量 ffmpeg 转码 + 双份磁盘
@@ -156,7 +159,7 @@ class KuaiShouDownloader(Downloader, ABC):
         video_raw_info = ks.run(video_url)
         photo_info = self._extract_photo(video_raw_info)
         mp4_path = os.path.join(output_dir, f"{photo_info['id']}.mp4")
-        self._download_mp4(photo_info, mp4_path)
+        self._download_mp4(photo_info, mp4_path, cancel_event=cancel_event)
         return mp4_path
 
 

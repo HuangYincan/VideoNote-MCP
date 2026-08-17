@@ -1,0 +1,105 @@
+"""URL 安全校验 —— SSRF 防护与日志脱敏（docs/05 第 16 轮扫描 A1 / A4 / A5）。
+
+SSRF 背景：yt-dlp 通用提取器（GenericIE）接受任意 URL，被恶意/被注入的 agent
+可借 `generate_note` / `validate_url` / `inspect_video` 访问内网服务、环回地址、
+云厂商元数据端点（169.254.169.254）等。本模块在把 URL 交给下载器前校验
+scheme 与目标主机，拦截指向私网/环回/链路本地/保留地址的请求。
+
+设计约束：
+- 只放行 http/https（对 generic 的任意 URL）；本地文件路径由调用方先行分流（local）。
+- 字面 IP：直接判 `ipaddress` 的 `is_global`（覆盖 127/8、10/8、172.16/12、
+  192.168/16、169.254/16、0.0.0.0、::1、fc00::/7、fe80::/10 等）。
+- 域名：解析后任一地址非公网即拦截（split-horizon DNS 的保守选择）。
+- DNS 解析失败：放行交由 yt-dlp 正常报错，不因解析器抖动误杀合法链接。
+
+已知边界：校验基于「初始 URL 解析 + 首跳 DNS」；yt-dlp 内部重定向到内网
+的场景不在防护内（完整方案需给 yt-dlp 挂自定义下载器，收益不成比例）。
+"""
+from __future__ import annotations
+
+import functools
+import ipaddress
+import logging
+import socket
+from typing import Optional
+from urllib.parse import urlsplit
+
+logger = logging.getLogger(__name__)
+
+ALLOWED_SCHEMES = ("http", "https")
+
+
+def sanitize_url(url: Optional[str]) -> str:
+    """日志脱敏：剥离 userinfo 与 query（签名 token / 凭据），只留 scheme://host[:port]/path。"""
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.scheme:
+        # 非 URL（防御输入）：本无凭据可剥离，原样返回便于日志排查
+        return url
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return f"{parts.scheme}://{host}{parts.path or '/'}"
+
+
+def _ip_is_global(ip: ipaddress._BaseAddress) -> bool:
+    """IPv4/IPv6 统一判公网。is_global 聚合了 private/loopback/link_local/reserved/unspecified/multicast。"""
+    try:
+        return bool(ip.is_global)
+    except Exception:  # noqa: BLE001 —— 个别保留区间 is_global 可能抛错，保守拦截
+        return False
+
+
+@functools.lru_cache(maxsize=512)
+def _host_is_public(host: str) -> bool:
+    """域名/字面 IP → 是否公网。按 host 缓存，避免批处理内对同一域名重复解析。"""
+    # 字面 IP（IPv4 / IPv6）
+    try:
+        ip = ipaddress.ip_address(host)
+        return _ip_is_global(ip)
+    except ValueError:
+        pass
+    # 域名 → 解析后任一非公网即拦截
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        # DNS 解析失败（可能是不存在的域名/断网）：放行，让 yt-dlp 报出真实错误
+        logger.warning("URL 主机解析失败（交由下载器报错）: %s", host)
+        return True
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if not _ip_is_global(ip):
+            logger.warning("拦截指向非公网 IP 的 URL 主机: %s -> %s", host, info[4][0])
+            return False
+    return True
+
+
+def is_public_http_url(url: str) -> bool:
+    """URL 是否允许下载：http/https + 目标主机公网。非 http(s) scheme / 私网一律 False。"""
+    if not url:
+        return False
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return False
+    if parts.scheme.lower() not in ALLOWED_SCHEMES:
+        return False
+    host = parts.hostname
+    if not host:
+        return False
+    return _host_is_public(host)
+
+
+def assert_public_http_url(url: str) -> None:
+    """下载入口校验：不安全 URL 抛 ValueError（带清晰原因，供上层转成 ok:false）。"""
+    if not is_public_http_url(url):
+        raise ValueError(
+            f"URL 被 SSRF 防护拦截（仅放行 http/https 且目标须为公网地址，不支持内网/环回/元数据端点）: {sanitize_url(url)}"
+        )

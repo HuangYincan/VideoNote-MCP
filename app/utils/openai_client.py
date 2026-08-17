@@ -14,6 +14,7 @@ from openai import OpenAI
 
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.logger import get_logger
+from app.utils.url_safety import sanitize_url
 
 logger = get_logger(__name__)
 
@@ -54,6 +55,7 @@ def build_openai_client(
     client = OpenAI(**kwargs)
     # 实例被 GC 时关掉 http_client，避免连接/fd 跨任务累积（docs/05 #74）
     weakref.finalize(client, http_client.close)
-    logger.info(f"OpenAI 客户端走代理: {proxy_url}")
+    # 代理 URL 可能含 user:pass@（docs/05 第 16 轮 A4）：日志只留 host，不落凭据
+    logger.info(f"OpenAI 客户端走代理: {sanitize_url(proxy_url)}")
 
     return client

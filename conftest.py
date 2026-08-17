@@ -51,3 +51,30 @@ def _clean_task_registry_at_exit():
     with server._tasks_lock:
         server._task_futures.clear()
         server._task_events.clear()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _mock_public_dns():
+    """SSRF 防护（docs/05 第 16 轮 A1）的域名判定依赖真实 DNS。
+
+    测试环境（含沙箱）的 DNS 可能把任意域名解析到保留段（198.18/15、
+    fdfe:dcba:: 等），会让 mock 掉 yt-dlp 的下载器测试被 SSRF 检查误拦。
+    统一把 getaddrinfo 桩成公网地址：字面 IP 逻辑（ipaddress）不受影响，
+    域名判定在测试里确定化；SSRF 防护自身的测试另行显式 patch。
+    """
+    import socket
+    from unittest import mock
+
+    def _public_addrinfo(*_args, **_kwargs):
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("8.8.8.8", 0),
+            )
+        ]
+
+    with mock.patch("socket.getaddrinfo", side_effect=_public_addrinfo):
+        yield

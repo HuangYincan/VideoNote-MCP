@@ -210,8 +210,9 @@ class ExporterTest(unittest.TestCase):
             json.dumps({"status": "SUCCESS"}, ensure_ascii=False), encoding="utf-8"
         )
         try:
+            # B10（docs/05 第 16 轮）：导出走 write_text_atomic（原子写），mock 其底层写
             with mock.patch(
-                "videonote_mcp.export.exporter.Path.write_text",
+                "videonote_mcp.export.exporter.write_text_atomic",
                 side_effect=OSError("disk full"),
             ):
                 data = json.loads(srv.export_transcript(tid, formats=["srt", "json"]))

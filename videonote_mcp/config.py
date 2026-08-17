@@ -266,21 +266,17 @@ def get_app_config() -> dict:
 
 def _write_app_config(cfg: dict) -> None:
     """原子写 app_config.json（tmp + replace），带 0600 权限；敏感字段加密落盘。"""
-    import json
-
     payload = dict(cfg)
     for k in _SENSITIVE_CONFIG_KEYS:
         if payload.get(k):
             payload[k] = encrypt_value(payload[k])
+    # 复用 json_store 原子写（docs/05 第 16 轮 B8）：tmp 唯一后缀 + 创建即 0600，
+    # 消除固定 <path>.tmp 的跨进程互相截断与「先写后 chmod」的权限窗口。
+    # 惰性 import：config 模块先于 app.* 初始化（顶层禁 app import）
+    from app.utils.json_store import write_json_atomic
+
     path = Path(os.environ.get("VIDEONOTE_CONFIG_DIR", "config")) / "app_config.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        tmp.chmod(0o600)
-    except OSError:
-        pass
-    tmp.replace(path)
+    write_json_atomic(path, payload, mode=0o600)
 
 
 def set_app_config(key: str, value) -> None:

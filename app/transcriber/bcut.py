@@ -218,20 +218,28 @@ class BcutTranscriber(Transcriber):
             logger.info("等待转录结果...")
             task_resp = None
             max_retries = 500
+            # 总时长上限（docs/05 第 16 轮 C4）：服务端异常不返回终态时最坏曾挂
+            # 41 分钟占死 worker 槽；10 分钟兜底显式报错
+            deadline = time.monotonic() + 600
             for i in range(max_retries):
                 task_resp = self._query_result()
-                
+
                 if task_resp["state"] == 4:  # 完成状态
                     break
                 elif task_resp["state"] == 3:  # 失败状态
                     error_msg = f"B站ASR任务失败，状态码: {task_resp['state']}"
                     logger.error(error_msg)
                     raise Exception(error_msg)
-                    
+
+                if time.monotonic() > deadline:
+                    error_msg = "B站ASR任务轮询超时（10 分钟），服务端可能未返回终态"
+                    logger.error(error_msg)
+                    raise Exception(error_msg)
+
                 # 每隔一段时间打印进度
                 if i % 10 == 0:
                     logger.info(f"转录进行中... {i}/{max_retries}")
-                    
+
                 # 指数退避轮询 1→2→4→5s 封顶(B站 ASR 常需数十秒,不空转)
                 time.sleep(min(1 << i, 5))
                 

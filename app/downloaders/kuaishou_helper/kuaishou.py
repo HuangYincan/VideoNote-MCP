@@ -33,7 +33,16 @@ headers = {
 
 logger = get_logger(__name__)
 
-cfm=CookieConfigManager()
+cfm = None  # 惰性单例（B13）：import 不构造 CookieConfigManager，避免落空 downloader.json
+
+
+def _get_cfm():
+    global cfm
+    if cfm is None:
+        cfm = CookieConfigManager()
+    return cfm
+
+
 class KuaiShou:
     def __init__(self):
         self.header = headers.copy()
@@ -58,7 +67,7 @@ class KuaiShou:
         return match.group(1)
 
     def get_temp_cookies(self):
-        is_exist = cfm.get('kuaishou')
+        is_exist = _get_cfm().get('kuaishou')
         if is_exist:
             return is_exist
         res = requests.get(url=KUAISHOU_URL, headers=self.header, allow_redirects=True, timeout=(5, 10))

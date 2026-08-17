@@ -31,6 +31,7 @@ import json
 import logging
 import re
 import shutil
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -233,7 +234,9 @@ def promote_transcript(
         base = cache_root() / ident
         base.mkdir(parents=True, exist_ok=True)
         dst = base / f"transcript_{engine}.json"
-        tmp = dst.with_suffix(".tmp")
+        # tmp 带唯一后缀（docs/05 第 16 轮 B3）：两个并发任务 promote 同一 ident 时
+        # 不再共用 <dst>.tmp 互相截断——各自写完整内容，最后一次 replace 赢且恒为整文件
+        tmp = dst.with_suffix(f".{uuid.uuid4().hex}.tmp")
         shutil.copyfile(src, tmp)
         tmp.replace(dst)  # 原子替换，避免读到半截文件
         logger.info("写入跨任务转写缓存: %s", dst)
@@ -276,7 +279,8 @@ def promote_media(
         base = cache_root() / ident / "media"
         base.mkdir(parents=True, exist_ok=True)
         dst = base / src.name
-        tmp = dst.with_suffix(".tmp")
+        # tmp 带唯一后缀（docs/05 第 16 轮 B3）：并发 promote 不共用 tmp，见 promote_transcript
+        tmp = dst.with_suffix(f".{uuid.uuid4().hex}.tmp")
         shutil.copy2(src, tmp)
         tmp.replace(dst)  # 原子替换，避免读到半截文件
         logger.info("写入跨任务媒体缓存: %s", dst)

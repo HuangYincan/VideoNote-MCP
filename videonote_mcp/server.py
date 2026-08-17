@@ -120,6 +120,7 @@ from app.utils.task_manifest import (
     list_task_files,
     record_task_paths,
 )
+from app.utils.url_safety import assert_public_http_url
 from videonote_mcp.provider_probe import probe_models
 
 logger = get_logger(__name__)
@@ -289,8 +290,14 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
             _status_memory.pop(next(iter(_status_memory)), None)
     try:
         task_dir.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # tmp 唯一后缀（docs/05 第 16 轮 B9）：与 note 侧 _update_status 双写者
+        # 不再共用固定 status.tmp；创建即 0600
+        from app.utils.json_store import _unique_tmp, _write_bytes_with_mode
+
+        tmp = _unique_tmp(f)
+        _write_bytes_with_mode(
+            tmp, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), 0o600
+        )
         tmp.replace(f)
         # 终态已落盘且不再变化：弹内存快照，防长生命周期 server 无界增长
         # （写盘失败时保留——快照是读盘损坏时的唯一回退，#121 C9）
@@ -1773,15 +1780,27 @@ def update_provider(
         data["enabled"] = enabled
     if not data:
         raise ValueError("至少提供 name / base_url / enabled 之一；api_key 请走 CLI")
+    # A2（docs/05 第 16 轮）：base_url 变更会使已存 key 失效。预先记录是否有 key，
+    # 更新后据此把副作用显式告知 Agent（让用户走 CLI 重新录入）。
+    had_key = False
+    if base_url is not None:
+        _before = ProviderService.get_provider_by_id_safe(provider_id)
+        had_key = bool(_before and _before.get("api_key"))
     updated = ProviderService.update_provider(provider_id, data)
     if not updated:
         raise ValueError(f"更新失败：供应商 {provider_id} 不存在")
+    result = {"updated": provider_id, "changed": sorted(data), "enabled": updated.get("enabled")}
+    if base_url is not None and had_key:
+        _after = ProviderService.get_provider_by_id_safe(provider_id)
+        if not (_after and _after.get("api_key")):
+            result["key_invalidated"] = True
+            result["notice"] = (
+                "base_url 变更已使该供应商的 api_key 失效（安全防护，避免 key 被定向转发到新端点）。"
+                "请让用户用 CLI 重新录入：`! videonote providers set <id> --api-key '...'`"
+            )
     # enabled 只在实际改 enabled 时有值——只改 name/base_url 时返回 null 会误导判读；
     # 补 changed 字段说明实际改动的字段（#121 C13）
-    return json.dumps(
-        {"updated": provider_id, "changed": sorted(data), "enabled": updated.get("enabled")},
-        ensure_ascii=False,
-    )
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -2249,26 +2268,36 @@ def validate_url(url: str) -> str:
     """
     try:
         platform = _detect_platform(url)
-        if platform == "local":
-            # 本地路径存在性前置校验：validate_url 给绿灯后 generate_note 却拒绝，
-            # SKILL 流程（validate_url → generate_note）多一轮无效往返（#126 C9）
-            if not _local_video_exists(url):
-                return json.dumps(
-                    {"supported": False, "platform": "local", "reason": "本地文件不存在"},
-                    ensure_ascii=False,
-                )
+    except ValueError as e:
+        # 失败分支与本地缺失分支同形状（都带 platform，#127 A5）：Agent 统一按 r["platform"] 判读
+        return json.dumps({"supported": False, "platform": "unknown", "reason": str(e)}, ensure_ascii=False)
+    if platform == "local":
+        # 本地路径存在性前置校验：validate_url 给绿灯后 generate_note 却拒绝，
+        # SKILL 流程（validate_url → generate_note）多一轮无效往返（#126 C9）
+        if not _local_video_exists(url):
+            return json.dumps(
+                {"supported": False, "platform": "local", "reason": "本地文件不存在"},
+                ensure_ascii=False,
+            )
+        reason = "识别为 local"
+    else:
+        # SSRF 防护（docs/05 第 16 轮 A1）：下载器边界也会拦，这里提前给 Agent 明确拒绝
+        try:
+            assert_public_http_url(url)
+        except ValueError as e:
+            return json.dumps(
+                {"supported": False, "platform": platform, "reason": str(e)},
+                ensure_ascii=False,
+            )
         reason = (
             "识别为 generic：将尝试 yt-dlp 通用提取（可能需登录/代理）"
             if platform == "generic"
             else f"识别为 {platform}"
         )
-        return json.dumps(
-            {"supported": True, "platform": platform, "reason": reason},
-            ensure_ascii=False,
-        )
-    except ValueError as e:
-        # 失败分支与本地缺失分支同形状（都带 platform，#127 A5）：Agent 统一按 r["platform"] 判读
-        return json.dumps({"supported": False, "platform": "unknown", "reason": str(e)}, ensure_ascii=False)
+    return json.dumps(
+        {"supported": True, "platform": platform, "reason": reason},
+        ensure_ascii=False,
+    )
 
 
 _PREFLIGHT_MIN_DISK_GB = 1.0

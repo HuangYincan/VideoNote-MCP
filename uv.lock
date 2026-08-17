@@ -4442,7 +4442,6 @@ name = "videonote-mcp"
 version = "0.1.5"
 source = { editable = "." }
 dependencies = [
-    { name = "av" },
     { name = "cryptography" },
     { name = "faster-whisper" },
     { name = "fastmcp" },
@@ -4489,7 +4488,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "av", specifier = ">=14.2.0" },
     { name = "cryptography", specifier = ">=42.0.0" },
     { name = "faster-whisper", specifier = ">=1.1.1" },
     { name = "fastmcp", specifier = ">=3,<4" },

@@ -322,6 +322,9 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
         if failed:
             logger.warning(f"预处理分块转写部分失败（{failed}/{len(chunks)} 块），转写不完整")
             result["truncated"] = True
+        else:
+            # 全成功：不输出 truncated 键（保持旧契约形状，B2 只在不完整时新增标记）
+            result.pop("truncated", None)
         return result
     finally:
         shutil.rmtree(prep_dir, ignore_errors=True)

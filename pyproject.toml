@@ -3,7 +3,7 @@ name = "videonote-mcp"
 version = "0.1.5"
 description = "VideoNote 能力 MCP 封装：视频链接 → AI Markdown 笔记（内嵌下载/转写/LLM 流水线，无需启动 FastAPI 后端）"
 readme = "README.md"
-# 上界 3.14：av / faster-whisper(ctranslate2) 等目前尚未提供 3.14 wheel
+# 上界 3.14：faster-whisper(ctranslate2) 等目前尚未提供 3.14 wheel
 requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "HuangYincan" }]
@@ -19,7 +19,6 @@ dependencies = [
     "ffmpeg-python>=0.2.0",
     "huggingface_hub>=0.30.0",
     "httpx>=0.28.1",
-    "av>=14.2.0",
     "pillow>=11.0.0",
     "pydantic>=2.11.2",
     "python-dotenv>=1.1.0",

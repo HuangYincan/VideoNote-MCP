@@ -16,3 +16,4 @@ class TranscriptResult:
     full_text: str                  # 完整合并后的文本（用于摘要）
     segments: List[TranscriptSegment]  # 分段结构，适合前端显示时间轴字幕等
     raw: Optional[dict] = None      # 原始响应数据，便于调试或平台特性处理
+    truncated: bool = False         # 转写不完整（预处理分块部分失败，docs/05 第 16 轮 B2）

@@ -1,6 +1,7 @@
 import hashlib
 import os
 import subprocess
+import threading
 from abc import ABC
 from typing import Optional
 
@@ -100,7 +101,8 @@ class LocalDownloader(Downloader, ABC):
             return output_path
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             raise RuntimeError(f"mp3 文件生成失败: {output_path}") from e
-    def download_video(self, video_url: str, output_dir: str = None) -> str:
+    def download_video(self, video_url: str, output_dir: str = None,
+                       cancel_event: Optional[threading.Event] = None) -> str:
         """
         处理本地文件路径，返回视频文件路径
         """
@@ -118,11 +120,15 @@ class LocalDownloader(Downloader, ABC):
             output_dir: str = None,
             quality: DownloadQuality = "fast",
             need_video: Optional[bool] = False,
-            skip_download: bool = False
+            skip_download: bool = False,
+            cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
         """
         处理本地文件路径，返回音频元信息
         """
+        from app.exceptions.task import check_cancel as _check_cancel
+
+        _check_cancel(cancel_event)  # 本地转码同样可取消（docs/05 第 16 轮 B1）
         if video_url.startswith('/uploads'):
             project_root = os.getcwd()
             video_url = os.path.join(project_root, video_url.lstrip('/'))

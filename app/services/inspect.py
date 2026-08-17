@@ -11,6 +11,7 @@ from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
 from app.services.pipeline import detect_platform
+from app.utils.url_safety import assert_public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,8 @@ def _inspect_bilibili(url: str) -> dict:
 
 def _inspect_ytdlp(url: str, platform: str) -> dict:
     """YouTube / generic：extract_flat 列出播放列表，否则单条。"""
+    # SSRF 防护（docs/05 第 16 轮 A1）：yt-dlp 边界先校验
+    assert_public_http_url(url)
     import yt_dlp
 
     from app.downloaders.youtube_downloader import _apply_proxy

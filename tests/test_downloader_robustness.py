@@ -328,7 +328,7 @@ class KuaishouVideoPathTest(unittest.TestCase):
         video_raw = {"visionVideoDetail": {"photo": self._photo_info()}, "tags": []}
         with mock.patch("app.downloaders.kuaishou_downloader.KuaiShou") as m_ks:
             m_ks.return_value.run.return_value = video_raw
-            with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
+            with mock.patch("requests.get") as m_get:
                 resp = mock.Mock()
                 resp.status_code = 200
                 resp.__enter__ = mock.Mock(return_value=resp)  # B8 后 `with requests.get`
@@ -445,7 +445,7 @@ class KuaishouStaleMp3Test(unittest.TestCase):
             video_raw = {"visionVideoDetail": {"photo": self._photo_info()}, "tags": []}
             with mock.patch("app.downloaders.kuaishou_downloader.KuaiShou") as m_ks:
                 m_ks.return_value.run.return_value = video_raw
-                with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
+                with mock.patch("requests.get") as m_get:
                     resp = mock.Mock()
                     resp.status_code = 200
                     resp.__enter__ = mock.Mock(return_value=resp)
@@ -475,7 +475,7 @@ class KuaishouTitleCleanTest(unittest.TestCase):
         video_raw = {"visionVideoDetail": {"photo": self._photo_info()}, "tags": []}
         with mock.patch("app.downloaders.kuaishou_downloader.KuaiShou") as m_ks:
             m_ks.return_value.run.return_value = video_raw
-            with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
+            with mock.patch("requests.get") as m_get:
                 resp = mock.Mock()
                 resp.status_code = 200
                 resp.__enter__ = mock.Mock(return_value=resp)
@@ -506,7 +506,7 @@ class KuaishouDownloadVideoTest(unittest.TestCase):
         video_raw = {"visionVideoDetail": {"photo": self._photo_info()}, "tags": []}
         with mock.patch("app.downloaders.kuaishou_downloader.KuaiShou") as m_ks:
             m_ks.return_value.run.return_value = video_raw
-            with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
+            with mock.patch("requests.get") as m_get:
                 resp = mock.Mock()
                 resp.status_code = 200
                 resp.__enter__ = mock.Mock(return_value=resp)
@@ -538,7 +538,7 @@ class KuaishouFfmpegFailureTest(unittest.TestCase):
         video_raw = {"visionVideoDetail": {"photo": self._photo_info()}, "tags": []}
         with mock.patch("app.downloaders.kuaishou_downloader.KuaiShou") as m_ks:
             m_ks.return_value.run.return_value = video_raw
-            with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
+            with mock.patch("requests.get") as m_get:
                 resp = mock.Mock()
                 resp.status_code = 200
                 resp.__enter__ = mock.Mock(return_value=resp)

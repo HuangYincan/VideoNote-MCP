@@ -60,8 +60,13 @@ def update_task_status(task_id: str, status: str, message: str = ""):
         task = db.query(VideoTask).filter_by(task_id=task_id).first()
         if task:
             task.status = status
-            if message and not task.summary:
+            # 占位文案（"任务排队中"）只作状态消息、不落 summary（docs/05 第 16 轮 B7）：
+            # 步骤任务（transcribe_media 等）成功后 summary 曾恒为"任务排队中"误导 Agent。
+            # 语义简介由调用方显式写（_save_metadata / insert_video_task）。
+            if message and not task.summary and message != "任务排队中":
                 task.summary = message
+            if status == "SUCCESS" and task.summary == "任务排队中":
+                task.summary = ""
         else:
             logger.warning(f"update_task_status: task {task_id} 不在全局索引，跳过")
         db.commit()

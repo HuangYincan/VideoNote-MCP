@@ -9,17 +9,19 @@ og:video / video 标签 / m3u8 等）。本类不指定 `ie_key`，让 yt-dlp �
 """
 import logging
 import os
+import threading
 from abc import ABC
 from typing import Optional, Union
 
 import yt_dlp
 
 from app.downloaders.base import Downloader, DownloadQuality
-from app.downloaders.common import ytdlp_retry
+from app.downloaders.common import ytdlp_cancel_hook, ytdlp_retry
 from app.downloaders.youtube_downloader import _apply_proxy
 from app.models.notes_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.path_helper import get_data_dir
+from app.utils.url_safety import assert_public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,10 @@ class GenericDownloader(Downloader, ABC):
         quality: DownloadQuality = "fast",
         need_video: Optional[bool] = False,
         skip_download: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
+        # SSRF 防护（docs/05 第 16 轮 A1）：generic 是任意 URL 进入 yt-dlp 的入口
+        assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()
         if not output_dir:
@@ -63,6 +68,7 @@ class GenericDownloader(Downloader, ABC):
             "outtmpl": output_path,
             "noplaylist": True,
             "quiet": False,
+            "progress_hooks": [ytdlp_cancel_hook(cancel_event)],
         }
         if skip_download:
             ydl_opts["skip_download"] = True
@@ -95,8 +101,14 @@ class GenericDownloader(Downloader, ABC):
             video_path=None,
         )
 
-    def download_video(self, video_url: str, output_dir: Union[str, None] = None) -> str:
+    def download_video(
+        self,
+        video_url: str,
+        output_dir: Union[str, None] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
         """通用视频下载：尽量合并 mp4。generic 场景主要用于音频，视频下载尽力而为。"""
+        assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()
         os.makedirs(output_dir, exist_ok=True)
@@ -107,6 +119,7 @@ class GenericDownloader(Downloader, ABC):
             "noplaylist": True,
             "quiet": False,
             "merge_output_format": "mp4",
+            "progress_hooks": [ytdlp_cancel_hook(cancel_event)],
         }
         cookie = self._get_cookie()
         if cookie:

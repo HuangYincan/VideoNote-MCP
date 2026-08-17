@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 from abc import ABC
 from typing import List, Optional, Union
 
@@ -12,12 +13,13 @@ import yt_dlp
 from app.downloaders.base import QUALITY_MAP, Downloader, DownloadQuality
 from app.downloaders.bilibili_dm_patch import apply_bilibili_dm_img_patch
 from app.downloaders.bilibili_subtitle import BilibiliSubtitleFetcher
-from app.downloaders.common import ytdlp_retry
+from app.downloaders.common import ytdlp_cancel_hook, ytdlp_retry
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.path_helper import get_data_dir
 from app.utils.url_parser import extract_bilibili_p_number, extract_video_id
+from app.utils.url_safety import sanitize_url
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,7 @@ class BilibiliDownloader(Downloader, ABC):
         quality: DownloadQuality = "fast",
         need_video: Optional[bool] = False,
         skip_download: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
         if output_dir is None:
             output_dir = get_data_dir()
@@ -96,6 +99,7 @@ class BilibiliDownloader(Downloader, ABC):
             ],
             'noplaylist': True,
             'quiet': False,
+            'progress_hooks': [ytdlp_cancel_hook(cancel_event)],
         }
         if self._cookiefile:
             ydl_opts['cookiefile'] = self._cookiefile
@@ -124,6 +128,7 @@ class BilibiliDownloader(Downloader, ABC):
         self,
         video_url: str,
         output_dir: Union[str, None] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """
         下载视频，返回视频文件路径
@@ -132,7 +137,7 @@ class BilibiliDownloader(Downloader, ABC):
         if output_dir is None:
             output_dir = get_data_dir()
         os.makedirs(output_dir, exist_ok=True)
-        logger.debug("video_url=%s", video_url)
+        logger.debug("video_url=%s", sanitize_url(video_url))
         video_id=extract_video_id(video_url, "bilibili")
         if not video_id:
             raise ValueError(f"无法从链接提取 B 站视频 ID: {video_url}")
@@ -148,8 +153,17 @@ class BilibiliDownloader(Downloader, ABC):
             existing = _glob.glob(os.path.join(output_dir, f"{video_id}.mp4")) or _glob.glob(
                 os.path.join(output_dir, f"{video_id}_p1.mp4")
             )
-        if existing:
-            return existing[0]
+        # 复用前校验非空（docs/05 第 16 轮 B11）：0 字节/半截残留（上次中断）
+        # 删掉重下，不把损坏文件当成功产物（kuaishou mp3 同款守卫 #124 B1）
+        valid = [p for p in existing if os.path.getsize(p) > 0]
+        for stale in existing:
+            if os.path.getsize(stale) == 0:
+                try:
+                    os.unlink(stale)
+                except OSError:
+                    pass
+        if valid:
+            return valid[0]
 
         output_path = os.path.join(output_dir, "%(id)s.%(ext)s")
 
@@ -160,6 +174,7 @@ class BilibiliDownloader(Downloader, ABC):
             'noplaylist': True,
             'quiet': False,
             'merge_output_format': 'mp4',  # 确保合并成 mp4
+            'progress_hooks': [ytdlp_cancel_hook(cancel_event)],
         }
         if self._cookiefile:
             ydl_opts['cookiefile'] = self._cookiefile

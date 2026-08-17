@@ -1,3 +1,4 @@
+import threading
 from abc import ABC, abstractmethod
 from typing import Optional, Union
 
@@ -21,19 +22,22 @@ class Downloader(ABC):
     @abstractmethod
     def download(self, video_url: str, output_dir: str = None,
                  quality: DownloadQuality = "fast", need_video: Optional[bool] = False,
-                 skip_download: bool = False) -> AudioDownloadResult:
+                 skip_download: bool = False,
+                 cancel_event: Optional[threading.Event] = None) -> AudioDownloadResult:
         '''
 
         :param need_video:
         :param video_url: 资源链接
         :param output_dir: 输出路径 默认根目录data
         :param quality: 音频质量 fast | medium | slow（bitrate 见 QUALITY_MAP）
+        :param cancel_event: 可选取消事件（docs/05 第 16 轮 B1）：已 set 时下载中断
         :return:返回一个 AudioDownloadResult 类
         '''
         pass
 
     def download_video(self, video_url: str,
-                       output_dir: Union[str, None] = None) -> str:
+                       output_dir: Union[str, None] = None,
+                       cancel_event: Optional[threading.Event] = None) -> str:
         pass
 
     def download_subtitles(self, video_url: str, output_dir: str = None,

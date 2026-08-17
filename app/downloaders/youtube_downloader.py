@@ -1,13 +1,14 @@
 import logging
 import os
 import tempfile
+import threading
 from abc import ABC
 from typing import List, Optional, Union
 
 import yt_dlp
 
 from app.downloaders.base import Downloader, DownloadQuality
-from app.downloaders.common import ytdlp_retry
+from app.downloaders.common import ytdlp_cancel_hook, ytdlp_retry
 from app.downloaders.youtube_subtitle import YouTubeSubtitleFetcher
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
@@ -15,6 +16,7 @@ from app.services.cookie_manager import CookieConfigManager
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.path_helper import get_data_dir
 from app.utils.url_parser import extract_video_id
+from app.utils.url_safety import assert_public_http_url, sanitize_url
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,8 @@ def _apply_proxy(ydl_opts: dict) -> dict:
     proxy = ProxyConfigManager().get_proxy_url()
     if proxy:
         ydl_opts['proxy'] = proxy
-        logger.info(f"yt-dlp 走代理: {proxy}")
+        # 代理 URL 可能含 user:pass@（docs/05 第 16 轮 A4）：日志只留 host，不落凭据
+        logger.info(f"yt-dlp 走代理: {sanitize_url(proxy)}")
     return ydl_opts
 
 
@@ -75,7 +78,10 @@ class YoutubeDownloader(Downloader, ABC):
         quality: DownloadQuality = "fast",
         need_video: Optional[bool] = False,
         skip_download: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
+        # SSRF 防护（docs/05 第 16 轮 A1）：YouTube URL 也经 yt-dlp 抓取
+        assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()
         if not output_dir:
@@ -89,6 +95,7 @@ class YoutubeDownloader(Downloader, ABC):
             'outtmpl': output_path,
             'noplaylist': True,
             'quiet': False,
+            'progress_hooks': [ytdlp_cancel_hook(cancel_event)],
         }
         if self._cookiefile:
             ydl_opts['cookiefile'] = self._cookiefile
@@ -121,18 +128,28 @@ class YoutubeDownloader(Downloader, ABC):
         self,
         video_url: str,
         output_dir: Union[str, None] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """
         下载视频，返回视频文件路径
         """
+        # SSRF 防护（docs/05 第 16 轮 A1）
+        assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()
         video_id = extract_video_id(video_url, "youtube")
         if not video_id:
             raise ValueError(f"无法从链接提取 YouTube 视频 ID: {video_url}")
         video_path = os.path.join(output_dir, f"{video_id}.mp4")
-        if os.path.exists(video_path):
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
             return video_path
+        # 0 字节/半截残留（上次中断，docs/05 第 16 轮 B11）：删掉重下，
+        # 否则抽帧拿到损坏视频报泛化错误；kuaishou mp3 已有同款守卫（#124 B1）
+        if os.path.exists(video_path):
+            try:
+                os.unlink(video_path)
+            except OSError:
+                pass
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, "%(id)s.%(ext)s")
 
@@ -142,6 +159,7 @@ class YoutubeDownloader(Downloader, ABC):
             'noplaylist': True,
             'quiet': False,
             'merge_output_format': 'mp4',  # 确保合并成 mp4
+            'progress_hooks': [ytdlp_cancel_hook(cancel_event)],
         }
         if self._cookiefile:
             ydl_opts['cookiefile'] = self._cookiefile

@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Union
 
 from app.models.transcriber_model import TranscriptResult
 from app.services.note import NOTE_OUTPUT_DIR
+from app.utils.json_store import write_text_atomic
 from app.utils.task_manifest import record_task_paths
 
 from .json import to_json
@@ -78,7 +79,8 @@ def export_transcript(
     for fmt, content in rendered.items():
         path = out_dir / _FORMAT_FILENAME[fmt]
         try:
-            path.write_text(content, encoding="utf-8")
+            # 原子写（docs/05 第 16 轮 B10）：进程中断不留下截断的 .srt/.vtt/.json
+            write_text_atomic(path, content)
             written[fmt] = path.as_uri()
         except OSError as exc:
             errors[fmt] = str(exc)

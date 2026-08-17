@@ -1,5 +1,6 @@
 import uuid
 from typing import Optional
+from urllib.parse import urlsplit
 
 from app.db.models.providers import Provider
 from app.db.provider_dao import (
@@ -16,6 +17,24 @@ logger = get_logger(__name__)
 
 
 class ProviderService:
+
+    @staticmethod
+    def _validate_base_url(base_url: Optional[str]) -> Optional[str]:
+        """base_url 仅支持 http/https 且须含主机名（docs/05 第 16 轮 A2）。
+
+        允许 localhost/私网地址——自建网关/Ollama 等本地 LLM 是合法用例；
+        key 外泄防护靠「base_url 变更使 key 失效」，而非禁私网。
+        """
+        s = str(base_url or "").strip()
+        if not s:
+            return s
+        try:
+            parts = urlsplit(s)
+        except ValueError as e:
+            raise ValueError(f"base_url 无法解析: {s}") from e
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+            raise ValueError(f"base_url 仅支持 http/https 且须包含主机名: {s}")
+        return s
 
     @staticmethod
     def serialize_provider(row: Provider) -> dict:
@@ -84,6 +103,7 @@ class ProviderService:
             existing = get_provider_by_name(name)
             if existing is not None:
                 raise ValueError(f'供应商名称已存在: {name}')
+            base_url = ProviderService._validate_base_url(base_url)
             id = uuid.uuid4().hex
             logo = 'custom'
             return insert_provider(id, name, api_key, base_url, logo, type_, enabled)
@@ -147,6 +167,24 @@ class ProviderService:
             # 如果用户未重新输入直接保存，带星号的值不应覆盖原 key。
             if 'api_key' in filtered_data and '*' in str(filtered_data.get('api_key', '')):
                 filtered_data.pop('api_key')
+            # base_url scheme 校验（docs/05 第 16 轮 A2）
+            if filtered_data.get('base_url') is not None:
+                filtered_data['base_url'] = ProviderService._validate_base_url(filtered_data['base_url'])
+            # 先取旧行（不存在早退）：base_url 变更且未同时提供新 key → 已存 key 失效（A2）。
+            # 否则被注入的 agent 改 base_url 后 list_models/test_provider 会把库中 key
+            # 定向发给攻击者服务器——key 绝不允许静默跟随新端点。
+            old_provider = get_provider_by_id(id)
+            if old_provider is None:
+                return None
+            new_base = filtered_data.get('base_url')
+            if (
+                new_base
+                and new_base != old_provider.base_url
+                and 'api_key' not in filtered_data
+                and old_provider.api_key
+            ):
+                filtered_data['api_key'] = ''
+                logger.warning('供应商 %s 的 base_url 变更，已使已存 api_key 失效（需重新录入）', id)
             # 打码 api_key，避免 key 泄进日志
             _log_data = {
                 k: (str(v)[:4] + '****' if k == 'api_key' and v else v)
@@ -159,8 +197,6 @@ class ProviderService:
             # 供应商不存在时必须返回 None（此前返回 {'id':…, 'enabled': None} 恒真，
             # CLI/MCP 的 `if not updated` 判空永不生效，会把不存在报成「已更新」）。
             updated_provider = get_provider_by_id(id)
-            if updated_provider is None:
-                return None
             return {
                 'id': id,
                 'enabled': updated_provider.enabled,

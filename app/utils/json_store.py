@@ -41,16 +41,35 @@ def read_json(path: Path, default: Optional[Dict[str, Any]] = None) -> Dict[str,
         return default
 
 
+def _unique_tmp(p: Path) -> Path:
+    """tmp 带进程+随机唯一后缀（docs/05 第 16 轮 B8）：
+    固定 <path>.tmp 在 CLI 与 MCP server 双进程并发写同一配置时互相截断丢更新；
+    唯一后缀各自写完整文件，replace 仍是原子的。
+    """
+    import os
+    import uuid
+
+    return p.with_suffix(f".{os.getpid()}.{uuid.uuid4().hex}.tmp")
+
+
+def _write_bytes_with_mode(path: Path, content: bytes, mode: int) -> None:
+    """以 mode 权限创建文件并写入：os.open 创建即限权（0600），
+    无「先默认 umask 创建、后 chmod」的短暂权限窗口（docs/05 第 16 轮 B8/L2）。"""
+    import os
+
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
+    try:
+        os.write(fd, content)
+    finally:
+        os.close(fd)
+
+
 def write_json_atomic(path: Path, data: Dict[str, Any], mode: int = 0o600) -> None:
     """原子写 JSON（tmp + replace + 权限）：磁盘满/进程中断不会留下半截文件。"""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        tmp.chmod(mode)
-    except OSError:
-        pass
+    tmp = _unique_tmp(p)
+    _write_bytes_with_mode(tmp, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), mode)
     tmp.replace(p)
 
 
@@ -62,10 +81,6 @@ def write_text_atomic(path: Path, text: str, mode: int = 0o600) -> None:
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    try:
-        tmp.chmod(mode)
-    except OSError:
-        pass
+    tmp = _unique_tmp(p)
+    _write_bytes_with_mode(tmp, text.encode("utf-8"), mode)
     tmp.replace(p)

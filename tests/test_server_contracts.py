@@ -2077,5 +2077,110 @@ class ListTasksForwardTest(unittest.TestCase):
         m_list.assert_called_once_with(limit=None, offset=0)
 
 
+class ValidateUrlSsrfTest(unittest.TestCase):
+    """docs/05 第 16 轮 A1：validate_url 对私网/元数据 URL 明确拒绝（下载器边界也会拦）。"""
+
+    def test_literal_metadata_ip_rejected(self):
+        resp = json.loads(server.validate_url("http://169.254.169.254/latest/meta-data/"))
+        self.assertFalse(resp["supported"])
+        self.assertEqual(resp["platform"], "generic")
+        self.assertIn("SSRF", resp["reason"])
+
+    def test_loopback_rejected(self):
+        resp = json.loads(server.validate_url("http://127.0.0.1:8080/video"))
+        self.assertFalse(resp["supported"])
+        self.assertIn("SSRF", resp["reason"])
+
+    def test_localhost_hostname_rejected_when_resolves_private(self):
+        # conftest 默认把 DNS 桩成公网；此用例显式让该主机判为非公网
+        with mock.patch("app.utils.url_safety._host_is_public", return_value=False):
+            resp = json.loads(server.validate_url("http://localhost:8080/video"))
+        self.assertFalse(resp["supported"])
+        self.assertIn("SSRF", resp["reason"])
+
+    def test_public_platform_url_accepted(self):
+        # conftest DNS → 公网；bilibili 命中内置平台
+        resp = json.loads(server.validate_url("https://www.bilibili.com/video/BV1vc411b7Wa"))
+        self.assertTrue(resp["supported"])
+        self.assertEqual(resp["platform"], "bilibili")
+
+    def test_generic_public_url_accepted(self):
+        resp = json.loads(server.validate_url("https://example.com/video"))
+        self.assertTrue(resp["supported"])
+        self.assertEqual(resp["platform"], "generic")
+
+    def test_local_existing_file_accepted(self):
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+            path = f.name
+        try:
+            resp = json.loads(server.validate_url(f"file://{path}"))
+        finally:
+            Path(path).unlink(missing_ok=True)
+        self.assertTrue(resp["supported"])
+        self.assertEqual(resp["platform"], "local")
+
+
+class UpdateProviderKeyInvalidationTest(unittest.TestCase):
+    """docs/05 第 16 轮 A2：base_url 变更使已存 key 失效，防 key 被定向转发。"""
+
+    def test_service_clears_key_on_base_url_change(self):
+        from app.services.provider import ProviderService
+
+        fake = mock.MagicMock(base_url="https://old.example/v1", api_key="enc:xxx", enabled=1)
+        with mock.patch("app.services.provider.get_provider_by_id", return_value=fake), mock.patch(
+            "app.services.provider.update_provider"
+        ) as m_dao:
+            ProviderService.update_provider("p1", {"base_url": "https://new.example/v1"})
+        # 服务层在 base_url 变更时把 key 清空后交 DAO（key 不随新端点转发）
+        self.assertEqual(m_dao.call_args[1]["api_key"], "")
+
+    def test_service_keeps_key_when_base_url_unchanged(self):
+        from app.services.provider import ProviderService
+
+        fake = mock.MagicMock(base_url="https://old.example/v1", api_key="enc:xxx", enabled=1)
+        with mock.patch("app.services.provider.get_provider_by_id", return_value=fake), mock.patch(
+            "app.services.provider.update_provider"
+        ) as m_dao:
+            ProviderService.update_provider("p1", {"name": "改名"})
+        self.assertNotIn("api_key", m_dao.call_args[1])
+
+    def test_mcp_tool_reports_key_invalidated(self):
+        safe_before = {"id": "p1", "api_key": "sk-xxx", "base_url": "https://old.example/v1"}
+        safe_after = {"id": "p1", "api_key": "", "base_url": "https://new.example/v1"}
+        with mock.patch.object(
+            server.ProviderService,
+            "get_provider_by_id_safe",
+            side_effect=[safe_before, safe_after],
+        ), mock.patch.object(server.ProviderService, "update_provider", return_value={"enabled": 1}):
+            resp = json.loads(server.update_provider("p1", base_url="https://new.example/v1"))
+        self.assertTrue(resp["key_invalidated"])
+        self.assertIn("重新录入", resp["notice"])
+
+    def test_mcp_tool_no_key_no_invalidation(self):
+        safe = {"id": "p1", "api_key": "", "base_url": "https://old.example/v1"}
+        with mock.patch.object(
+            server.ProviderService,
+            "get_provider_by_id_safe",
+            side_effect=[safe, safe],
+        ), mock.patch.object(server.ProviderService, "update_provider", return_value={"enabled": 1}):
+            resp = json.loads(server.update_provider("p1", base_url="https://new.example/v1"))
+        self.assertNotIn("key_invalidated", resp)
+
+    def test_non_http_scheme_rejected_at_service(self):
+        from app.services.provider import ProviderService
+
+        with self.assertRaises(ValueError) as cm:
+            ProviderService._validate_base_url("file:///etc/x")
+        self.assertIn("http", str(cm.exception))
+        with self.assertRaises(ValueError):
+            ProviderService._validate_base_url("gopher://example.com/x")
+
+    def test_valid_base_urls_pass(self):
+        from app.services.provider import ProviderService
+
+        for ok in ("https://api.openai.com/v1", "http://localhost:11434/v1", "http://127.0.0.1:8000/v1"):
+            self.assertEqual(ProviderService._validate_base_url(ok), ok)
+
+
 if __name__ == "__main__":
     unittest.main()

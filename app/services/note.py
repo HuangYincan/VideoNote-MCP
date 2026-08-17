@@ -64,13 +64,19 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def _extract_audio_from_video(video_path: str, out_dir: Union[str, Path]) -> str:
+def _extract_audio_from_video(
+    video_path: str,
+    out_dir: Union[str, Path],
+    cancel_event: Optional[threading.Event] = None,
+) -> str:
     """从本地视频文件提取音频轨（mp3），供「视频已下载」场景复用（docs/05 #33）。
 
     截图/视频理解模式已经下载了完整视频，转写不再第二次网络下载音频，
     直接从视频提取。失败抛 RuntimeError（调用方回退常规音频下载）。
+    取消时 terminate 子进程而非等 600s 超时（docs/05 第 16 轮 B1）。
     """
     import subprocess
+    import time as _time
 
     src = Path(video_path)
     out_dir = Path(out_dir)
@@ -82,12 +88,28 @@ def _extract_audio_from_video(video_path: str, out_dir: Union[str, Path]) -> str
         "-hide_banner", "-loglevel", "error",
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"从视频提取音频超时: {src.name}") from exc
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except OSError as exc:
+        raise RuntimeError(f"启动 ffmpeg 提取音频失败: {src.name}") from exc
+    deadline = _time.monotonic() + 600
+    while proc.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            raise TaskCancelledError("任务已取消")
+        if _time.monotonic() > deadline:
+            proc.kill()
+            proc.wait()
+            raise RuntimeError(f"从视频提取音频超时: {src.name}")
+        _time.sleep(0.2)
+    _, stderr = proc.communicate()
     if proc.returncode != 0 or not out.exists():
         raise RuntimeError(
-            f"从视频提取音频失败: {src.name}（{proc.stderr.strip()[:300]}）"
+            f"从视频提取音频失败: {src.name}（{(stderr or '').strip()[:300]}）"
         )
     return str(out)
 
@@ -289,6 +311,7 @@ class NoteGenerator:
                         language=data.get("language"),
                         full_text=data["full_text"],
                         segments=segments,
+                        truncated=bool(data.get("truncated", False)),
                     )
                     logger.info(f"已从缓存加载转写结果，共 {len(segments)} 段")
                 except Exception as e:
@@ -334,6 +357,7 @@ class NoteGenerator:
                 video_interval=video_interval,
                 grid_size=grid_size,
                 skip_download=not need_full_download,
+                cancel_event=cancel_event,
             )
 
             # 3. 如果前面没拿到字幕，走转写流程
@@ -589,12 +613,14 @@ class NoteGenerator:
             logger.warning(f"同步任务状态到全局索引失败: {e}")
 
         try:
-            # First create a temporary file
-            temp_file = status_file.with_suffix('.tmp')
+            # tmp 带唯一后缀（docs/05 第 16 轮 B9/B8）：note 侧与 server 侧双写者
+            # 不再共用固定 status.tmp 互相截断；创建即 0600，无权限窗口
+            from app.utils.json_store import _unique_tmp, _write_bytes_with_mode
 
-            # Write to temporary file
-            with temp_file.open('w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            temp_file = _unique_tmp(status_file)
+            _write_bytes_with_mode(
+                temp_file, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), 0o600
+            )
 
             # Atomic rename operation
             temp_file.replace(status_file)
@@ -638,6 +664,7 @@ class NoteGenerator:
         video_interval: int,
         grid_size: List[int],
         skip_download: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult | None:
         """
         1. 检查音频缓存；若不存在，则根据需要下载音频或视频（若需截图/可视化）。
@@ -698,6 +725,7 @@ class NoteGenerator:
                     output_dir=dl_dir,
                     need_video=False,
                     skip_download=True,
+                    cancel_event=cancel_event,
                 )
                 # 命中转写缓存时媒体没真下载，audio.file_path 是悬空路径；
                 # 从跨任务缓存复制音频到本任务 raw/，audio_path 才有真实文件
@@ -729,7 +757,9 @@ class NoteGenerator:
         if need_video:
             try:
                 logger.info("开始下载视频")
-                video_path_str = downloader.download_video(video_url, output_dir=dl_dir)
+                video_path_str = downloader.download_video(
+                    video_url, output_dir=dl_dir, cancel_event=cancel_event
+                )
                 self.video_path = Path(video_path_str)
                 logger.info(f"视频下载完成：{self.video_path}")
                 record_task_paths(task_id, [self.video_path])
@@ -761,8 +791,9 @@ class NoteGenerator:
                     output_dir=dl_dir,
                     need_video=True,
                     skip_download=True,
+                    cancel_event=cancel_event,
                 )
-                audio.file_path = _extract_audio_from_video(str(self.video_path), dl_dir)
+                audio.file_path = _extract_audio_from_video(str(self.video_path), dl_dir, cancel_event)
                 audio.video_path = str(self.video_path)
                 write_json_atomic(audio_cache_file, asdict(audio))
                 logger.info(f"视频下载完成，音频从视频提取（免二次下载）({audio_cache_file})")
@@ -779,6 +810,7 @@ class NoteGenerator:
                 quality=quality,
                 output_dir=dl_dir,
                 need_video=need_video,
+                cancel_event=cancel_event,
             )
             write_json_atomic(audio_cache_file, asdict(audio))
             logger.info(f"音频下载并缓存成功 ({audio_cache_file})")
@@ -820,7 +852,12 @@ class NoteGenerator:
             try:
                 data = json.loads(transcript_cache_file.read_text(encoding="utf-8"))
                 segments = [TranscriptSegment(**seg) for seg in data.get("segments", [])]
-                return TranscriptResult(language=data.get("language"), full_text=data["full_text"], segments=segments)
+                return TranscriptResult(
+                    language=data.get("language"),
+                    full_text=data["full_text"],
+                    segments=segments,
+                    truncated=bool(data.get("truncated", False)),
+                )
             except Exception as e:
                 logger.warning(f"加载转写缓存失败，将重新获取：{e}")
 
@@ -892,12 +929,14 @@ class NoteGenerator:
             transcript_dict = pipeline.transcribe_audio(audio_file, transcriber=self.transcriber)
             write_json_atomic(transcript_cache_file, transcript_dict)
             self._transcript_engine = note_cache.engine_key(self.transcriber_type, self.model_size)
-            # 重建 TranscriptResult，保持返回类型一致（generate 下游仍按对象访问）
+            # 重建 TranscriptResult，保持返回类型一致（generate 下游仍按对象访问）。
+            # truncated 透传（docs/05 第 16 轮 B2）：预处理分块部分失败时笔记/result 不静默降级
             transcript = TranscriptResult(
                 language=transcript_dict.get("language"),
                 full_text=transcript_dict["full_text"],
                 segments=[TranscriptSegment(**seg) for seg in transcript_dict.get("segments", [])],
                 raw=transcript_dict.get("raw"),
+                truncated=bool(transcript_dict.get("truncated", False)),
             )
             logger.info(f"转写并缓存成功 ({transcript_cache_file})")
             return transcript
@@ -905,6 +944,15 @@ class NoteGenerator:
             logger.error(f"音频转写失败：{exc}")
             self._handle_exception(task_id, exc)
             raise
+        finally:
+            # B14（docs/05 第 16 轮）：bcut 是每任务新实例（requests.Session 此前只靠
+            # __del__/GC 关闭）；任务结束确定性 close。whisper/funasr/mlx 的 close 会
+            # 释放模型引用且实例被 transcriber_provider 缓存复用——不在这里动。
+            if self.transcriber is not None and type(self.transcriber).__name__ == "BcutTranscriber":
+                try:
+                    self.transcriber.close()
+                except Exception:  # noqa: BLE001 —— 释放失败不阻断任务收尾
+                    logger.warning("bcut 转写器 close 失败", exc_info=True)
 
     def _summarize_text(
         self,
@@ -966,6 +1014,13 @@ class NoteGenerator:
             )
             write_text_atomic(markdown_cache_file, markdown)
             logger.info(f"GPT 总结并缓存成功 ({markdown_cache_file})")
+            # 转写不完整显式标注（docs/05 第 16 轮 B2）：不再静默基于残缺素材产出
+            if getattr(transcript, "truncated", False):
+                markdown = markdown + (
+                    "\n\n> ⚠️ 转写不完整：预处理分块转写有部分失败，本笔记基于残缺转写素材生成，"
+                    "请核对后使用\n"
+                )
+                write_text_atomic(markdown_cache_file, markdown)
             return markdown
         except Exception as exc:
             logger.error(f"GPT 总结失败：{exc}")

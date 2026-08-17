@@ -432,10 +432,17 @@ class TestWizardProviderCli:
 
     def test_update_provider_real_exception_raises(self):
         """ProviderService.update_provider 对 DB 异常抛 ValueError（此前 return None 吞掉）。"""
-        with mock.patch("app.services.provider.update_provider",
-                        side_effect=RuntimeError("sqlite database is locked")):
-            with pytest.raises(ValueError) as ei:
-                ProviderService.update_provider("p-zzz", {"name": "x"})
+        # A2（docs/05 第 16 轮）把「供应商不存在」检查提前到 DAO 更新前：这里给出存在的
+        # 假行，让流程走到 DAO update 抛异常，验证 DB 异常仍被透传成 ValueError。
+        fake_row = mock.MagicMock()
+        fake_row.base_url = "https://a.com/v1"
+        fake_row.api_key = "sk-1"
+        fake_row.enabled = 1
+        with mock.patch("app.services.provider.get_provider_by_id", return_value=fake_row):
+            with mock.patch("app.services.provider.update_provider",
+                            side_effect=RuntimeError("sqlite database is locked")):
+                with pytest.raises(ValueError) as ei:
+                    ProviderService.update_provider("p-zzz", {"name": "x"})
         assert "sqlite database is locked" in str(ei.value)
 
     def test_edit_provider_success(self, capsys):
