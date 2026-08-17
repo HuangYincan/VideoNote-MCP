@@ -197,6 +197,8 @@ _batch_ctx = threading.local()  # batch_generate_notes 内部批量提交的旁�
 # 最近一次 _write_status 的写盘快照（写盘失败/文件损坏时 get_task_status 回退，
 # 避免把运行中/已完成任务误报成 PENDING，见 #118）
 _status_memory: Dict[str, dict] = {}
+# 内存快照上限（#123 A9）：持续写盘故障时快照只增不删会无界积累——超限按最旧淘汰
+_STATUS_MEMORY_MAX = 512
 
 
 def _exit_summary() -> None:
@@ -247,6 +249,9 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
     # 写盘前更新内存快照：磁盘满/权限故障时 get_task_status 可回退（见 #118）
     with _tasks_lock:
         _status_memory[task_id] = data
+        # 上限防无界（#123 A9）：dict 保插入序，超限淘汰最旧快照
+        if len(_status_memory) > _STATUS_MEMORY_MAX:
+            _status_memory.pop(next(iter(_status_memory)), None)
     try:
         task_dir.mkdir(parents=True, exist_ok=True)
         tmp = f.with_suffix(".tmp")
@@ -288,18 +293,29 @@ def _status_is_terminal(task_id: str) -> bool:
         return False
 
 
+def _read_task_status(task_id: str) -> str:
+    """读任务 status.json 的 status 字段；文件缺失/损坏时返回 UNKNOWN（#123 A8 抽取）。
+
+    get_task_transcript 的两处「读真实状态」共用——此前 segment_range 非法时硬编码
+    `status:"UNKNOWN"`，SUCCESS 任务被误判成未知。
+    """
+    try:
+        st = json.loads(
+            (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
+        )
+        return st.get("status", "UNKNOWN")
+    except Exception:
+        return "UNKNOWN"
+
+
 def _transcript_unavailable_reason(task_id: str) -> str:
     """「任务没有可读转写」的准确原因：读 status.json 区分不存在/运行中/未成功/成功无转写。
 
     get_task_transcript / MCP Resource / export_transcript 共用——运行中的任务此前被
     笼统报「尚未成功或已清理」，Agent 可能误向用户报告「任务失败了」（#114）。
     """
-    try:
-        data = json.loads(
-            (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
-        )
-        status = data.get("status") or "UNKNOWN"
-    except Exception:
+    status = _read_task_status(task_id)
+    if status == "UNKNOWN":
         return "任务状态不可读（可能已清理）"
     if status == "SUCCESS":
         return "任务成功但没有转写"
@@ -495,6 +511,11 @@ def _run_step_task(
         _check_cancel(cancel_event)  # 排队期间被取消 → 直接 CANCELLED，不写 INITIALIZING
         _write_status(task_id, "INITIALIZING", message="正在准备…")
         payload = step_fn(task_id, cancel_event, **kwargs)
+        # 协作式取消复查（#123 A3）：转写/抽帧的 step_fn 内部没有 cancel 检查点
+        # （pipeline 层不收 cancel_event），任务可能跑完但取消信号已发——若报 SUCCESS
+        # 与 cancel_note 返回的 CANCELLING（承诺「下一阶段边界停止」）矛盾
+        if cancel_event is not None and cancel_event.is_set():
+            raise TaskCancelledError("步骤完成后收到取消信号")
         task_dir = NOTE_OUTPUT_DIR / str(task_id)
         task_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(task_dir / "result.json", payload)
@@ -1178,17 +1199,11 @@ def get_task_transcript(task_id: str, segment_range: str = "") -> str:
     returned_segments, total_chars, returned_chars, truncated}}`。任务未成功/无转写时
     `ok:false`。"""
     task_id = _validate_task_id(task_id)
-    task_dir = NOTE_OUTPUT_DIR / str(task_id)
 
     # 规范来源：gen/transcript.json（note.py 每次成功都会写）；缺失则退 result.json
     transcript = _load_task_transcript(task_id)
     if not transcript:
-        status = "UNKNOWN"
-        try:
-            st = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
-            status = st.get("status", "UNKNOWN")
-        except Exception:
-            pass
+        status = _read_task_status(task_id)
         return json.dumps(
             {
                 "task_id": task_id,
@@ -1208,7 +1223,7 @@ def get_task_transcript(task_id: str, segment_range: str = "") -> str:
         lo, hi = _parse_segment_range(segment_range, total)
     except ValueError as e:
         return json.dumps(
-            {"task_id": task_id, "ok": False, "status": "UNKNOWN", "message": str(e)},
+            {"task_id": task_id, "ok": False, "status": _read_task_status(task_id), "message": str(e)},
             ensure_ascii=False,
         )
     if (lo, hi) == (0, total):
@@ -1370,16 +1385,21 @@ def cleanup_note(task_id: str, include_note: bool = False) -> str:
 
 @mcp.tool()
 def cleanup_all(include_config: bool = False, include_models: bool = False) -> str:
-    """全局清理（类似恢复出厂）：清空 note_results / static/screenshots / logs 的所有任务产物。
+    """全局清理（类似恢复出厂）：清空 note_results / static/screenshots / note_cache 的任务产物。
 
     - include_config=False（默认）：保留 config/（LLM key / cookie / 转写设置）；
       include_config=True 时连 config/ 一起清；
     - include_models=False（默认）：保留 models/（已下载模型可复用，重下成本高）；
       include_models=True 时连 models/ 一起清。
+    - **logs/ 不清**（#121 C3）：MCP 进程持有 mcp_stderr.log 打开 fd，unlink 后日志进
+      已删除 inode——文件消失、磁盘不回收；日志也不属任务产物。
     数据库记录（video_note.db）不动。返回各目录清理统计 + 保留项。
 
     **有进行中/排队任务时拒绝**（返回 {ok: false, running, running_task_ids, error}）——
     全局清空会把运行中任务的目录一并删掉。先 cancel_note 或等全部终态，再清理。
+
+    **include_models=True 且仍有模型在后台下载时拒绝**（返回 {ok: false, downloading_models,
+    error}）——删 models/ 会打断下载线程（#123 A1）。
     """
     with _tasks_lock:
         running = [tid for tid, f in _task_futures.items() if not f.done()]
@@ -1393,6 +1413,18 @@ def cleanup_all(include_config: bool = False, include_models: bool = False) -> s
             },
             ensure_ascii=False,
         )
+    if include_models:
+        dl_keys = dl_state.downloading_keys()
+        if dl_keys:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "downloading_models": dl_keys,
+                    "error": f"仍有 {len(dl_keys)} 个模型正在后台下载（{', '.join(dl_keys)}）："
+                    "先等下载完成再清 models/，或等下载失败/结束后重试",
+                },
+                ensure_ascii=False,
+            )
     return json.dumps(cleanup_all_files(include_config=include_config, include_models=include_models), ensure_ascii=False)
 
 
@@ -1555,7 +1587,10 @@ def summarize_note(
       life_journal 生活向/task_oriented 任务导向/business 商业风格/meeting_minutes 会议纪要）；
       不传时用 setup ③ 配置的默认（默认 detailed），显式传入始终覆盖；
     - extras: 附加到 prompt 末尾的自定义指令（自定义风格用 extras）；
-    - format: 附加内容，如 ["toc","link","screenshot","summary"]；
+    - format: 附加内容，如 ["toc","summary"]。**不含 "screenshot"/"link"**——summarize_note
+      只有素材（转写/帧/评论），无视频文件与 video_id，这两项后处理无法执行，传入会被
+      忽略并记日志（#122 A5）；插截图用 extract_frames + frames 参数、需要视频下载链路
+      用 generate_note。
     - provider_id: LLM 供应商 id；省略时取 setup 已配默认，或唯一一个已填 key 的供应商；
     - model_name: 省略时取已配置的默认模型（setup 向导设置），否则取该供应商第一个可用模型。
 
@@ -1713,6 +1748,10 @@ def add_model(provider_id: str, model_name: str) -> str:
     """手动把一个模型名添加为某供应商的可用模型（供应商 /v1/models 接口不可用时用）。"""
     if not model_name:
         raise ValueError("model_name 必填")
+    provider = ProviderService.get_provider_by_id(provider_id)
+    if not provider:
+        # 无 FK + SQLite 弱类型：此前静默写入孤儿行（list_models 显示但供应商不存在，#123 A7）
+        raise ValueError(f"供应商不存在: {provider_id}（先 add_provider 或 list_providers 确认）")
     insert_model(provider_id=provider_id, model_name=model_name)
     return json.dumps(
         {"added": True, "provider_id": provider_id, "model_name": model_name}, ensure_ascii=False

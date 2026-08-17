@@ -526,6 +526,24 @@ class ProviderConfigToolsTest(unittest.TestCase):
         self.assertTrue(resp["deleted"])
         m_del.assert_called_once_with(7)
 
+    def test_add_model_missing_provider_raises(self):
+        """供应商不存在时 add_model 必须拒绝（无 FK + 弱类型，此前静默写孤儿行，#123 A7）。"""
+        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=None):
+            with mock.patch.object(server, "insert_model") as m_ins:
+                with self.assertRaises(ValueError) as cm:
+                    server.add_model("nosuch", "gpt-x")
+        self.assertIn("供应商不存在", str(cm.exception))
+        m_ins.assert_not_called()
+
+    def test_add_model_success(self):
+        with mock.patch.object(
+            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
+        ):
+            with mock.patch.object(server, "insert_model") as m_ins:
+                resp = json.loads(server.add_model("p1", "gpt-x"))
+        self.assertTrue(resp["added"])
+        m_ins.assert_called_once_with(provider_id="p1", model_name="gpt-x")
+
     def test_delete_model_missing_raises(self):
         with mock.patch.object(server, "get_models_by_provider", return_value=[]):
             with self.assertRaises(ValueError):
@@ -1492,6 +1510,20 @@ class WriteStatusStartedAtTest(unittest.TestCase):
         with server._tasks_lock:
             self.assertEqual(server._status_memory[self.tid]["status"], "PENDING")
 
+    def test_memory_snapshot_capped_under_disk_failure(self):
+        # 持续写盘失败时快照只增不删会无界积累——上限淘汰最旧（#123 A9）
+        caps = [f"cap-{i:04d}" for i in range(server._STATUS_MEMORY_MAX + 20)]
+        with mock.patch("pathlib.Path.write_text", side_effect=OSError("disk full")), \
+             mock.patch("app.db.video_task_dao.update_task_status"):
+            for tid in caps:
+                server._write_status(tid, "PENDING", message="x")
+        with server._tasks_lock:
+            n = len(server._status_memory)
+        self.assertLessEqual(n, server._STATUS_MEMORY_MAX)
+        with server._tasks_lock:  # 清理本轮快照，避免污染后续测试
+            for tid in caps:
+                server._status_memory.pop(tid, None)
+
     def test_terminal_status_pops_memory_snapshot(self):
         # 终态落盘成功后弹内存快照：防长生命周期 server 无界增长
         # （写盘失败保留快照的路径由 test_write_failure_... 覆盖，#121 C9）
@@ -1588,6 +1620,33 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
         finally:
             self._restore(old)
 
+    def test_cleanup_all_refuses_while_model_downloading(self):
+        """include_models=True 且仍有模型后台下载 → 拒绝，避免删 models/ 打断下载（#123 A1）。"""
+        old = self._inject({})
+        try:
+            with mock.patch.object(server, "cleanup_all_files") as m, \
+                 mock.patch.object(server.dl_state, "downloading_keys", return_value=["small", "mlx-tiny"]):
+                resp = json.loads(server.cleanup_all(include_models=True))
+            self.assertFalse(resp["ok"])
+            self.assertEqual(resp["downloading_models"], ["small", "mlx-tiny"])
+            self.assertIn("正在后台下载", resp["error"])
+            m.assert_not_called()
+        finally:
+            self._restore(old)
+
+    def test_cleanup_all_models_allowed_when_download_idle(self):
+        """无模型下载中时 include_models=True 正常放行。"""
+        old = self._inject({})
+        try:
+            with mock.patch.object(server, "cleanup_all_files",
+                                   return_value={"cleaned": [], "kept": []}) as m, \
+                 mock.patch.object(server.dl_state, "downloading_keys", return_value=[]):
+                resp = json.loads(server.cleanup_all(include_models=True))
+            self.assertNotIn("ok", resp)
+            m.assert_called_once_with(include_config=False, include_models=True)
+        finally:
+            self._restore(old)
+
 
 class TranscriptUnavailableReasonTest(unittest.TestCase):
     """「无转写」文案按 status.json 区分原因：运行中→建议等终态；失败/取消→如实报；
@@ -1633,6 +1692,27 @@ class TranscriptUnavailableReasonTest(unittest.TestCase):
         resp = json.loads(server.get_task_transcript("tx0005"))
         self.assertFalse(resp["ok"])
         self.assertIn("仍在运行", resp["message"])
+
+    def test_segment_range_invalid_reports_real_status_success(self):
+        """有转写但 segment_range 非法：status 读真实状态（SUCCESS），不硬编码 UNKNOWN（#123 A8）。"""
+        d = self._status("tx0006", "SUCCESS")
+        (d / "gen").mkdir(parents=True, exist_ok=True)
+        (d / "gen" / "transcript.json").write_text(
+            json.dumps({"language": "zh", "full_text": "x",
+                        "segments": [{"start": 0, "end": 1, "text": "x"}]}),
+            encoding="utf-8",
+        )
+        resp = json.loads(server.get_task_transcript("tx0006", segment_range="bogus"))
+        self.assertFalse(resp["ok"])
+        self.assertEqual(resp["status"], "SUCCESS")
+        self.assertIn("segment_range 非法", resp["message"])
+
+    def test_no_transcript_reports_real_status(self):
+        """无转写时 status 字段也用真实状态而非 UNKNOWN。"""
+        self._status("tx0007", "FAILED")
+        resp = json.loads(server.get_task_transcript("tx0007"))
+        self.assertFalse(resp["ok"])
+        self.assertEqual(resp["status"], "FAILED")
 
 
 class ScreenshotLinkFormatMergeTest(unittest.TestCase):

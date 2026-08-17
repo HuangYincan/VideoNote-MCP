@@ -227,6 +227,62 @@ class CacheRoundTripTest(unittest.TestCase):
         dest = NOTE_OUTPUT_DIR / "t11" / "raw"
         self.assertIsNone(note_cache.lookup_media("https://www.youtube.com/watch?v=abcDEF12345", "youtube", dest))
 
+    def test_lookup_media_skips_tmp_leftover(self):
+        """media 目录混入 .tmp 残留（promote 原子替换之间进程被杀）时只复制真媒体（#123 B2）。"""
+        url = "https://www.youtube.com/watch?v=abcDEF12345"
+        with tempfile.TemporaryDirectory() as td:
+            ident = note_cache.identity_for(url, "youtube")
+            cache = note_cache.cache_root() / ident / "media"
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / "audio.mp3").write_bytes(b"real")
+            (cache / "audio.mp3.tmp").write_bytes(b"half")  # 半成品残留
+            (cache / "notes.txt").write_text("非媒体", encoding="utf-8")  # 非常见后缀
+            out = note_cache.lookup_media(url, "youtube", Path(td))
+            self.assertIsNotNone(out)
+            copied = Path(out)
+            self.assertEqual(copied.name, "audio.mp3")
+            self.assertEqual(copied.read_bytes(), b"real")
+
+    def test_lookup_media_tmp_only_misses(self):
+        """media 目录只有 .tmp 半成品 → miss（不把半截音频交给下游）。"""
+        url = "https://www.youtube.com/watch?v=abcDEF12345"
+        with tempfile.TemporaryDirectory() as td:
+            ident = note_cache.identity_for(url, "youtube")
+            cache = note_cache.cache_root() / ident / "media"
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / "audio.mp3.tmp").write_bytes(b"half")
+            out = note_cache.lookup_media(url, "youtube", Path(td))
+            self.assertIsNone(out)
+
+    def test_sha256_cached_single_computation_per_file_state(self):
+        """本地文件哈希按 (path, mtime, size) 缓存：同状态只算一次；文件修改后重算（#123 B4）。"""
+        from app.services.note_cache import _sha256_cached
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "video.mp4"
+            p.write_bytes(b"hello")
+            st = p.stat()
+            h1 = _sha256_cached(str(p), st.st_mtime_ns, st.st_size)
+            h2 = _sha256_cached(str(p), st.st_mtime_ns, st.st_size)  # 同 key → 缓存命中
+            self.assertEqual(h1, h2)
+            p.write_bytes(b"changed content!!")  # 内容变（size 变）→ 新 key
+            st2 = p.stat()
+            h3 = _sha256_cached(str(p), st2.st_mtime_ns, st2.st_size)
+            self.assertNotEqual(h1, h3)
+
+    def test_sha256_cached_backed_by_sha256_file(self):
+        """缓存内部仍走 _sha256_file（正确性同源），且同状态只调一次底层。"""
+        from app.services.note_cache import _sha256_cached
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "v.mp4"
+            p.write_bytes(b"data")
+            st = p.stat()
+            with mock.patch("app.services.note_cache._sha256_file", return_value="h") as m_hash:
+                _sha256_cached(str(p), st.st_mtime_ns, st.st_size)
+                _sha256_cached(str(p), st.st_mtime_ns, st.st_size)
+            m_hash.assert_called_once()  # 第二次命中缓存，不再算
+
     def test_promote_media_missing_src_noop(self):
         note_cache.promote_media("youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345", "/nonexistent.mp3")
         self.assertFalse(self.root.exists())
@@ -302,12 +358,17 @@ class GenerateIntegrationTest(unittest.TestCase):
         }
         with mock.patch.object(gen, "_get_downloader", return_value=downloader):
             with mock.patch.object(gen, "_init_transcriber") as init_tr:
-                with mock.patch.object(note_pipeline, "fetch_subtitles", return_value=None):
-                    with mock.patch.object(note_pipeline, "transcribe_audio", return_value=transcript_dict):
-                        result = gen.generate(
-                            video_url=self.YT_URL, platform="youtube",
-                            task_id="cachemiss00001", material_only=True,
-                        )
+                # 无字幕视频：generate 主路径已试过 downloader.download_subtitles（None），
+                # _get_transcript 走 skip_subtitle=True → pipeline.fetch_subtitles 不得再调
+                # （重复 API 调用，#123 B1）
+                with mock.patch.object(
+                    note_pipeline, "fetch_subtitles",
+                    side_effect=AssertionError("不应重复调用字幕 API"),
+                ), mock.patch.object(note_pipeline, "transcribe_audio", return_value=transcript_dict):
+                    result = gen.generate(
+                        video_url=self.YT_URL, platform="youtube",
+                        task_id="cachemiss00001", material_only=True,
+                    )
         # miss → 完整下载 + 转写
         self.assertFalse(downloader.download.call_args.kwargs.get("skip_download"))
         init_tr.assert_called_once()
@@ -317,6 +378,25 @@ class GenerateIntegrationTest(unittest.TestCase):
         entry = note_cache.cache_root() / "youtube-abcDEF12345" / f"transcript_{key}.json"
         self.assertTrue(entry.exists())
         self.assertEqual(json.loads(entry.read_text(encoding="utf-8"))["full_text"], "fresh")
+
+    def test_get_transcript_skip_subtitle_avoids_second_fetch(self):
+        """_get_transcript(skip_subtitle=True) 直接走转写，不重复调 pipeline.fetch_subtitles。"""
+        from app.enmus.task_status_enums import TaskStatus
+
+        gen = self._gen()
+        downloader = mock.Mock()
+        with tempfile.TemporaryDirectory() as td:
+            cache_file = Path(td) / "transcript.json"
+            with mock.patch.object(
+                note_pipeline, "fetch_subtitles",
+                side_effect=AssertionError("skip_subtitle=True 时不应调字幕 API"),
+            ), mock.patch.object(gen, "_transcribe_audio", return_value=None) as m_tr:
+                out = gen._get_transcript(
+                    downloader, "https://example.com/v", "/no/audio", cache_file,
+                    TaskStatus.TRANSCRIBING, "t1", skip_subtitle=True,
+                )
+        self.assertIsNone(out)
+        m_tr.assert_called_once()
 
     def test_miss_promotes_media_and_hit_copies_audio(self):
         # run1 完整下载（真实音频文件）→ promote 出媒体缓存；run2 命中 → audio_path 指向

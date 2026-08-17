@@ -1,5 +1,6 @@
 """app 层静默降级加固（docs/05 #106 扫描 2/3/7 号）：模型名解析、分块时长探测、播放列表坏条目。"""
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -110,6 +111,34 @@ class InspectPlaylistBadEntryTest(unittest.TestCase):
             out = self._run(info)
         self.assertFalse(out["ok"])
         self.assertIn("无可用条目", out["error"])
+
+
+class WhisperModelsAtomicWriteTest(unittest.TestCase):
+    """自定义 whisper 模型配置原子写（#123 B6）：直接 write_text 中断会留下截断 JSON。
+
+    tmp + replace 原子写：无 .tmp 残留、写后可读、内容正确。
+    """
+
+    def test_add_custom_atomic_write_no_tmp_leftover(self):
+        from app.transcriber.whisper_models import WhisperModelRegistry
+
+        with tempfile.TemporaryDirectory() as td:
+            reg = WhisperModelRegistry(filepath=str(Path(td) / "whisper_models.json"))
+            reg.add_custom_model("my-model", "local/models/ct2")
+            self.assertFalse(Path(td, "whisper_models.json.tmp").exists())  # 无半成品残留
+            data = reg.get_custom_models()
+            self.assertEqual(data, {"my-model": "local/models/ct2"})
+            self.assertEqual(reg.resolve("my-model"), "local/models/ct2")  # 写后立即可用
+
+    def test_remove_custom_atomic(self):
+        from app.transcriber.whisper_models import WhisperModelRegistry
+
+        with tempfile.TemporaryDirectory() as td:
+            reg = WhisperModelRegistry(filepath=str(Path(td) / "whisper_models.json"))
+            reg.add_custom_model("m1", "repo/x")
+            reg.remove_custom_model("m1")
+            self.assertEqual(reg.get_custom_models(), {})
+            self.assertFalse(Path(td, "whisper_models.json.tmp").exists())
 
 
 if __name__ == "__main__":

@@ -159,7 +159,7 @@
 - 以任务文件夹为边界，`resolve()` 校验在数据目录内（防路径穿越）。返回 `{deleted, missing, errors, note_kept, notes_kept_outside}`——`notes_kept_outside` 列出数据目录**外**的便携笔记副本（用户指定 `notes_dir` 时常见）：沙箱红线不删，但路径会列出，不会成无人知晓的孤儿。
 
 ### `cleanup_all(include_config=False, include_models=False)`
-- **全局清理**（恢复出厂）：清空 `note_results/*`、`static/screenshots/*`、`logs/*` 的所有任务产物 + 全局索引。
+- **全局清理**（恢复出厂）：清空 `note_results/*`、`static/screenshots/*`、`note_cache/*` 的所有任务产物 + 全局索引。**`logs/` 不清**（运行日志不属任务产物）。
 - **有进行中/排队任务时拒绝**（返回 `{ok: false, running, running_task_ids, error}`）：先逐个 `cancel_note` 或等全部终态。
 - `include_config=False`（默认）：**保留** `config/`（LLM key / cookie / 转写设置）；`include_config=True` 才清。
 - `include_models=False`（默认）：**保留** `models/`（已下载模型可复用，重下成本高）；`include_models=True` 才清。

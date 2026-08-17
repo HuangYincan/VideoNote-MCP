@@ -1,4 +1,5 @@
 import atexit
+import weakref
 from typing import Callable, Dict
 
 from app.downloaders.bilibili_downloader import BilibiliDownloader
@@ -25,7 +26,12 @@ _DOWNLOADER_FACTORY: Dict[str, Callable] = {
 # 兼容旧引用（只用于「是否支持某平台」的判断，不要直接实例化取下载器）
 SUPPORT_PLATFORM_MAP: Dict[str, type] = _DOWNLOADER_FACTORY
 
-_created: list = []
+# 弱引用集合（#123 B5）：曾用强引用 list——每个任务 append 实例且从不 prune，
+# 引用计数永不归零，__del__ 不触发 → bilibili/youtube 明文 SESSDATA cookie 文件
+# 滞留 /tmp 至进程退出，与注释宣称的「出作用域被 GC 清理」自相矛盾。
+# 改 WeakSet：实例无外部强引用即被 GC（__del__ 正常触发）；atexit 兜底遍历时
+# 仍存活的实例照常清理（双保险语义保留）。
+_created: "weakref.WeakSet" = weakref.WeakSet()
 _atexit_registered = False
 
 
@@ -35,12 +41,13 @@ def get_downloader(platform: str):
     if factory is None:
         raise ValueError(f"不支持的平台：{platform}")
     inst = factory()
-    _created.append(inst)
+    _created.add(inst)
     return inst
 
 
 def _cleanup_created() -> None:
-    for inst in _created:
+    # 快照遍历：弱引用对象在迭代中被 GC 会让 WeakSet 大小变化抛 RuntimeError
+    for inst in list(_created):
         cleanup = getattr(inst, "_cleanup_cookie_file", None)
         if callable(cleanup):
             try:

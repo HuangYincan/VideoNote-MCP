@@ -54,6 +54,22 @@ class BcutTranscriber(Transcriber):
         self.__etags: List[str] = []
         self.__download_url: Optional[str] = None
         self.task_id: Optional[str] = None
+
+    def close(self) -> None:
+        """显式释放 requests.Session（连接池/打开 fd）。"""
+        if getattr(self, "session", None) is not None:
+            try:
+                self.session.close()
+            except Exception:
+                pass
+            self.session = None
+
+    def __del__(self):
+        # 每任务新建实例；实例被 GC 时兜底释放连接（#123 B11）
+        try:
+            self.close()
+        except Exception:
+            pass
         
     def _load_file(self, file_path: str) -> bytes:
         """读取文件内容"""

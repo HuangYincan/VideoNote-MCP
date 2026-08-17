@@ -219,7 +219,12 @@ def _write_app_config(cfg: dict) -> None:
 
 
 def set_app_config(key: str, value) -> None:
-    """持久化应用配置（进程内锁 + 原子写，多线程/双进程不丢更新）。"""
+    """持久化应用配置（进程内 threading.Lock + 原子写）。
+
+    #123 A10：锁只保证**单进程内**多线程不互相覆盖读-改-写；双进程并发写仍可能
+    丢更新（各自读旧值再写回）。原子写（tmp+replace）保证文件不损坏，不保证
+    跨进程合并。CLI 与 MCP server 是独立进程，不要在两端同时改同一 app_config。
+    """
     with _APP_CONFIG_LOCK:
         cfg = get_app_config()
         cfg[key] = value

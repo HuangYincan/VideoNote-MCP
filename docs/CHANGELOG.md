@@ -2,6 +2,26 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave F 批 12（2026-08-17 · 第 7 轮双代理扫描 #123，532 tests）
+
+- **cleanup_all 模型下载守卫（A1）**：`include_models=True` 且仍有模型后台下载时拒绝（dl_state.downloading_keys）；CLI 向导扫 models/ 下 `.incomplete` 残留（huggingface 下载中标记）兜底另一进程的下载——删 models/ 不再打断下载线程、health_check 不报「已下载」的残缺模型。
+- **步骤任务取消复查（A3）**：`_run_step_task` 在 step_fn 返回后复查 cancel_event——转写/抽帧跑完但取消信号已发时写 CANCELLED，不再与 cancel_note 返回的 CANCELLING 矛盾。
+- **便携笔记目录原子占用（B7）**：`mkdir(exist_ok=False)` 替换 `exists()` 预检——两个同 notes_dir+同标题的并发任务不再选同一目录互相 rmtree 对方 Assets/；冲突回退 `-{task_id[:6]}`、极端兜底再拼随机段。
+- **下载器注册表弱引用化（B5）**：`_created` 强引用 list 改 `weakref.WeakSet`——实例出作用域即 GC，`__del__` 的 SESSDATA cookie 清理真正触发（此前注释宣称能清、实际引用计数永不归零）；atexit 兜底对仍存活实例照常清理。
+- **update_provider 异常透传（B8）**：`except: print + return None` 改 logger.error + raise ValueError——DB 锁等真实原因不再被伪装成「供应商不存在」；CLI 向导/子命令捕获后如实报出。
+- **douyin %-格式化 bug（B10）**：`output_path % {...}` 改 `Path` 拼接——output_dir 含字面 `%`（如 `/tmp/100%off/`）不再 ValueError。
+- **kuaishou 悬空 video_path（B9）**：mp3 缓存命中但 mp4 缺失时补下视频——VideoReader 不再拿不存在路径炸「视频处理失败」。
+- **本地文件 sha256 缓存（B4）**：按 `(path, mtime_ns, size)` 缓存——同一任务 2-3 次身份解析共享一次哈希，文件修改自动失效。
+- **字幕 API 去重（B1）**：`_get_transcript(skip_subtitle=True)`——generate 主路径已试过字幕时不再让 pipeline 层重复调用无字幕视频的字幕接口。
+- **lookup_media 过滤 .tmp（B2）**：promote 原子替换之间进程被杀遗留的半成品不再被当音频复制给下游。
+- **whisper_models 原子写（B6）**：`_write_custom` 用 write_json_atomic（tmp+replace）——中断不再留下截断的 whisper_models.json。
+- **add_model 孤儿行（A7）**：先校验供应商存在——无 FK + SQLite 弱类型不再静默写入孤儿模型行。
+- **transcript 真实状态（A8）**：`get_task_transcript` 非法 segment_range 读 status.json 真实状态（抽 `_read_task_status`），SUCCESS 任务不再误报 UNKNOWN。
+- **CLI/MCP export 缺省统一（A6）**：CLI `export` 缺省格式从全三种收敛为 `["srt"]`（与 MCP export_transcript 同源）。
+- **_status_memory 上限（A9）**：写盘持续失败时快照只增不删——上限 512 按最旧淘汰。
+- **bcut Session 释放（B11）**：`close()` + `__del__` 兜底——每任务新实例的连接池不再泄漏到进程退出。
+- **文案修正（A4/A5/A10）**：summarize_note docstring 不再宣传 screenshot/link（无视频文件/video_id 无法执行）；cleanup_all/CLI/SKILL/docs 从「清空 logs/」改为「logs/ 不清」（fd inode 陷阱 + 非任务产物）；config.set_app_config 注释改为「锁只保证单进程内线程安全」。
+
 ## Wave F 批 11（2026-08-17 · 第 6 轮双代理扫描 #122，500 tests）
 
 - **json 导出不再覆盖转写缓存（A2）**：自动导出/工具缺省 out_dir 指向 gen/ 时，json 导出写 `transcript.export.json`（此前写 `transcript.json` 与 note.py 转写缓存规范来源同路径，覆盖后丢 raw 等完整字段）——exporter 统一 `_FORMAT_FILENAME` 映射。

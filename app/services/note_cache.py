@@ -25,6 +25,7 @@ TikTok；本地文件用 sha256）。b23 短链解析失败、快手、generic �
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -36,6 +37,12 @@ from typing import Optional
 from app.utils.url_parser import extract_bilibili_p_number, extract_video_id
 
 logger = logging.getLogger(__name__)
+
+# lookup_media 认可的媒体后缀（#123 B2）：.tmp 与不在白名单的后缀视为非媒体，跳过
+_MEDIA_SUFFIXES = {
+    ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus",
+    ".mp4", ".webm", ".mkv", ".mov",
+}
 
 # 平台字幕转写的缓存分键（引擎无关）
 SUBTITLE_KEY = "subtitle"
@@ -81,6 +88,17 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+@functools.lru_cache(maxsize=64)
+def _sha256_cached(path: str, mtime_ns: int, size: int) -> str:
+    """按 (路径, mtime, size) 缓存文件哈希——文件更新自动失效。
+
+    #123 B4：本地文件身份每任务要算 2-3 次（lookup_transcript / lookup_media /
+    promote 各自 derive_video_id），全量 sha256 对大视频是毫秒-秒级重复开销。
+    同任务多次调用共享一次哈希；文件被修改（mtime/size 变化）→ 重新计算，正确性保持。
+    """
+    return _sha256_file(Path(path))
+
+
 def _has_segments(path: Path) -> bool:
     """转写文件是否含至少 1 段（0 段 = 静音/无语音，无信息量，不缓存也不命中）。"""
     try:
@@ -100,7 +118,9 @@ def derive_video_id(url: str, platform: str) -> Optional[str]:
     """
     if platform == "local":
         try:
-            return _sha256_file(Path(url))
+            st = Path(url).stat()
+            # (path, mtime_ns, size) 缓存键：同任务多次调用共享一次哈希（#123 B4）
+            return _sha256_cached(str(Path(url)), st.st_mtime_ns, st.st_size)
         except OSError:
             return None
     if platform == "bilibili":
@@ -269,7 +289,13 @@ def lookup_media(url: str, platform: str, dest_dir: Path) -> Optional[str]:
     if not src_dir.is_dir():
         return None
     try:
-        files = sorted(p for p in src_dir.iterdir() if p.is_file())
+        # 过滤 .tmp 半成品（promote_media 的 tmp→replace 之间进程被杀会遗留 <name>.tmp）
+        # 与非常见媒体后缀——此前 iterdir 全选，.tmp 会被当音频复制给下游（#123 B2）。
+        files = sorted(
+            p for p in src_dir.iterdir()
+            if p.is_file() and not p.name.endswith(".tmp")
+            and p.suffix.lower() in _MEDIA_SUFFIXES
+        )
     except OSError:
         return None
     if not files:

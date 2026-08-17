@@ -11,6 +11,7 @@
     .venv/bin/python tests/test_downloader_robustness.py
 """
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -230,6 +231,128 @@ class AudioCacheStaleTest(unittest.TestCase):
             with mock.patch("app.services.note.logger") as m_log:
                 self._run_download_media(gen, downloader, cache, skip_download=False)
             m_log.warning.assert_called()
+
+
+class DownloaderWeakRegistryTest(unittest.TestCase):
+    """下载器实例注册表弱引用化（#123 B5）：强引用 list 让实例引用计数永不归零、
+    __del__ 不触发 → SESSDATA cookie 文件滞留 /tmp。改 WeakSet 后实例出作用域即 GC；
+    atexit 兜底（_cleanup_created）对仍存活实例照常清理。"""
+
+    class _FakeDL:
+        def __init__(self):
+            self.cleaned = 0
+
+        def _cleanup_cookie_file(self):
+            self.cleaned += 1
+
+    def _patch_factory(self):
+        from app.services import constant
+
+        return mock.patch.dict(constant._DOWNLOADER_FACTORY, {"fake": self._FakeDL})
+
+    def test_scope_end_gc_collects_instance(self):
+        """WeakSet 不持有强引用：唯一强引用释放后实例立即从注册表消失（__del__ 可触发）。"""
+        import gc
+        from app.services import constant
+
+        with self._patch_factory():
+            inst = constant.get_downloader("fake")  # 显式持有 → 存活
+            self.assertIn(inst, list(constant._created))
+            del inst  # 唯一强引用释放 → 引用计数即时归零，WeakSet 同步移除
+        gc.collect()  # 对已回收对象无害
+        self.assertEqual(list(constant._created), [])
+
+    def test_atexit_cleanup_still_cleans_living_instances(self):
+        from app.services import constant
+
+        with self._patch_factory():
+            inst = constant.get_downloader("fake")  # 外部强引用 → 存活
+            constant._cleanup_created()
+            self.assertEqual(inst.cleaned, 1)  # 兜底清理照常触发
+            inst.cleaned = 0
+            constant._cleanup_created()  # 幂等：可重复调用
+            self.assertEqual(inst.cleaned, 1)
+
+
+class DouyinPercentDirTest(unittest.TestCase):
+    """output_dir 含字面 %（如 /tmp/100%off/）时 download_video 不应炸（#123 B10）。
+
+    旧实现 `output_path % {...}` 对整个字符串做 %-格式化——`100%off` 里的 %o 是
+    非法格式符 → ValueError，下载失败。改 Path 拼接后目录含 % 也能正常下载。
+    """
+
+    def test_percent_in_output_dir_no_crash(self):
+        from app.downloaders.douyin_downloader import DouyinDownloader
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = os.path.join(tmp, "100%off")
+            dl = DouyinDownloader()
+            dl.extract_video_id = mock.Mock(return_value="v123")
+            dl.fetch_video_info = mock.Mock(
+                return_value={
+                    "aweme_detail": {
+                        "aweme_id": "7234567890",
+                        "video": {"download_addr": {"url_list": ["https://example.com/v.mp4"]}},
+                    }
+                }
+            )
+            resp = mock.Mock()
+            resp.__enter__ = mock.Mock(return_value=resp)
+            resp.__exit__ = mock.Mock(return_value=False)
+            resp.raise_for_status = mock.Mock()
+            resp.iter_content = mock.Mock(return_value=iter([b"x" * 10]))
+            with mock.patch("app.downloaders.douyin_downloader.requests.get",
+                            return_value=resp) as m_get:
+                path = dl.download_video("https://v.douyin.com/abc/", output_dir=out_dir)
+            expected = os.path.join(out_dir, "7234567890.mp4")
+            self.assertEqual(path, expected)
+            self.assertTrue(os.path.exists(expected))
+            m_get.assert_called_once()
+
+
+class KuaishouVideoPathTest(unittest.TestCase):
+    """快手 mp3 缓存命中时 mp4 缺失 → 补下，不返回悬空 video_path（#123 B9）。"""
+
+    def _photo_info(self):
+        return {
+            "id": "ph1", "caption": "标题", "duration": 10,
+            "coverUrl": "https://x/c.jpg", "photoUrl": "https://x/v.mp4",
+        }
+
+    def _run_download(self, td, need_video=True):
+        from app.downloaders.kuaishou_downloader import KuaiShouDownloader
+
+        dl = KuaiShouDownloader()
+        video_raw = {"visionVideoDetail": {"photo": self._photo_info()}, "tags": []}
+        with mock.patch("app.downloaders.kuaishou_downloader.KuaiShou") as m_ks:
+            m_ks.return_value.run.return_value = video_raw
+            with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
+                resp = mock.Mock()
+                resp.status_code = 200
+                resp.iter_content = mock.Mock(return_value=iter([b"x" * 10]))
+                m_get.return_value = resp
+                result = dl.download("https://v.kuaishou.com/x", output_dir=td, need_video=need_video)
+                return result, m_get
+
+    def test_mp3_cache_without_mp4_redownloads_video(self):
+        with tempfile.TemporaryDirectory() as td:
+            with open(os.path.join(td, "ph1.mp3"), "wb") as f:
+                f.write(b"audio")
+            result, m_get = self._run_download(td)
+            # mp4 被补下：video_path 不悬空
+            self.assertTrue(os.path.exists(result.video_path))
+            self.assertEqual(result.video_path, os.path.join(td, "ph1.mp4"))
+            m_get.assert_called_once()
+
+    def test_mp3_cache_with_mp4_skips_download(self):
+        with tempfile.TemporaryDirectory() as td:
+            with open(os.path.join(td, "ph1.mp3"), "wb") as f:
+                f.write(b"a")
+            with open(os.path.join(td, "ph1.mp4"), "wb") as f:
+                f.write(b"v")
+            result, m_get = self._run_download(td)
+            self.assertTrue(os.path.exists(result.video_path))
+            m_get.assert_not_called()  # mp4 已在 → 不重复下载
 
 
 if __name__ == "__main__":

@@ -50,6 +50,11 @@ def is_downloading(key: str) -> bool:
     return _status.get(key) == DOWNLOADING
 
 
+def downloading_keys() -> list:
+    """当前所有正在下载的 key（#123 A1：cleanup include_models 前要查这个，防删模型目录打断下载）。"""
+    return [k for k, st in _status.items() if st == DOWNLOADING]
+
+
 def get_error(key: str) -> Optional[str]:
     return _errors.get(key)
 

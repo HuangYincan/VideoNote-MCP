@@ -217,6 +217,37 @@ class TestExportCli:
         assert ei.value.code == 1
         assert "非法 task_id" in capsys.readouterr().err
 
+    def test_export_default_formats_is_srt_only(self, capsys):
+        """缺省格式统一为 ["srt"]（与 MCP export_transcript 同源，#123 A6）——
+        旧实现回退全三种，CLI/MCP 行为漂移。"""
+        from videonote_mcp.config import get_app_config
+
+        app_cfg = get_app_config()
+        if "default_export_formats" in app_cfg:
+            cli.remove_app_config("default_export_formats")
+        task_id = str(uuid.uuid4())
+        note_out = Path(os.environ["NOTE_OUTPUT_DIR"])
+        task_dir = note_out / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "transcript": {
+                        "language": "zh",
+                        "full_text": "缺省 格式",
+                        "segments": [{"start": 0.0, "end": 1.0, "text": "缺省"}],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        cli._export_cli(["export", task_id])  # 无 --format、无 app_config 默认
+        out = _cli_out(capsys)
+        assert "✓ 已导出 1 个格式" in out
+        assert (task_dir / "gen" / "transcript.srt").is_file()
+        assert not (task_dir / "gen" / "transcript.vtt").is_file()
+        assert not (task_dir / "gen" / "transcript.export.json").is_file()
+
     def test_export_corrupt_cache_falls_back_to_result(self, capsys):
         task_id = str(uuid.uuid4())
         note_out = Path(os.environ["NOTE_OUTPUT_DIR"])
@@ -340,6 +371,28 @@ class TestWizardProviderCli:
         assert "更新" in out and "失败" in out
         assert "✓ 已更新" not in out
 
+    def test_edit_provider_reports_real_exception(self, capsys):
+        """真实异常（DB 锁等）透传为 ValueError，向导捕获并报出原因，不伪装成「不存在」（#123 B8）。"""
+        pid = ProviderService.add_provider(
+            name="P9b", api_key="sk-old", base_url="https://a.com/v1",
+            logo="custom", type_="custom",
+        )
+        with mock.patch.object(ProviderService, "update_provider",
+                               side_effect=ValueError("更新供应商 p9b 失败: database is locked")):
+            fake = _FakeInq([("secret", "sk-new"), ("text", "")])
+            cli._edit_provider(fake, pid)  # 不抛异常（_edit_provider 内捕获）
+        out = _cli_out(capsys)
+        assert "database is locked" in out
+        assert "✓ 已更新" not in out
+
+    def test_update_provider_real_exception_raises(self):
+        """ProviderService.update_provider 对 DB 异常抛 ValueError（此前 return None 吞掉）。"""
+        with mock.patch("app.services.provider.update_provider",
+                        side_effect=RuntimeError("sqlite database is locked")):
+            with pytest.raises(ValueError) as ei:
+                ProviderService.update_provider("p-zzz", {"name": "x"})
+        assert "sqlite database is locked" in str(ei.value)
+
     def test_edit_provider_success(self, capsys):
         pid = ProviderService.add_provider(
             name="P10", api_key="sk-old", base_url="https://a.com/v1",
@@ -415,6 +468,47 @@ class TestWizardCleanupGuard:
              mock.patch("app.utils.task_manifest.cleanup_task_files") as m_clean:
             cli._wizard_data_cleanup_one(fake)
         m_clean.assert_called_once()
+
+    def _make_incomplete_models(self, tmp_path):
+        """在临时目录构造带 .incomplete 残留的 models/ 布局（huggingface cache 形态）。"""
+        models_root = tmp_path / "models"
+        blob = models_root / "whisper" / "whisper-tiny" / "blobs"
+        blob.mkdir(parents=True)
+        (blob / "deadbeef.incomplete").write_text("partial", encoding="utf-8")
+        return models_root
+
+    def test_cleanup_all_refuses_incomplete_download(self, capsys, tmp_path):
+        """include_models 确认后扫到 .incomplete 残留 → 提示模型可能下载中，拒绝强清（#123 A1）。"""
+        models_root = self._make_incomplete_models(tmp_path)
+        fake = _FakeInq([
+            ("confirm", False),  # include_config
+            ("confirm", True),   # include_models
+            ("confirm", False),  # .incomplete 守卫：拒绝
+        ])
+        with mock.patch("videonote_mcp.cli._list_running_tasks", return_value=[]), \
+             mock.patch("app.utils.path_helper.get_model_dir",
+                        return_value=str(models_root / "whisper")), \
+             mock.patch("app.utils.task_manifest.cleanup_all_files") as m_clean:
+            cli._wizard_data_cleanup_all(fake)
+        m_clean.assert_not_called()
+        out = _cli_out(capsys)
+        assert "未完成的模型下载" in out and "已取消全局清理" in out
+
+    def test_cleanup_all_proceeds_when_incomplete_confirmed(self, capsys, tmp_path):
+        """.incomplete 残留但用户明确确认强清 → 放行。"""
+        models_root = self._make_incomplete_models(tmp_path)
+        fake = _FakeInq([
+            ("confirm", False),  # include_config
+            ("confirm", True),   # include_models
+            ("confirm", True),   # .incomplete 守卫：仍要清
+            ("confirm", True),   # 最终确认
+        ])
+        with mock.patch("videonote_mcp.cli._list_running_tasks", return_value=[]), \
+             mock.patch("app.utils.path_helper.get_model_dir",
+                        return_value=str(models_root / "whisper")), \
+             mock.patch("app.utils.task_manifest.cleanup_all_files") as m_clean:
+            cli._wizard_data_cleanup_all(fake)
+        m_clean.assert_called_once_with(include_config=False, include_models=True)
 
 
 class TestFallbackDefaultModelCli:

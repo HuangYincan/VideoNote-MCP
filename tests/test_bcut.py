@@ -65,5 +65,29 @@ class BcutUploadCodeCheckTest(unittest.TestCase):
         self.assertEqual(self.tr._BcutTranscriber__upload_id, "up1")
 
 
+class BcutSessionLifecycleTest(unittest.TestCase):
+    """requests.Session 连接池/打开 fd 需释放（#123 B11）：close() 显式关闭，__del__ 兜底。"""
+
+    def test_close_releases_session(self):
+        tr = BcutTranscriber()
+        self.assertIsNotNone(tr.session)
+        with mock.patch.object(tr.session, "close") as m_close:
+            tr.close()
+        m_close.assert_called_once()
+        self.assertIsNone(tr.session)  # 置 None：后续 __del__ 不再重复 close
+
+    def test_del_closes_session(self):
+        tr = BcutTranscriber()
+        with mock.patch.object(tr.session, "close") as m_close:
+            tr.__del__()
+        m_close.assert_called_once()
+
+    def test_close_idempotent_and_del_safe(self):
+        tr = BcutTranscriber()
+        tr.close()
+        tr.close()  # 幂等
+        tr.__del__()  # session 已 None → 不抛
+
+
 if __name__ == "__main__":
     unittest.main()

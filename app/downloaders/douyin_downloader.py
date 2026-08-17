@@ -286,14 +286,11 @@ class DouyinDownloader(Downloader):
             if os.path.exists(video_path):
                 return video_path
 
-
-            output_path = os.path.join(output_dir, "%(id)s.%(ext)s")
-
+            # 直接 Path 拼接（#123 B10）：旧实现 output_path % {...} 对整个字符串做
+            # %-格式化——output_dir 含字面 %（如 /tmp/100%off/）→ ValueError 下载失败。
             video_data = self.fetch_video_info(video_url)
-            output_path = output_path % {
-                "id": video_data['aweme_detail']['aweme_id'],
-                "ext": "mp4",
-            }
+            aweme_id = video_data['aweme_detail']['aweme_id']
+            output_path = os.path.join(output_dir, f"{aweme_id}.mp4")
 
             url=video_data['aweme_detail']['video']['download_addr']['url_list'][0]
             with requests.get(url, allow_redirects=True, headers=self.headers_config, timeout=30, stream=True) as _data:

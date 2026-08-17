@@ -307,19 +307,27 @@ def _edit_provider(inq, pid) -> None:
     _show_header(f"编辑供应商 {pid}")
     key = inq.secret(message="新的 API key（直接回车保持不变）", keybindings=_KB).execute()
     if key:
-        updated = ProviderService.update_provider(pid, {"api_key": key})
+        # #123 B8：update_provider 对不存在返回 None、对真实异常（DB 锁等）抛
+        # ValueError——后者必须如实报出原因，不能伪装成「不存在」。
+        try:
+            updated = ProviderService.update_provider(pid, {"api_key": key})
+        except ValueError as e:
+            print(f"{_YELLOW}⚠ {e}{_RESET}", file=sys.stdout)
+            updated = None
         if updated:
             print(f"{_GREEN}✓ 已更新 {pid} 的 key{_RESET}", file=sys.stdout)
-        else:
-            # update_provider 对不存在/异常返回 None——失败也打印「已更新」会
-            # 让用户以为 key 已换，之后任务全 401（#120）
+        elif updated is None:
             print(f"{_YELLOW}⚠ 更新 {pid} 的 key 失败（供应商不存在？）{_RESET}", file=sys.stdout)
     base_url = inq.text(message="base_url（直接回车保持不变）", keybindings=_KB).execute()
     if base_url:
-        updated = ProviderService.update_provider(pid, {"base_url": base_url})
+        try:
+            updated = ProviderService.update_provider(pid, {"base_url": base_url})
+        except ValueError as e:
+            print(f"{_YELLOW}⚠ {e}{_RESET}", file=sys.stdout)
+            updated = None
         if updated:
             print(f"{_GREEN}✓ 已更新 {pid} 的 base_url{_RESET}", file=sys.stdout)
-        else:
+        elif updated is None:
             print(f"{_YELLOW}⚠ 更新 {pid} 的 base_url 失败（供应商不存在？）{_RESET}", file=sys.stdout)
 
 
@@ -872,7 +880,8 @@ def _wizard_data_cleanup_all(inq) -> None:
 
     _show_header("全局清理")
     print(
-        f"{_YELLOW}⚠ 将清空 note_results/（所有任务产物）、static/screenshots/、logs/。{_RESET}",
+        f"{_YELLOW}⚠ 将清空 note_results/（所有任务产物）、static/screenshots/、note_cache/。"
+        f"logs/ 保留（运行日志不属任务产物）。{_RESET}",
         file=sys.stdout,
     )
     # 运行中任务守卫（#122 A6，与 MCP cleanup_all 的拒绝行为对齐）：全局清空会把
@@ -896,6 +905,33 @@ def _wizard_data_cleanup_all(inq) -> None:
             return
     include_config = inq.confirm(message="连 config/（LLM key / cookie）一起清？", default=False, keybindings=_KB).execute()
     include_models = inq.confirm(message="连 models/（已下载模型）一起清？", default=False, keybindings=_KB).execute()
+    # 模型下载中守卫（#123 A1）：huggingface 下载中的文件带 .incomplete 后缀（cache_dir
+    # 的 blobs/ 与 local_dir 两种布局都会被覆盖）。CLI 独立进程看不到 MCP 端的内存下载态，
+    # 但磁盘残留能兜底「另一个进程正在下载模型」的竞态——删 models/ 会打断下载。
+    incomplete = []
+    if include_models:
+        try:
+            from app.utils.path_helper import get_model_dir
+
+            models_root = os.path.dirname(get_model_dir("whisper"))
+            if os.path.isdir(models_root):
+                incomplete = [str(p) for p in Path(models_root).rglob("*.incomplete")]
+        except Exception:
+            incomplete = []
+    if incomplete:
+        print(
+            f"{_YELLOW}⚠ 检测到 {len(incomplete)} 个未完成的模型下载文件（.incomplete）——"
+            "可能有模型正在下载中，删除 models/ 会打断下载。{_RESET}",
+            file=sys.stdout,
+        )
+        if not inq.confirm(
+            message="仍有模型下载未完成——仍要连 models/ 一起清？",
+            default=False,
+            keybindings=_KB,
+        ).execute():
+            print(f"{_YELLOW}已取消全局清理（模型下载未完成）{_RESET}", file=sys.stdout)
+            _press_any_key()
+            return
     if not inq.confirm(message="确认全局清理？此操作不可撤销", default=False, keybindings=_KB).execute():
         print(f"{_YELLOW}已取消全局清理{_RESET}", file=sys.stdout)
         return
@@ -969,11 +1005,17 @@ def _setup_cli_fallback() -> None:
             pid = provs[int(sel) - 1]["id"]
             key = _ask_secret(f"   新的 API key（{pid}，留空不变）")
             if key:
-                ProviderService.update_provider(pid, {"api_key": key})
-                print(f"   ✓ 已更新 {pid} 的 key", file=sys.stdout)
+                try:
+                    ProviderService.update_provider(pid, {"api_key": key})
+                    print(f"   ✓ 已更新 {pid} 的 key", file=sys.stdout)
+                except ValueError as e:
+                    print(f"   ✗ {e}", file=sys.stdout)
             base_url = _ask(f"   新的 base_url（{pid}，留空不变）")
             if base_url:
-                ProviderService.update_provider(pid, {"base_url": base_url})
+                try:
+                    ProviderService.update_provider(pid, {"base_url": base_url})
+                except ValueError as e:
+                    print(f"   ✗ {e}", file=sys.stdout)
             _fallback_test_and_default(pid)
     if _ask("   新增中转站/自建供应商？[y/N]", default="N").lower() == "y":
         name = _ask("   供应商名称", default="我的中转站")
@@ -1188,7 +1230,12 @@ def _providers_cli(argv) -> None:
             data["name"] = opts.name
         if not data:
             parser.error("至少提供 --api-key / --base-url / --name 之一")
-        updated = ProviderService.update_provider(opts.provider_id, data)
+        updated = None
+        try:
+            updated = ProviderService.update_provider(opts.provider_id, data)
+        except ValueError as e:
+            print(f"✗ {e}", file=sys.stderr)
+            sys.exit(1)
         if not updated:
             print(f"更新失败：供应商 {opts.provider_id} 不存在", file=sys.stderr)
             sys.exit(1)
@@ -1438,12 +1485,12 @@ def _export_cli(argv) -> None:
             print(f"  - {f}: {desc}")
         return
 
-    # 缺省格式：命令行 > setup 配置 > 全三种
+    # 缺省格式：命令行 > setup 配置 > 默认 ["srt"]（与 MCP export_transcript 同源，#123 A6）
     formats = None
     if opts.format:
         formats = [f.strip() for f in opts.format.split(",") if f.strip()]
     if formats is None:
-        formats = get_app_config().get("default_export_formats") or ["srt", "vtt", "json"]
+        formats = get_app_config().get("default_export_formats") or ["srt"]
 
     from videonote_mcp.export import FORMATS, export_transcript
 

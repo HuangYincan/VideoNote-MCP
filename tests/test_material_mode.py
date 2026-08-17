@@ -442,6 +442,53 @@ def test_screenshot_insert_failure_logs_exception_detail():
     assert any("ffmpeg 不存在" in str(c) for c in m_warn.call_args_list)
 
 
+class TestPortableDirReserve:
+    """便携笔记目录原子占用（#123 B7）：`exists()` 预检是 TOCTOU，两个并发任务
+    （同 notes_dir + 同标题）都选同一目录会互相 rmtree 对方 Assets/。
+    改 `mkdir(exist_ok=False)` 原子占用，冲突回退后缀。
+    """
+
+    def test_normal_title(self, tmp_path):
+        from app.services.note import _reserve_portable_dir
+
+        out = _reserve_portable_dir("我的标题", "t1", tmp_path)
+        assert out == tmp_path / "我的标题"
+        assert out.is_dir()
+
+    def test_conflict_appends_task_suffix(self, tmp_path):
+        from app.services.note import _reserve_portable_dir
+
+        (tmp_path / "同标题").mkdir()
+        out = _reserve_portable_dir("同标题", "abcdef", tmp_path)
+        assert out == tmp_path / "同标题-abcdef"
+        assert out.is_dir()
+
+    def test_concurrent_same_title_never_share_dir(self, tmp_path):
+        """模拟并发：两次分配同标题，绝不能返回同一目录（原子占用保证）。"""
+        from app.services.note import _reserve_portable_dir
+
+        a = _reserve_portable_dir("并发标题", "aaa111", tmp_path)
+        b = _reserve_portable_dir("并发标题", "bbb222", tmp_path)
+        assert a != b
+        assert a.is_dir() and b.is_dir()
+
+    def test_title_suffix_and_task_id_all_taken_falls_back_to_random(self, tmp_path):
+        from app.services.note import _reserve_portable_dir
+
+        (tmp_path / "标题").mkdir()
+        (tmp_path / "标题-abc123").mkdir()
+        (tmp_path / "abc123").mkdir()
+        out = _reserve_portable_dir("标题", "abc123", tmp_path)
+        assert out.is_dir()
+        assert out.name.startswith("abc123-")  # 极端兜底：task_id + 随机段
+
+    def test_empty_title_uses_task_id(self, tmp_path):
+        from app.services.note import _reserve_portable_dir
+
+        out = _reserve_portable_dir(None, "t999", tmp_path)
+        assert out == tmp_path / "t999"
+
+
 if __name__ == "__main__":
     test_prepare_note_material_no_provider_needed()
     test_build_note_material_persists_frames()

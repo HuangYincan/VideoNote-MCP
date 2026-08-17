@@ -345,8 +345,11 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
 
 
 def cleanup_all_files(include_config: bool = False, include_models: bool = False) -> Dict:
-    """全局清理（恢复出厂）：清空 note_results / static/screenshots / logs 的所有任务产物。
+    """全局清理（恢复出厂）：清空 note_results / static/screenshots / note_cache 的任务产物。
 
+    **logs/ 刻意不清**（#121 C3）：MCP 进程持有 mcp_stderr.log 的打开 fd，unlink 后
+    日志写入进入已删除的 inode——文件消失、磁盘不回收、无报错直到重启；日志也不属
+    于任务产物，计入 kept。
     默认保留 config/（LLM key / cookie / 转写设置）与 models/（模型可复用、重下成本高）；
     include_config=True 时连 config/ 一起清；include_models=True 时连 models/ 一起清。
     同步清空 video_tasks 全局索引（任务目录删了，索引记录一并清）。

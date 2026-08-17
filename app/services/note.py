@@ -8,6 +8,7 @@ import threading
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional, Tuple, Union, Any
+from uuid import uuid4
 
 from pydantic import HttpUrl
 from dotenv import load_dotenv
@@ -111,19 +112,37 @@ def _extract_note_title(markdown: str) -> Optional[str]:
     return None
 
 
-def _note_dir_name(title: Optional[str], task_id: str, base: Path) -> str:
-    """给一篇笔记一个文件夹名：优先 LLM 生成的笔记标题（或视频标题）清洗后；空/冲突时回退 task_id。
+def _reserve_portable_dir(title: Optional[str], task_id: str, base: Path) -> Path:
+    """给便携笔记分配一个目录：优先 LLM/视频标题清洗后命名；同名已被占用时回退加短 task_id 后缀。
 
-    标题清洗：替换路径非法字符 + 截断 60，防路径穿越/超长；目标文件夹已存在（同名冲突）时加 task_id 后缀。
+    标题清洗：替换路径非法字符 + 截断 60，防路径穿越/超长。
+    用 `mkdir(exist_ok=False)` 原子占用——`exists()` 预检是 TOCTOU：两个并发任务
+    （同 notes_dir + 同标题）都看到「不存在」选同一目录，然后互相 rmtree 对方
+    的 Assets/（#123 B7）。`FileExistsError` 命中即换后缀重试。
     """
+
+    def _try(name: str) -> Optional[Path]:
+        try:
+            target = base / name
+            target.mkdir(parents=True, exist_ok=False)
+            return target
+        except FileExistsError:
+            return None
+
     if title:
         safe = re.sub(r'[\\/:*?"<>|]', "_", str(title)).strip(" .")[:60]
         if safe:
-            target = base / safe
-            if not target.exists():
-                return safe
-            return f"{safe}-{task_id[:6]}"  # 同名冲突 → 加短 task_id 后缀
-    return task_id
+            hit = _try(safe)
+            if hit is not None:
+                return hit
+            hit = _try(f"{safe}-{task_id[:6]}")  # 同名冲突 → 加短 task_id 后缀
+            if hit is not None:
+                return hit
+    hit = _try(task_id)
+    if hit is not None:
+        return hit
+    # 极端兜底：标题 + 后缀 + task_id 全被占（同任务重跑/哈希碰撞）→ 再拼随机段
+    return _try(f"{task_id}-{uuid4().hex[:4]}")
 
 
 class NoteGenerator:
@@ -319,6 +338,9 @@ class NoteGenerator:
                     transcript_cache_file=transcript_cache_file,
                     status_phase=TaskStatus.TRANSCRIBING,
                     task_id=task_id,
+                    # 上方 line 287-304 已试过 downloader.download_subtitles；无字幕视频
+                    # 再让 _get_transcript 调一次 pipeline.fetch_subtitles 是重复 API 调用
+                    skip_subtitle=True,
                 )
 
             # 3.4 转写就绪后 promote 进跨任务缓存（按来源分键：subtitle / 引擎；另存音频媒体）。
@@ -400,8 +422,7 @@ class NoteGenerator:
             if notes_dir:
                 # 便携模式：额外写一份 <notes_dir>/<标题>/note.md（以标题命名的可读副本）
                 try:
-                    portable_dir = Path(notes_dir) / _note_dir_name(folder_title, task_id, Path(notes_dir))
-                    portable_dir.mkdir(parents=True, exist_ok=True)
+                    portable_dir = _reserve_portable_dir(folder_title, task_id, Path(notes_dir))
                     (portable_dir / "note.md").write_text(markdown, encoding="utf-8")
                     record_task_paths(task_id, [portable_dir, portable_dir / "note.md"])
                     # 便携副本的截图：把 gen/Assets/ 一并拷贝，保证相对引用 Assets/... 可读
@@ -770,6 +791,7 @@ class NoteGenerator:
         transcript_cache_file: Path,
         status_phase: TaskStatus,
         task_id: Optional[str] = None,
+        skip_subtitle: bool = False,
     ) -> TranscriptResult | None:
         """
         优先获取平台字幕，没有则 fallback 到音频转写
@@ -780,7 +802,9 @@ class NoteGenerator:
         :param transcript_cache_file: 缓存文件路径
         :param status_phase: 状态枚举
         :param task_id: 任务 ID
-        :return: TranscriptResult 对象
+        :param skip_subtitle: True 时跳过平台字幕获取，直接走音频转写——调用方已试过
+            字幕（generate 主路径试过 downloader.download_subtitles）时避免重复调用
+            无字幕视频的字幕 API（#123 B1）。
         """
         self._update_status(task_id, status_phase)
 
@@ -795,28 +819,29 @@ class NoteGenerator:
                 logger.warning(f"加载转写缓存失败，将重新获取：{e}")
 
         # 1. 先尝试获取平台字幕（委托 pipeline 步骤层，返回 asdict dict）
-        logger.info("尝试获取平台字幕...")
-        try:
-            data = pipeline.fetch_subtitles(video_url)
-            if data:
-                transcript = TranscriptResult(
-                    language=data.get("language"),
-                    full_text=data["full_text"],
-                    segments=[TranscriptSegment(**seg) for seg in data.get("segments", [])],
-                    raw=data.get("raw"),
-                )
-                logger.info(f"成功获取平台字幕，共 {len(transcript.segments)} 段")
-                # 缓存结果（pipeline 返回的 asdict dict，与 asdict(transcript) 等价）
-                transcript_cache_file.write_text(
-                    json.dumps(data, ensure_ascii=False, indent=2),
-                    encoding="utf-8"
-                )
-                self._transcript_engine = note_cache.SUBTITLE_KEY
-                return transcript
-            else:
-                logger.info("平台无可用字幕，将使用音频转写")
-        except Exception as e:
-            logger.warning(f"获取平台字幕失败: {e}，将使用音频转写")
+        if not skip_subtitle:
+            logger.info("尝试获取平台字幕...")
+            try:
+                data = pipeline.fetch_subtitles(video_url)
+                if data:
+                    transcript = TranscriptResult(
+                        language=data.get("language"),
+                        full_text=data["full_text"],
+                        segments=[TranscriptSegment(**seg) for seg in data.get("segments", [])],
+                        raw=data.get("raw"),
+                    )
+                    logger.info(f"成功获取平台字幕，共 {len(transcript.segments)} 段")
+                    # 缓存结果（pipeline 返回的 asdict dict，与 asdict(transcript) 等价）
+                    transcript_cache_file.write_text(
+                        json.dumps(data, ensure_ascii=False, indent=2),
+                        encoding="utf-8"
+                    )
+                    self._transcript_engine = note_cache.SUBTITLE_KEY
+                    return transcript
+                else:
+                    logger.info("平台无可用字幕，将使用音频转写")
+            except Exception as e:
+                logger.warning(f"获取平台字幕失败: {e}，将使用音频转写")
 
         # 2. Fallback 到音频转写
         return self._transcribe_audio(

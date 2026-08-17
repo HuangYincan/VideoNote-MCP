@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.utils.json_store import write_json_atomic
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -91,8 +92,9 @@ class WhisperModelRegistry:
         return out
 
     def _write_custom(self, data: Dict[str, str]) -> None:
-        with self.path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # 原子写（tmp + replace，#123 B6）：直接 write_text 在中断时留下截断的
+        # whisper_models.json → 自定义模型静默消失且仅 warning。
+        write_json_atomic(self.path, data)
 
     # ---- 查询 ----
     def get_custom_models(self) -> Dict[str, str]:

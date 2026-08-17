@@ -18,6 +18,16 @@ class KuaiShouDownloader(Downloader, ABC):
     def __init__(self):
         super().__init__()
 
+    def _download_mp4(self, photo_info: dict, mp4_path: str) -> None:
+        """下载 mp4 视频到 mp4_path；HTTP 非 200 抛明确异常。"""
+        resp = requests.get(photo_info['photoUrl'], stream=True, timeout=30)
+        if resp.status_code == 200:
+            with open(mp4_path, "wb") as f:
+                for chunk in resp.iter_content(1024 * 1024):
+                    f.write(chunk)
+        else:
+            raise Exception(f"视频下载失败: {resp.status_code}")
+
     def download(
             self,
             video_url: str,
@@ -58,6 +68,11 @@ class KuaiShouDownloader(Downloader, ABC):
 
         if os.path.exists(mp3_path):
             logger.info("[已存在] 跳过下载: %s", mp3_path)
+            # #123 B9：有 mp3 无 mp4（清理过视频只留音频）时 video_path 悬空——下游
+            # VideoReader 拿不存在路径炸「视频处理失败」。mp4 缺失则补下。
+            if not os.path.exists(mp4_path):
+                logger.info("[已存在] mp3 命中但 mp4 缺失，重新下载视频: %s", mp4_path)
+                self._download_mp4(photo_info, mp4_path)
             return AudioDownloadResult(
                 file_path=mp3_path,
                 title=title,
@@ -72,13 +87,7 @@ class KuaiShouDownloader(Downloader, ABC):
             )
 
         # 下载 mp4 视频
-        resp = requests.get(photo_info['photoUrl'], stream=True, timeout=30)
-        if resp.status_code == 200:
-            with open(mp4_path, "wb") as f:
-                for chunk in resp.iter_content(1024 * 1024):
-                    f.write(chunk)
-        else:
-            raise Exception(f"视频下载失败: {resp.status_code}")
+        self._download_mp4(photo_info, mp4_path)
 
         # 使用 ffmpeg 转换为 mp3
         try:

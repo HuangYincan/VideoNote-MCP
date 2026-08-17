@@ -10,6 +10,9 @@ from app.db.provider_dao import (
     update_provider,
     delete_provider,
 )
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ProviderService:
@@ -145,7 +148,7 @@ class ProviderService:
                 k: (str(v)[:4] + '****' if k == 'api_key' and v else v)
                 for k, v in filtered_data.items()
             }
-            print('更新模型供应商', _log_data)
+            logger.info('更新模型供应商 %s', _log_data)
             update_provider(id, **filtered_data)
             # 获取更新后的供应商信息：get_provider_by_id 是模块级导入的 DAO，
             # 返回 ORM 对象，用属性访问（.get 反而会 AttributeError）。
@@ -160,8 +163,10 @@ class ProviderService:
             }
 
         except Exception as e:
-            print('更新模型供应商失败：',e)
-            return None
+            # 真实异常（DB 锁/连接等）必须透传：此前 print + return None 把原因吞掉，
+            # 调用方拿到 None 只能报「供应商不存在」——DB 问题被误报成不存在（#123 B8）。
+            logger.error('更新模型供应商失败 %s: %s', id, e, exc_info=True)
+            raise ValueError(f"更新供应商 {id} 失败: {e}") from e
 
     @staticmethod
     def delete_provider(id: str):
