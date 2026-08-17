@@ -8,7 +8,10 @@ import requests
 from app.downloaders.base import Downloader
 from app.downloaders.kuaishou_helper.kuaishou import KuaiShou
 from app.models.audio_model import AudioDownloadResult
+from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
+
+logger = get_logger(__name__)
 
 
 class KuaiShouDownloader(Downloader, ABC):
@@ -31,7 +34,7 @@ class KuaiShouDownloader(Downloader, ABC):
 
         ks = KuaiShou()
         video_raw_info = ks.run(video_url)
-        print(video_raw_info)
+        logger.debug("快手视频原始信息已获取")
         photo_info = video_raw_info['visionVideoDetail']['photo']
         video_id = photo_info['id']
         title = photo_info['caption'].strip().replace('\n', '').replace(' ', '_')[:50]
@@ -54,7 +57,7 @@ class KuaiShouDownloader(Downloader, ABC):
             )
 
         if os.path.exists(mp3_path):
-            print(f"[已存在] 跳过下载: {mp3_path}")
+            logger.info("[已存在] 跳过下载: %s", mp3_path)
             return AudioDownloadResult(
                 file_path=mp3_path,
                 title=title,
@@ -69,7 +72,7 @@ class KuaiShouDownloader(Downloader, ABC):
             )
 
         # 下载 mp4 视频
-        resp = requests.get(photo_info['photoUrl'], stream=True)
+        resp = requests.get(photo_info['photoUrl'], stream=True, timeout=30)
         if resp.status_code == 200:
             with open(mp4_path, "wb") as f:
                 for chunk in resp.iter_content(1024 * 1024):
@@ -103,8 +106,8 @@ class KuaiShouDownloader(Downloader, ABC):
             video_url: str,
             output_dir: Union[str, None] = None,
     ) -> str:
-        print('self.download(video_url, output_dir).video_path',self.download(video_url, output_dir).video_path)
-        return self.download(video_url, output_dir).video_path
+        result = self.download(video_url, output_dir)
+        return result.video_path
 
 
 if __name__ == '__main__':

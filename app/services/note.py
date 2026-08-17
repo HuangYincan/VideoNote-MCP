@@ -27,7 +27,7 @@ from app.models.notes_model import NoteResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services import note_cache
 from app.services import pipeline
-from app.services.constant import SUPPORT_PLATFORM_MAP
+from app.services.constant import get_downloader as _new_downloader
 from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import get_transcriber, _transcribers
@@ -467,20 +467,18 @@ class NoteGenerator:
         :param platform: 平台标识，需在 SUPPORT_PLATFORM_MAP 中
         :return: 对应的 Downloader 子类实例
         """
-        downloader_cls = SUPPORT_PLATFORM_MAP.get(platform)
         logger.debug(f"实例化下载器 -  {platform}")
-        instance = None
-        if not downloader_cls:
+        try:
+            instance = _new_downloader(platform)
+        except ValueError:
             logger.error(f"不支持的平台：{platform}")
             raise NoteError(code=NoteErrorEnum.PLATFORM_NOT_SUPPORTED.code,
                             message=NoteErrorEnum.PLATFORM_NOT_SUPPORTED.message)
-        try:
-            instance = downloader_cls
         except Exception as e:
             logger.error(f"实例化下载器失败：{e}")
+            raise
 
-
-        logger.info(f"使用下载器：{downloader_cls.__class__}")
+        logger.info(f"使用下载器：{instance.__class__.__name__}")
         return instance
 
     def _update_status(self, task_id: Optional[str], status: Union[str, TaskStatus], message: Optional[str] = None):
@@ -529,7 +527,7 @@ class NoteGenerator:
             # Atomic rename operation
             temp_file.replace(status_file)
 
-            print(f"状态文件写入成功: {status_file}")
+
         except Exception as e:
             logger.error(f"写入状态文件失败 (task_id={task_id})：{e}")
             # Try to write error to file directly as fallback

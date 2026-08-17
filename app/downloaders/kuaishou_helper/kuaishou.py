@@ -54,10 +54,9 @@ class KuaiShou:
 
     def get_temp_cookies(self):
         is_exist = cfm.get('kuaishou')
-        print(is_exist)
         if is_exist:
             return is_exist
-        res = requests.get(url=KUAISHOU_URL, headers=self.header, allow_redirects=True)
+        res = requests.get(url=KUAISHOU_URL, headers=self.header, allow_redirects=True, timeout=(5, 10))
         cookie_string = '; '.join([f"{k}={v}" for k, v in res.cookies.get_dict().items()])
         return cookie_string
 
@@ -67,7 +66,7 @@ class KuaiShou:
             "variables": {"photoId": photo_id, "page": "detail"},
             "query": "query visionVideoDetail($photoId: String, $type: String, $page: String, $webPageArea: String) {\n  visionVideoDetail(photoId: $photoId, type: $type, page: $page, webPageArea: $webPageArea) {\n    status\n    type\n    author {\n      id\n      name\n      following\n      headerUrl\n      __typename\n    }\n    photo {\n      id\n      duration\n      caption\n      likeCount\n      realLikeCount\n      coverUrl\n      photoUrl\n      liked\n      timestamp\n      expTag\n      llsid\n      viewCount\n      videoRatio\n      stereoType\n      croppedPhotoUrl\n      manifest {\n        mediaType\n        businessType\n        version\n        adaptationSet {\n          id\n          duration\n          representation {\n            id\n            defaultSelect\n            backupUrl\n            codecs\n            url\n            height\n            width\n            avgBitrate\n            maxBitrate\n            m3u8Slice\n            qualityType\n            qualityLabel\n            frameRate\n            featureP2sp\n            hidden\n            disableAdaptive\n            __typename\n          }\n          __typename\n        }\n        __typename\n      }\n      __typename\n    }\n    tags {\n      type\n      name\n      __typename\n    }\n    commentLimit {\n      canAddComment\n      __typename\n    }\n    llsid\n    danmakuSwitch\n    __typename\n  }\n}\n"
         }
-        response = requests.post(url=KUAISHOU_API_BASE, headers=self.header, json=json_data)
+        response = requests.post(url=KUAISHOU_API_BASE, headers=self.header, json=json_data, timeout=(5, 10))
         if response.status_code == 200:
             response.raise_for_status()
 
@@ -89,7 +88,7 @@ class KuaiShou:
         if photo_id is None:
             logger.error(f"快手视频 ID 解析失败 {url}")
         video_details = self.get_video_details(real_url, photo_id)
-        print(video_details)
+        logger.debug("快手视频详情已获取")
         if video_details is None:
             logger.error(f"快手视频详情解析失败 {url}")
         return video_details['data']

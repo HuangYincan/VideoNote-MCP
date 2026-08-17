@@ -30,7 +30,7 @@ from app.gpt.gpt_factory import GPTFactory
 from app.models.gpt_model import GPTSource
 from app.models.model_config import ModelConfig
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
-from app.services.constant import SUPPORT_PLATFORM_MAP
+from app.services.constant import get_downloader as _new_downloader
 from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import _transcribers, get_transcriber
@@ -109,11 +109,8 @@ def handoff_result(url: str, reason: str = "") -> dict:
 
 
 def get_downloader(platform: str) -> Downloader:
-    """按平台取下载器实例。"""
-    d = SUPPORT_PLATFORM_MAP.get(platform)
-    if d is None:
-        raise ValueError(f"不支持的平台：{platform}")
-    return d
+    """按平台惰性创建下载器实例（每次新建，cookie 文件由 __del__/atexit 清理）。"""
+    return _new_downloader(platform)
 
 
 def build_transcriber() -> Transcriber:

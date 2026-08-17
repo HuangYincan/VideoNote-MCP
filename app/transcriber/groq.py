@@ -5,7 +5,10 @@ from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
+from app.utils.logger import get_logger
 from app.utils.openai_client import build_openai_client
+
+logger = get_logger(__name__)
 import ffmpeg
 import tempfile
 from dotenv import load_dotenv
@@ -27,10 +30,10 @@ class GroqTranscriber(Transcriber, ABC):
         file_size = os.path.getsize(file_path)
         temp_file = None  # 压缩产生的临时 mp3，结束后清理
         if file_size > MAX_SIZE_BYTES:
-            print(f"文件超过 {MAX_SIZE_MB}MB，开始压缩（当前 {round(file_size / (1024 * 1024), 2)}MB）...")
+            logger.info(f"文件超过 {MAX_SIZE_MB}MB，开始压缩（当前 {round(file_size / (1024 * 1024), 2)}MB）...")
             file_path = compress_audio(file_path)
             temp_file = file_path
-            print(f"压缩完成，临时路径：{file_path}")
+            logger.info(f"压缩完成，临时路径：{file_path}")
         provider = ProviderService.get_provider_by_id('groq')
 
         if not provider:
@@ -51,8 +54,6 @@ class GroqTranscriber(Transcriber, ABC):
                     model=model,
                     response_format="verbose_json",
                 )
-                print(transcription.text)
-            print(transcription)
             segments = []
             full_text = ""
 

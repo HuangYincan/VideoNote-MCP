@@ -58,13 +58,17 @@ class GenericDownloader(Downloader, ABC):
             pass
         self._cookiefile = path
 
-    def __del__(self):
+    def _cleanup_cookie_file(self) -> None:
         path = getattr(self, "_cookiefile", None)
         if path:
             try:
                 os.unlink(path)
             except OSError:
                 pass
+        self._cookiefile = None
+
+    def __del__(self):
+        self._cleanup_cookie_file()
 
     def download(
         self,

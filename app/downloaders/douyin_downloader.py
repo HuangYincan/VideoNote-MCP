@@ -14,7 +14,10 @@ from app.downloaders.douyin_helper.abogus import ABogus
 from app.enmus.note_enums import DownloadQuality
 from app.models.audio_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
+from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
+
+logger = get_logger(__name__)
 from dotenv import load_dotenv
 
 if not os.environ.get("VIDEONOTE_DATA_DIR"):
@@ -131,7 +134,7 @@ class DouyinDownloader(Downloader):
         if len(video_url):
             video_url = video_url[0]
             try:
-                response = requests.head(video_url, allow_redirects=True)
+                response = requests.head(video_url, allow_redirects=True, timeout=(5, 10))
                 url = response.url
             except Exception:
                 return ""
@@ -183,7 +186,6 @@ class DouyinDownloader(Downloader):
 
             aweme_id = self.extract_video_id(video_url)
             kwargs = self.headers_config
-            print("@kwargs:", kwargs)
             base_params = BaseRequestModel().model_dump()
             base_params["msToken"] = self.gen_real_msToken()
 
@@ -191,20 +193,17 @@ class DouyinDownloader(Downloader):
             bogus = ABogus()
             ab_value = bogus.get_value(base_params)
             a_bogus = quote(ab_value, safe='')
-            print("@a_bogus:", a_bogus)
-            print(base_params)
+            logger.debug("a_bogus 签名已生成")
             query_str = urlencode(base_params)
             full_url = f"{DOUYIN_DOMAIN}/aweme/v1/web/aweme/detail/?{query_str}&a_bogus={a_bogus}"
 
-            print("Request URL:", full_url)
+            logger.debug("抖音 API 请求 URL 已构造")
 
+            response = requests.get(full_url, headers=kwargs, timeout=(5, 10))
 
-            response = requests.get(full_url, headers=kwargs)
-
-            print("Response JSON:", response.content)
             return response.json()
         except Exception as e:
-            print("请求失败:", e)
+            logger.warning("抖音视频信息请求失败: %s", e)
             raise ValueError("请求失败:", e)
         # print(kwargs)
 
@@ -217,9 +216,7 @@ class DouyinDownloader(Downloader):
             skip_download: bool = False,
     ) -> AudioDownloadResult:
         try:
-            print(
-                f"正在下载视频: {video_url}，保存路径: {output_dir}，质量: {quality}"
-            )
+            logger.info("正在下载视频: %s，保存路径: %s，质量: %s", video_url, output_dir, quality)
             if output_dir is None:
                 output_dir = get_data_dir()
             if not output_dir:
@@ -296,14 +293,14 @@ class DouyinDownloader(Downloader):
             }
 
             url=video_data['aweme_detail']['video']['download_addr']['url_list'][0]
-            _data = requests.get(url,allow_redirects=True,headers=self.headers_config)
+            _data = requests.get(url, allow_redirects=True, headers=self.headers_config, timeout=30)
 
             with open(output_path, 'wb') as f:
                 f.write(_data.content)
 
             return output_path
         except Exception as e:
-            print("请求失败:", e)
+            logger.warning("抖音下载请求失败: %s", e)
             raise ValueError("请求失败:", e)
 
 

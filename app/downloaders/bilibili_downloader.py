@@ -52,13 +52,17 @@ class BilibiliDownloader(Downloader, ABC):
         logger.info("已生成 B站 Netscape Cookie 文件: %s (条目: %d)", tmp.name, len(lines) - 1)
         return tmp.name
 
-    def __del__(self):
+    def _cleanup_cookie_file(self) -> None:
         path = getattr(self, "_cookiefile", None)
         if path:
             try:
                 os.unlink(path)
             except OSError:
                 pass
+        self._cookiefile = None
+
+    def __del__(self):
+        self._cleanup_cookie_file()
 
     def download(
         self,
@@ -126,7 +130,7 @@ class BilibiliDownloader(Downloader, ABC):
         if output_dir is None:
             output_dir = get_data_dir()
         os.makedirs(output_dir, exist_ok=True)
-        print("video_url",video_url)
+        logger.debug("video_url=%s", video_url)
         video_id=extract_video_id(video_url, "bilibili")
         # 多 P 视频 yt-dlp 的 id 是 {BV}_pN（缓存名 {BV}_pN.mp4），与纯 BV 不同 →
         # 用前缀 glob 匹配，否则缓存永远不命中、每次重新下载

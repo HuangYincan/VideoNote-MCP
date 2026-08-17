@@ -2,6 +2,10 @@ import re
 from typing import Optional
 import requests
 
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 def extract_video_id(url: str, platform: str) -> Optional[str]:
     """
@@ -43,10 +47,10 @@ def resolve_bilibili_short_url(short_url: str) -> Optional[str]:
     :return: 真实的视频链接或None
     """
     try:
-        response = requests.head(short_url, allow_redirects=True)
+        response = requests.head(short_url, allow_redirects=True, timeout=(5, 10))
         return response.url
     except requests.RequestException as e:
-        print(f"Error resolving short URL: {e}")
+        logger.warning("Error resolving short URL: %s", e)
         return None
 
 

@@ -6,6 +6,10 @@ import os
 import uuid
 
 from typing import Optional
+
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 def generate_screenshot(video_path: str, output_dir: str, timestamp: int, index: int) -> str:
     """
     使用 ffmpeg 生成截图，返回生成图片路径
@@ -26,11 +30,11 @@ def generate_screenshot(video_path: str, output_dir: str, timestamp: int, index:
         "-y"
     ]
 
-    print("Running command:", command)
+    logger.debug("Running command: %s", command)
     result = subprocess.run(command, capture_output=True, text=True)
 
     if result.returncode != 0:
-        print("ffmpeg failed:", result.stderr)
+        logger.warning("ffmpeg failed: %s", result.stderr)
 
     return str(output_path)
 
