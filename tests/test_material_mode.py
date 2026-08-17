@@ -175,8 +175,97 @@ def test_run_note_task_writes_material_payload():
     _sh.rmtree(server.NOTE_OUTPUT_DIR / task_id, ignore_errors=True)
 
 
+def test_skip_download_media_cache_miss_clears_audio_path():
+    """skip_download 时媒体缓存 miss：悬空 file_path 置 None（#119）。
+
+    字幕路径的 audio.file_path 是拼出来的假路径（文件不存在）；跨任务媒体缓存
+    miss 是常态（字幕路径从不写媒体缓存）。此前原样透传给素材包 → audio_path
+    指向不存在的文件，Agent Read 失败；现在置 None + info 留痕。
+    """
+    gen = NoteGenerator()
+    task_id = "media_miss_task"
+    task_dir = NOTE_OUTPUT_DIR / task_id
+    cache_file = task_dir / "gen" / "audio.json"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+    fake_downloader = mock.Mock()
+    fake_downloader.download.return_value = AudioDownloadResult(
+        file_path=str(task_dir / "raw" / "BV1xx.mp3"),  # 悬空路径（文件不存在）
+        title="测试视频",
+        duration=10.0,
+        cover_url=None,
+        platform="bilibili",
+        video_id="BV1xx411c7mD",
+        raw_info={},
+    )
+    with mock.patch("app.services.note.note_cache.lookup_media", return_value=None), \
+         mock.patch.object(gen, "_update_status"):
+        audio = gen._download_media(
+            downloader=fake_downloader,
+            video_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            quality="fast",
+            audio_cache_file=cache_file,
+            status_phase="DOWNLOADING",
+            platform="bilibili",
+            output_path=None,
+            screenshot=False,
+            video_understanding=False,
+            video_interval=None,
+            grid_size=None,
+            skip_download=True,
+        )
+    # 悬空路径被清掉：素材包 audio_path 得到 None 而非指向不存在文件的假路径
+    assert audio.file_path is None
+    assert audio.duration == 10.0  # 元信息仍在
+    # audio.json 落盘的是 None（诚实契约），下次缓存加载分支也一致
+    data = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert data["file_path"] is None
+    shutil.rmtree(task_dir, ignore_errors=True)
+
+
+def test_skip_download_media_cache_hit_reuses_real_file():
+    """媒体缓存命中：file_path 指向复制的真实文件（不为 None）。"""
+    gen = NoteGenerator()
+    task_id = "media_hit_task"
+    task_dir = NOTE_OUTPUT_DIR / task_id
+    cache_file = task_dir / "gen" / "audio.json"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+    fake_downloader = mock.Mock()
+    fake_downloader.download.return_value = AudioDownloadResult(
+        file_path=str(task_dir / "raw" / "BV1xx.mp3"),
+        title="测试视频",
+        duration=10.0,
+        cover_url=None,
+        platform="bilibili",
+        video_id="BV1xx411c7mD",
+        raw_info={},
+    )
+    with mock.patch(
+        "app.services.note.note_cache.lookup_media", return_value="/cache/real.mp3"
+    ), mock.patch.object(gen, "_update_status"):
+        audio = gen._download_media(
+            downloader=fake_downloader,
+            video_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            quality="fast",
+            audio_cache_file=cache_file,
+            status_phase="DOWNLOADING",
+            platform="bilibili",
+            output_path=None,
+            screenshot=False,
+            video_understanding=False,
+            video_interval=None,
+            grid_size=None,
+            skip_download=True,
+        )
+    assert audio.file_path == "/cache/real.mp3"
+    shutil.rmtree(task_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_prepare_note_material_no_provider_needed()
     test_build_note_material_persists_frames()
     test_run_note_task_writes_material_payload()
+    test_skip_download_media_cache_miss_clears_audio_path()
+    test_skip_download_media_cache_hit_reuses_real_file()
     print("ALL_OK")

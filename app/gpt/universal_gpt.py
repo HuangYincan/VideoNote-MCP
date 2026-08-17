@@ -214,15 +214,6 @@ class UniversalGPT(GPT):
         self._checkpoint_path(checkpoint_key).unlink(missing_ok=True)
 
     @staticmethod
-    def _is_insufficient_quota_error(exc: Exception) -> bool:
-        raw = str(exc)
-        return (
-            "insufficient_user_quota" in raw
-            or "预扣费额度失败" in raw
-            or "insufficient quota" in raw.lower()
-        )
-
-    @staticmethod
     def _is_retryable_error(exc: Exception) -> bool:
         raw = str(exc).lower()
         retryable_tokens = (

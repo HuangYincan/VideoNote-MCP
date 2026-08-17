@@ -75,8 +75,8 @@ class PreprocessChunkFailureTest(unittest.TestCase):
     def test_all_success_no_truncated(self):
         result, w = self._call()
         self.assertNotIn("truncated", result)
-        # 两个 chunk 都成功，各贡献一段 "hello"（full_text 无分隔拼接，段本身正常）
-        self.assertEqual(result["full_text"], "hellohello")
+        # 两个 chunk 都成功，各贡献一段 "hello"（full_text 空格连接，英文不连词）
+        self.assertEqual(result["full_text"], "hello hello")
         self.assertEqual(len(result["segments"]), 2)
         self.assertEqual(result["segments"][0]["start"], 0.0)
         self.assertEqual(result["segments"][1]["start"], 10.0)

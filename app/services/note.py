@@ -655,6 +655,11 @@ class NoteGenerator:
                 cached_media = note_cache.lookup_media(str(video_url), platform, dl_dir)
                 if cached_media:
                     audio.file_path = cached_media
+                else:
+                    # miss 是常态（字幕路径不写媒体缓存）：悬空路径会误导下游
+                    # （素材包 audio_path 指向不存在的文件，Agent Read 失败），置 None
+                    audio.file_path = None
+                    logger.info("媒体缓存未命中，audio_path 置空（%s）", video_url)
                 audio_cache_file.write_text(
                     json.dumps(asdict(audio), ensure_ascii=False, indent=2),
                     encoding="utf-8",

@@ -290,7 +290,8 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
     except Exception:  # noqa: BLE001 —— 清理失败不阻断
         pass
 
-    full_text = "".join(s.text for s in all_segments)
+    # 分块文本用空格连接：无分隔拼接会让英文 chunk 边界连词（"hello"+"hello" → "hellohello"）
+    full_text = " ".join(s.text for s in all_segments)
     if failed == len(chunks):
         # 全块失败曾静默返回空转写，上层当成功缓存 → 任务 SUCCESS 产空笔记（#118）
         raise RuntimeError(
