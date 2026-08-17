@@ -10,9 +10,18 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Union
 
+from app.utils.logger import get_logger
+from app.utils.path_helper import get_data_dir
+
+logger = get_logger(__name__)
+
 # ffmpeg 单步超时（秒）：损坏文件/管道阻塞时避免 worker 线程永久挂死
 #（挂起的 subprocess 会占住 3-worker 池，导致后续所有任务排队不动）
 _FFMPEG_TIMEOUT = 1800
+
+# 输出缺省落数据目录（与 pipeline/note 同源，#129 B3）：裸脚本调 merge_audio() 产物
+# 不再落不确定的 CWD——曾缺省 Path.cwd()，MCP 启动目录/临时目录都出现过，难找且对清理失明
+NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", str(Path(get_data_dir()) / "note_results")))
 
 
 def _to_wav(input_path: str, out_path: str) -> None:
@@ -37,7 +46,7 @@ def merge_audio(
     """把多个音频/视频文件合并为一个 16kHz mono wav，返回输出路径。
 
     - files: 至少 2 个本地文件路径（音频或视频皆可）；
-    - out_dir: 输出目录（缺省当前目录）；out_name: 输出文件名（不含扩展名）。
+    - out_dir: 输出目录（缺省数据目录 note_results/merged/）；out_name: 输出文件名（不含扩展名）。
     返回 f"{out_dir}/{out_name}.wav"。中途失败清理临时文件。
     """
     if not files or len(files) < 2:
@@ -47,7 +56,11 @@ def merge_audio(
         if not os.path.exists(p):
             raise FileNotFoundError(f"文件不存在: {p}")
 
-    out_dir = Path(out_dir).expanduser() if out_dir else Path.cwd()
+    if out_dir:
+        out_dir = Path(out_dir).expanduser()
+    else:
+        # 缺省数据目录（与 server 层 merge_audio 的 NOTE_OUTPUT_DIR/merged 同口径）
+        out_dir = NOTE_OUTPUT_DIR / "merged"
     out_dir.mkdir(parents=True, exist_ok=True)
     final_path = out_dir / f"{out_name}.wav"
 

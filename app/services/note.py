@@ -236,6 +236,12 @@ class NoteGenerator:
             # 下游 need_full_download / _download_media.need_video 只认布尔也能拿到一致结论
             if "screenshot" in (_format or []):
                 screenshot = True
+            # 反向自闭合（#129 B5）：screenshot=True 但 _format 未声明时，把 "screenshot"
+            # 并入 format——否则直接调 note.generate(screenshot=True, _format=None) 时
+            # _post_process_markdown 因 `if _format:` 跳过，markdown 里 *Screenshot-[mm:ss]
+            # 标记原样残留（vendored 核心公开的 screenshot 参数半生效）
+            if screenshot and "screenshot" not in (_format or []):
+                _format = [*(_format or []), "screenshot"]
 
             # 获取下载器与 GPT 实例
 

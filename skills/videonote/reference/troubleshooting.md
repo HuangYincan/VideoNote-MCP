@@ -7,7 +7,7 @@
 | 现象 | 处理 |
 |------|------|
 | `health_check` 显示 `ffmpeg: missing` | 让用户 `brew install ffmpeg`（Linux: `apt install ffmpeg`），装完再跑 |
-| `generate_note` 报「需要 provider_id」 | 先 `list_providers` 看内置供应商；空 key 用 `update_provider` 填，自建用 `add_provider` |
+| `generate_note` 报「需要 provider_id」 | 先 `list_providers` 看内置供应商；空 key 让用户填：`! videonote providers set <id> --api-key '...'`（MCP 工具拒绝 api_key，填 key 一律走 CLI） |
 | 报「供应商还没有可用模型」 | `list_models(provider_id)` 实时拉取，或 `add_model` 手动加模型名 |
 | 转写一直失败、提示模型未下载 | 问用户：`videonote transcriber download <size>` 下载，或切云端（`set_transcriber("bcut"/"groq")`）—— 不要静默切换 |
 | 任务卡在 `INITIALIZING` | 首次使用 fast-whisper 正在下载模型，耐心等；模型大可改用云端转写 |

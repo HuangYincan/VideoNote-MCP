@@ -316,8 +316,10 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
             from app.db.video_task_dao import delete_task
 
             delete_task(task_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            # 磁盘已清但索引删除失败 → list_tasks 出现 note_dir 悬空幽灵任务；
+            # 不能静默吞（曾 except: pass 连哪个任务失败都丢，与 #126 B7 同口径）
+            logger.warning(f"清理任务 {task_id} 全局索引失败（文件已清理，索引可能残留）: {exc}")
     else:
         # 保留 note：删 raw/ 整个 + gen/ 内非 note.md 的子项
         raw = tdir / "raw"

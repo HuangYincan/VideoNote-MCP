@@ -157,7 +157,8 @@ class BilibiliSubtitleFetcher:
                 # B 站 AI 字幕需要登录态（SESSDATA cookie）；没配 cookie 时 API 返回空列表
                 logger.info(
                     f"{bvid} (cid={cid}) 无字幕轨：未配置 B 站 SESSDATA cookie，"
-                    "AI 字幕拿不到。配置 `set_downloader_cookie(bilibili, SESSDATA=...)` 后可直接用 AI 字幕、跳过语音识别"
+                    "AI 字幕拿不到。配置请走 CLI：`! videonote login bilibili`（扫码）"
+                    "或 `videonote setup` 向导；MCP 工具不收 cookie（安全红线）"
                 )
             else:
                 logger.info(f"{bvid} (cid={cid}) 没有可用字幕轨")

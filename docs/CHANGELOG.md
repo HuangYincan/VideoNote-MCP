@@ -2,6 +2,16 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave F 批 18（2026-08-17 · 第 13 轮双代理扫描 #129，666 tests）
+
+- **SKILL/docs 红线与死点清扫（A1-A4）**：troubleshooting.md 改「填 key 一律走 `! videonote providers set`」（不再教 Agent 用 update_provider/add_provider 填 key 撞红线）；docs/04 `get_task_transcript` 改「默认空=前 50 段」（实现口径）、`cleanup_all` 去掉「/logs」（#121 C3 刻意不清）；docs/02 `cleanup_all` 改「同步清空全局索引」。
+- **health_check 模型列表同源（A5）**：遍历 `get_registry().visible_model_names()`——自定义注册模型不再在 list 显示已下载、health 永远缺席，两个工具给 Agent 的就绪信号不再矛盾。
+- **preflight/导出契约（A6/A7）**：多集建议改「一条 batch_generate_notes 服务端逐个排队」；export_transcript docstring 输出目录改「缺省为 note_results/{task_id}/gen/」（与实际一致）。
+- **自定义大写模型名下载修复（A8）**：`download_transcriber_model` 改为「原 case 可解析则不动，仅内置档位小写容差」——注册名 "MyModel"（`add_custom_model`）不再被 lower 成 "mymodel" 报 unknown，CLI/MCP 两侧行为对齐。
+- **默认值收敛（B1/B3）**：`get_whisper_transcriber` / `get_mlx_whisper_transcriber` 默认 base → small（#128 B3 漏掉的两个类型级 getter）；`merge_audio` 缺省落 `NOTE_OUTPUT_DIR/merged`（不再不确定 CWD，对清理失明）。
+- **app 层文档死点（B2）**：bilibili_downloader / bilibili_subtitle 日志文案改引导 `! videonote login bilibili`——不再教被 MCP 拒绝的 `set_downloader_cookie` 用法（#128 A1 从工具面清到 app 层）。
+- **半收口闭环（B4/B5/B6/B7）**：task_manifest `delete_task` 失败改 `logger.warning`（不再 except: pass 丢上下文）；note.py 内 `screenshot=True` 自闭合并入 format（直接调 note.generate 不再残留 Screenshot 标记）；kuaishou 转写器 `data:null` 守卫；transcriber_provider 释放旧实例前持 `old._lock`（切模型尺寸时进行中转写不再读空模型）。
+
 ## Wave F 批 17（2026-08-17 · 第 12 轮双代理扫描 #128，666 tests）
 
 - **SKILL 死点 + 指引矛盾（A1/A7）**：troubleshooting.md 5 处 `set_downloader_cookie(cookie=…)` 改引导 `! videonote login bilibili`（Agent 按 SKILL 逐字执行不再撞「拒绝 cookie」红线）；tools.md `inspect_video` 改「多集全出用 `batch_generate_notes`、只一集用对应 url」——不再教逐条 subagent 撞并发上限。

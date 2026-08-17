@@ -199,7 +199,8 @@ class BilibiliDownloader(Downloader, ABC):
         if not CookieConfigManager().get("bilibili"):
             logger.info(
                 "未配置 B 站 SESSDATA cookie：AI 字幕拿不到，将走语音识别。"
-                "配置 `set_downloader_cookie(bilibili, SESSDATA=...)` 后可直接用 B 站 AI 字幕、跳过语音识别"
+                "配置请走 CLI：`! videonote login bilibili`（扫码）或 `videonote setup` 向导；"
+                "MCP 工具不收 cookie（安全红线）"
             )
         # 1) 优先走 B 站官方 player API（直拉，无需下视频；AI 字幕需 SESSDATA cookie）
         try:

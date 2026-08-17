@@ -69,9 +69,10 @@ class KuaishouTranscriber(Transcriber):
             
             # 提取分段数据
             segments = []
-            
-            # 解析快手API返回的文本段
-            texts = result_data.get('data', {}).get('text', [])
+
+            # API 可能返回 `data: null`（键存在、值 null）——.get('data', {}) 只在键缺失
+            # 时兜底，null 时 None.get 裸崩（#129 B6；#126 B5 已防段内 null）
+            texts = (result_data.get('data') or {}).get('text', [])
             for u in texts:
                 text = (u.get('text') or '').strip()  # API 返回 null 不裸崩（#126 B5）
                 start_time = float(u.get('start_time', 0))

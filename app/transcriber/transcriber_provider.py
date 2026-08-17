@@ -69,7 +69,15 @@ def _init_transcriber(key: TranscriberType, cls, *args, **kwargs):
                         close = getattr(old, "close", None)
                         if callable(close):
                             try:
-                                close()
+                                # 持旧实例转写锁再 close：whisper close() 置 self.model=None，
+                                # 若另一线程正持旧实例转写（with self._lock 内 transcribe），
+                                # 无锁置空会让进行中调用读空模型异常退出（#129 B7，窄窗口）
+                                lock = getattr(old, "_lock", None)
+                                if lock is not None:
+                                    with lock:
+                                        close()
+                                else:
+                                    close()
                             except Exception as exc:
                                 logger.warning(f'释放旧 {cls.__name__} 实例失败: {exc}')
                     _transcribers[key] = cls(*args, **kwargs)
@@ -83,7 +91,7 @@ def _init_transcriber(key: TranscriberType, cls, *args, **kwargs):
 def get_groq_transcriber():
     return _init_transcriber(TranscriberType.GROQ, GroqTranscriber)
 
-def get_whisper_transcriber(model_size="base", device="cuda"):
+def get_whisper_transcriber(model_size="small", device="cuda"):
     return _init_transcriber(TranscriberType.FAST_WHISPER, WhisperTranscriber, model_size=model_size, device=device)
 
 def get_bcut_transcriber():
@@ -94,7 +102,7 @@ def get_kuaishou_transcriber():
     # 快手转写器内部有请求级状态，同样不能共享单例
     return KuaishouTranscriber()
 
-def get_mlx_whisper_transcriber(model_size="base"):
+def get_mlx_whisper_transcriber(model_size="small"):
     if not MLX_WHISPER_AVAILABLE:
         logger.warning("MLX Whisper 不可用，请确保在 Apple 平台且已安装 mlx_whisper")
         raise ImportError("MLX Whisper 不可用")

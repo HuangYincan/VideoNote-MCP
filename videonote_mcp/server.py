@@ -1997,12 +1997,21 @@ def download_transcriber_model(model_size: str, transcriber_type: str = "fast-wh
     from app.transcriber.whisper_models import resolve_whisper_model
 
     size = model_size.strip()
-    # 仅内置档位名做小写容差（#127 A2）：直通 HF repo_id（含 "/"）或本地目录
-    # 保持原 case——否则小写 repo 落 models--systran--… 缓存目录，而 is_model_ready
-    # /加载按原 case 找 models--Systran--… 对不上 → 预下载白下、preflight 仍报「未下载」
-    #（CLI _download_whisper 不 lowercase，两侧行为已对齐）
+    # 仅内置档位名做小写容差（#128 A2/A8）：直通 HF repo_id（含 "/"）、本地目录、
+    # 精确匹配的自定义模型名（大小写敏感）都保持原 case。曾对所有非"/"名一律 lower()，
+    # 注册成含大写字母的自定义名（如 "MyModel"）在 set_transcriber 能过、下载却被
+    # 降成 "mymodel" 报 unknown——resolve 大小写敏感，两侧行为须一致。
     if "/" not in size and not os.path.isdir(size):
-        size = size.lower()
+        try:
+            resolve_whisper_model(size)  # 原 case 可解析（自定义精确名 / 内置小写名）→ 不动
+        except ValueError:
+            lowered = size.lower()
+            if lowered != size:
+                try:
+                    resolve_whisper_model(lowered)  # 内置档位（全小写）命中 → 容差降级
+                    size = lowered
+                except ValueError:
+                    pass  # 原 case 与 lower 均不可解析 → 保持原 case，下方报明确错误
     try:
         resolve_whisper_model(size)
     except ValueError:
@@ -2129,6 +2138,11 @@ def health_check() -> str:
 
     cfg = TranscriberConfigManager().get_config()
     ready = TranscriberConfigManager().is_model_ready()
+    # 模型列表与 list_transcriber_models 同源（#128 A6）：遍历 registry 的可见模型
+    # 而非硬编码 6 档——否则自定义注册模型在 list 显示已下载、health 永远缺席，
+    # 两工具给 Agent 互相矛盾的就绪信号
+    from app.transcriber.whisper_models import get_registry
+
     # 每个模型行区分 downloaded / downloading / failed(+error) / missing：
     # 首次下载大模型被超时/断网打断时，failed 原因不再被吞（docs/05 #34）。
     # 保持历史字段名 size/downloaded，新增 downloading/failed/error（向后兼容）。
@@ -2137,7 +2151,7 @@ def health_check() -> str:
             **dl_state.status_row(s, check_whisper_model_exists(s, "whisper"), key=s),
             "size": s,
         }
-        for s in WHISPER_MODEL_SIZES
+        for s in get_registry().visible_model_names()
     ]
     # 引擎建议：fast-whisper 配 tiny/base 对中文/长视频质量不足（docs/05 #34/#39）。
     # 不做语言自动切换（见 docs/05 #39 评估结论），改为显式提示。
@@ -2373,7 +2387,7 @@ def preflight(
                         {
                             "name": "duration",
                             "ok": True,
-                            "detail": f"多集共 {info.get('total', len(entries))} 条（建议逐条生成，分 P 用 entries[].url）",
+                            "detail": f"多集共 {info.get('total', len(entries))} 条（多集全出建议一条 batch_generate_notes 服务端逐个排队；只一集用对应 entries[].url）",
                         }
                     )
                 else:
@@ -2593,7 +2607,7 @@ def export_transcript(
 
     - task_id: 必填，已完成任务的 task_id（generate_note / prepare_note_material 返回）；
     - formats: 可选，要导出的格式列表（srt/vtt/json），缺省取 setup 配置的「导出格式默认」；
-    - out_dir: 可选，输出目录（缺省为 note_results/{task_id}/；支持 file:// URI）。
+    - out_dir: 可选，输出目录（缺省为 note_results/{task_id}/gen/；支持 file:// URI）。
 
     只做确定性机械渲染（时间轴换算），不调用 LLM。返回
     {task_id, formats: {fmt: "file://绝对路径"}, errors: {}}，供 Agent 直接 Read。
