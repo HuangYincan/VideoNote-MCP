@@ -105,8 +105,13 @@ class VideoReader:
             cells = self.grid_size[0] * self.grid_size[1]
             self.frame_interval = effective_frame_interval(duration, self.frame_interval, cells)
             timestamps = [i for i in range(0, int(duration), self.frame_interval)][:max_frames]
+            # duration < 1s 时 int() 截断为 0，range 空 → 静默零帧（#125 B13）：
+            # 至少取 t=0 首帧（提取失败会被跳过，但不再无产出静默通过）
+            if not timestamps:
+                logger.warning("视频时长 %.3fs 过短，回退提取 t=0 单帧", duration)
+                timestamps = [0]
 
-            # 并行提取帧；len(timestamps)==0（极短/损坏视频）时也要 ≥1，否则 ThreadPoolExecutor(0) 崩溃
+            # 并行提取帧；len(timestamps) 恒 ≥1（上面兜底），ThreadPoolExecutor(0) 不会出现
             max_workers = max(1, min(os.cpu_count() or 4, 8, len(timestamps)))
             frame_results: dict[int, str | None] = {}
             with ThreadPoolExecutor(max_workers=max_workers) as pool:

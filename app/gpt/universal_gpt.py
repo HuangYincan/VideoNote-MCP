@@ -220,6 +220,16 @@ class UniversalGPT(GPT):
         self._checkpoint_path(checkpoint_key).unlink(missing_ok=True)
 
     @staticmethod
+    def _first_choice_content(response) -> str:
+        """取首个 choice 的文本内容；choices 为空（异常响应）抛明确错误而非 IndexError（#125 B8）。"""
+        if not getattr(response, "choices", None):
+            raise ValueError(
+                "模型响应不含任何 choices（上游异常响应），finish_reason="
+                + str(getattr(response, "finish_reason", "?"))
+            )
+        return (response.choices[0].message.content or "").strip()
+
+    @staticmethod
     def _is_retryable_error(exc: Exception) -> bool:
         raw = str(exc).lower()
         # 配额耗尽属非临时错误：重试不改变结果，白等 backoff + 白烧请求（#120）
@@ -337,7 +347,7 @@ class UniversalGPT(GPT):
                         self._save_checkpoint(checkpoint_key, source_signature, current_partials, "merge")
                     raise
 
-                content = (response.choices[0].message.content or "").strip()
+                content = self._first_choice_content(response)
                 if not content:
                     raise ValueError(
                         "模型返回空内容（可能被拒绝/内容过滤），finish_reason="
@@ -453,12 +463,9 @@ class UniversalGPT(GPT):
                     self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")
                 raise
 
-            content = (response.choices[0].message.content or "").strip()
+            content = self._first_choice_content(response)
             if not content:
-                raise ValueError(
-                    "模型返回空内容（可能被拒绝/内容过滤），finish_reason="
-                    + str(getattr(response.choices[0], "finish_reason", "?"))
-                )
+                raise ValueError("模型返回空内容（可能被拒绝/内容过滤）")
             partials.append(content)
             if checkpoint_key and source_signature:
                 self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")

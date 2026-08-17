@@ -124,6 +124,13 @@ def derive_video_id(url: str, platform: str) -> Optional[str]:
         except OSError:
             return None
     if platform == "bilibili":
+        # b23.tv 只解一次短链：extract_video_id 与 extract_bilibili_p_number 各自
+        # 解一次 = 每次 lookup 两次 HEAD（各 timeout 5-10s，慢网 30s，#125 B6）。
+        # 先解，BV 与 p 都从真实 URL 提取（短链自身不含 ?p=）。
+        if "b23.tv" in url:
+            from app.utils.url_parser import resolve_bilibili_short_url
+
+            url = resolve_bilibili_short_url(url) or url
         bvid = extract_video_id(url, "bilibili")
         if not bvid:
             return None

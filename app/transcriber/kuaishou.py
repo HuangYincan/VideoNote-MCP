@@ -72,7 +72,6 @@ class KuaishouTranscriber(Transcriber):
             
             # 提取分段数据
             segments = []
-            full_text = ""
             
             # 解析快手API返回的文本段
             texts = result_data.get('data', {}).get('text', [])
@@ -81,7 +80,6 @@ class KuaishouTranscriber(Transcriber):
                 start_time = float(u.get('start_time', 0))
                 end_time = float(u.get('end_time', 0))
                 
-                full_text += text + " "
                 segments.append(TranscriptSegment(
                     start=start_time,
                     end=end_time,
@@ -91,7 +89,7 @@ class KuaishouTranscriber(Transcriber):
             # 创建结果对象
             result = TranscriptResult(
                 language="zh",  # 快手API可能不返回语言信息，默认为中文
-                full_text=full_text.strip(),
+full_text=" ".join(seg.text for seg in segments).strip(),
                 segments=segments,
                 raw=result_data
             )

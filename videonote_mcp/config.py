@@ -209,6 +209,9 @@ def get_app_config() -> dict:
     """读取持久化应用配置（如默认笔记位置），存于 VIDEONOTE_CONFIG_DIR/app_config.json。
 
     敏感字段（hf_token）返回解密后的明文；解密失败按缺失处理。
+    损坏的 JSON 打 warning + 备份 `.corrupt` 后按空配置处理——否则 `set_app_config`
+    读到 `{}` 再写回会把其余配置（default_model/notes_dir 等）全部抹掉（#125 C1，
+    与 app/utils/json_store.read_json 同口径；config 层先于 app.* import，不跨层依赖）。
     """
     import json
 
@@ -216,11 +219,22 @@ def get_app_config() -> dict:
     if path.exists():
         try:
             cfg = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            backup = Path(f"{path}.corrupt")
+            try:
+                if not backup.exists():
+                    path.replace(backup)
+            except OSError:
+                pass
+            logger.warning("app_config.json 损坏（已备份到 %s，按空配置处理，避免后续写入抹掉其余配置）: %s", backup, exc)
+            return {}
+        try:
             for k in _SENSITIVE_CONFIG_KEYS:
                 if k in cfg:
                     cfg[k] = decrypt_value(cfg[k])
             return cfg
         except Exception:
+            logger.warning("app_config.json 敏感字段解密失败，按缺失处理")
             return {}
     return {}
 

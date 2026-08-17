@@ -43,9 +43,8 @@ class TranscriberConfigManager:
     def get_config(self) -> Dict[str, Any]:
         """获取当前转写器配置，fallback 到环境变量默认值。
 
-        whisper 默认 size 从 'medium' (~1.5GB) 改为 'tiny' (~75MB)：
-        新装用户没主动设置时不应该被首次下载卡住。想要更高精度可在「音频转写配置」
-        页主动切换。
+        默认 size 为 small（#34 与 videonote_mcp.config 同源；MCP/CLI 下 env 已先设
+        small，裸 vendored 用法由这里兜底——旧注释称 tiny 是更早时代的残留，#125 A8）。
         """
         data = self._read()
         return {
@@ -55,7 +54,7 @@ class TranscriberConfigManager:
             ),
             "whisper_model_size": data.get(
                 "whisper_model_size",
-                os.getenv("WHISPER_MODEL_SIZE", "tiny"),
+                os.getenv("WHISPER_MODEL_SIZE", "small"),
             ),
             "enable_preprocess": _config_bool(data, "enable_preprocess", "VIDEONOTE_ENABLE_PREPROCESS"),
             "diarization": _config_bool(data, "diarization", "VIDEONOTE_DIARIZATION"),

@@ -593,10 +593,15 @@ class NoteGenerator:
 
         except Exception as e:
             logger.error(f"写入状态文件失败 (task_id={task_id})：{e}")
-            # Try to write error to file directly as fallback
+            # 回退不截断原文件：open('w') 会把上次已落盘的终态（可能是 SUCCESS）
+            # 永久抹掉——进程重启后内存快照失效，任务只能显示损坏（#125 B3）。
+            # 只在无原文可保时才写入错误说明。
             try:
-                with status_file.open('w', encoding='utf-8') as f:
-                    f.write(f"Error writing status: {str(e)}")
+                if not status_file.exists() or status_file.stat().st_size == 0:
+                    with status_file.open('w', encoding='utf-8') as f:
+                        f.write(f"Error writing status: {str(e)}")
+                else:
+                    logger.warning("保留上次已落盘的状态文件（写失败原因: %s）", e)
             except Exception:
                 logger.error(f"写入错误  {e}")
 

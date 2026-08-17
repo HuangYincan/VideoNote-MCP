@@ -127,5 +127,32 @@ class CheckpointResilienceTest(unittest.TestCase):
         path.with_suffix.return_value.replace.assert_called_once()
 
 
+class EmptyChoicesTest(unittest.TestCase):
+    """choices 为空时抛明确错误而非 IndexError（#125 B8）。"""
+
+    def test_empty_choices_raises_clear_error(self):
+        gpt = _gpt()
+        resp = mock.Mock()
+        resp.choices = []
+        resp.finish_reason = "stop"
+        with self.assertRaises(ValueError) as ctx:
+            gpt._first_choice_content(resp)
+        self.assertIn("不含任何 choices", str(ctx.exception))
+
+    def test_normal_choice_returns_stripped_content(self):
+        gpt = _gpt()
+        resp = mock.Mock()
+        resp.choices = [mock.Mock()]
+        resp.choices[0].message.content = "  内容  "
+        self.assertEqual(gpt._first_choice_content(resp), "内容")
+
+    def test_none_choices_also_raises(self):
+        gpt = _gpt()
+        resp = mock.Mock()
+        resp.choices = None
+        with self.assertRaises(ValueError):
+            gpt._first_choice_content(resp)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

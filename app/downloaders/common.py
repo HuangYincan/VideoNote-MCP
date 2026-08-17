@@ -48,7 +48,11 @@ def ytdlp_retry(fn, *args, attempts: int = 3, base_delay: float = 1.5, **kwargs)
             )
             if not retriable or i == attempts - 1:
                 raise
-        except (ConnectionError, TimeoutError, OSError):
+        except (ConnectionError, TimeoutError, OSError) as e:
+            # FileNotFoundError 也是 OSError 子类：yt-dlp 未安装 / 输入路径不存在
+            # 不是瞬时网络错误，指数退避白等 3 次才报错（#125 B7）
+            if isinstance(e, FileNotFoundError):
+                raise
             if i == attempts - 1:
                 raise
         time.sleep(base_delay * (2**i))

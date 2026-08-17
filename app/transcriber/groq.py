@@ -66,11 +66,9 @@ class GroqTranscriber(Transcriber, ABC):
                     response_format="verbose_json",
                 )
             segments = []
-            full_text = ""
 
             for seg in transcription.segments:
                 text = seg.text.strip()
-                full_text += text + " "
                 segments.append(TranscriptSegment(
                     start=seg.start,
                     end=seg.end,
@@ -79,7 +77,7 @@ class GroqTranscriber(Transcriber, ABC):
 
             result = TranscriptResult(
                 language=transcription.language,
-                full_text=full_text.strip(),
+full_text=" ".join(seg.text for seg in segments).strip(),
                 segments=segments,
                 raw=transcription.to_dict()
             )

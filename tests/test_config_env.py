@@ -157,3 +157,34 @@ def test_plugin_json_env_keys_match_mapping():
     assert suffix == set(plugin["userConfig"]), (
         f"userConfig 与 env 不对应: env={sorted(suffix)} plugin={sorted(plugin['userConfig'])}"
     )
+
+def test_corrupt_app_config_warns_and_backs_up(tmp_path, monkeypatch):
+    """app_config.json 损坏：warning + .corrupt 备份 + 空配置（#125 C1）。
+
+    旧实现静默返回 {}——set_app_config 读到 {} 写回会把 default_model/notes_dir
+    等其余配置全部抹掉（#106 修过的同类模式在 app_config 上的残留）。
+    """
+    from videonote_mcp.config import get_app_config
+
+    monkeypatch.setenv("VIDEONOTE_CONFIG_DIR", str(tmp_path))
+    cfg_file = tmp_path / "app_config.json"
+    cfg_file.write_text("{broken json", encoding="utf-8")
+
+    assert get_app_config() == {}
+    assert (tmp_path / "app_config.json.corrupt").exists()
+    assert not cfg_file.exists()  # 损坏文件被移走保留
+
+
+def test_corrupt_app_config_set_preserves_backup(tmp_path, monkeypatch):
+    """损坏后 set_app_config 以空为基写入：损坏文件已备份，不再静默覆盖。"""
+    from videonote_mcp.config import get_app_config, set_app_config
+
+    monkeypatch.setenv("VIDEONOTE_CONFIG_DIR", str(tmp_path))
+    cfg_file = tmp_path / "app_config.json"
+    cfg_file.write_text("{broken json", encoding="utf-8")
+
+    set_app_config("default_model", "x")
+    assert get_app_config() == {"default_model": "x"}
+    # 损坏原文件被保留（数据可恢复，不再被静默抹掉）
+    assert (tmp_path / "app_config.json.corrupt").exists()
+

@@ -1563,12 +1563,19 @@ def _export_cli(argv) -> None:
 
     out_dir = opts.out_dir or str(task_dir / "gen")
     written = export_transcript(transcript, formats=formats, out_dir=out_dir, task_id=opts.task_id)
+    # 部分失败时 exporter 把 _errors 塞进 written（#125 C2）：先剥离再判空——
+    # 否则全部失败时 {"_errors": ...} 仍 truthy，`not written` 报错分支变死代码，
+    # 还打印「✓ 已导出 1 个格式: _errors」。与 server.export_transcript 同口径。
+    errors = written.pop("_errors", {}) if isinstance(written, dict) else {}
     if not written:
-        print(f"✗ 没有成功导出任何格式（请求: {formats}）", file=sys.stderr)
+        detail = f"；失败原因: {errors}" if errors else ""
+        print(f"✗ 没有成功导出任何格式（请求: {formats}）{detail}", file=sys.stderr)
         sys.exit(1)
     print(f"✓ 已导出 {len(written)} 个格式（task_id={opts.task_id}）：")
     for fmt, uri in written.items():
         print(f"  - {fmt}: {uri}")
+    if errors:
+        print(f"⚠ 部分格式导出失败: {errors}", file=sys.stderr)
 
 
 def main() -> None:

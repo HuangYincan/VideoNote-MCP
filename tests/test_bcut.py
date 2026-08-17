@@ -101,8 +101,11 @@ class BcutEtagHeaderNoneTest(unittest.TestCase):
         resp = mock.Mock()
         resp.raise_for_status.return_value = None
         resp.headers = {"Etag": None}  # 异常网关响应：header 在但值为 None
-        with mock.patch.object(tr.session, "put", return_value=resp):
-            tr._BcutTranscriber__upload_part(b"x" * 2048)
+        with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
+            f.write(b"x" * 2048)
+            f.flush()
+            with mock.patch.object(tr.session, "put", return_value=resp):
+                tr._BcutTranscriber__upload_part(f.name)
         self.assertEqual(tr._BcutTranscriber__etags, [""])  # None → ""，不崩
 
     def test_etag_present_keeps_value(self):
@@ -113,9 +116,53 @@ class BcutEtagHeaderNoneTest(unittest.TestCase):
         resp = mock.Mock()
         resp.raise_for_status.return_value = None
         resp.headers = {"Etag": "\"abc123\""}  # 带引号正常值 → 去引号
-        with mock.patch.object(tr.session, "put", return_value=resp):
-            tr._BcutTranscriber__upload_part(b"x" * 2048)
+        with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
+            f.write(b"x" * 2048)
+            f.flush()
+            with mock.patch.object(tr.session, "put", return_value=resp):
+                tr._BcutTranscriber__upload_part(f.name)
         self.assertEqual(tr._BcutTranscriber__etags, ["abc123"])
+
+
+class BcutChunkedReadTest(unittest.TestCase):
+    """__upload_part 按分片从文件分段读，不整文件载入 + 切片复制（#125 B15）。"""
+
+    def test_chunks_read_from_file_in_order(self):
+        from app.transcriber.bcut import BcutTranscriber
+
+        tr = BcutTranscriber()
+        tr._BcutTranscriber__clips = 3
+        tr._BcutTranscriber__per_size = 1024
+        tr._BcutTranscriber__upload_urls = ["http://up/0", "http://up/1", "http://up/2"]
+        payload = bytes((i % 256) for i in range(2500))  # 2500 字节 → 片0/1 满 1024，片2 剩 452
+        with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
+            f.write(payload)
+            f.flush()
+            with mock.patch.object(tr.session, "put") as m_put:
+                m_put.return_value.headers = {"Etag": "\"e\""}
+                m_put.return_value.raise_for_status.return_value = None
+                tr._BcutTranscriber__upload_part(f.name)
+        self.assertEqual(m_put.call_count, 3)
+        datas = [call.kwargs["data"] for call in m_put.call_args_list]
+        # 片 0/1 满 1024，片 2 为剩余 452（不再整读 + 内存切片）
+        self.assertEqual([len(d) for d in datas], [1024, 1024, 452])
+        self.assertEqual(datas[0], payload[:1024])
+        self.assertEqual(datas[1], payload[1024:2048])
+        self.assertEqual(datas[2], payload[2048:])
+        # 每片 etag 都收集（多分片时不再只留最后一片）
+        self.assertEqual(tr._BcutTranscriber__etags, ["e", "e", "e"])
+
+    def test_empty_clips_no_upload(self):
+        from app.transcriber.bcut import BcutTranscriber
+
+        tr = BcutTranscriber()
+        tr._BcutTranscriber__clips = 0
+        with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
+            f.write(b"x")
+            f.flush()
+            with mock.patch.object(tr.session, "put") as m_put:
+                tr._BcutTranscriber__upload_part(f.name)
+        m_put.assert_not_called()
 
 
 if __name__ == "__main__":

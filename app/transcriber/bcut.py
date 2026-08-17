@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from typing import Optional, List
 
@@ -71,21 +72,16 @@ class BcutTranscriber(Transcriber):
         except Exception:
             pass
         
-    def _load_file(self, file_path: str) -> bytes:
-        """读取文件内容"""
-        with open(file_path, 'rb') as f:
-            return f.read()
-
     def _upload(self, file_path: str) -> None:
         """申请上传"""
-        file_binary = self._load_file(file_path)
-        if not file_binary:
+        size = os.path.getsize(file_path)
+        if not size:
             raise ValueError("无法读取文件数据")
-            
+
         payload = json.dumps({
             "type": 2,
             "name": "audio.mp3",
-            "size": len(file_binary),
+            "size": size,
             "ResourceFileType": "mp3",
             "model_id": "8",
         })
@@ -115,27 +111,30 @@ class BcutTranscriber(Transcriber):
         logger.info(
             f"申请上传成功, 总计大小{resp_data['size'] // 1024}KB, {self.__clips}分片, 分片大小{resp_data['per_size'] // 1024}KB: {self.__in_boss_key}"
         )
-        self.__upload_part(file_binary)
+        self.__upload_part(file_path)
         self.__commit_upload()
 
-    def __upload_part(self, file_binary: bytes) -> None:
-        """上传音频数据"""
-        for clip in range(self.__clips):
-            start_range = clip * self.__per_size
-            end_range = min((clip + 1) * self.__per_size, len(file_binary))
-            logger.info(f"开始上传分片{clip}: {start_range}-{end_range}")
-            resp = self.session.put(
-                self.__upload_urls[clip],
-                data=file_binary[start_range:end_range],
-                headers={'Content-Type': 'application/octet-stream'},
-                timeout=(10, 120)
-            )
-            resp.raise_for_status()
-            # header 存在但值为 None（异常网关响应）时 `.strip` 抛 AttributeError——
-            # 分片上传失败信息会变成天书（#124 B10）
-            etag = (resp.headers.get("Etag") or "").strip('"')
-            self.__etags.append(etag)
-            logger.info(f"分片{clip}上传成功: {etag}")
+    def __upload_part(self, file_path: str) -> None:
+        """上传音频数据（按分片从文件分段读，#125 B15：不再整文件载入 + 切片复制，
+        多 GB 音频峰值内存从 ~2× 文件大小降到 per_size）"""
+        with open(file_path, "rb") as f:
+            for clip in range(self.__clips):
+                start_range = clip * self.__per_size
+                f.seek(start_range)
+                chunk = f.read(self.__per_size)
+                logger.info(f"开始上传分片{clip}: {start_range}-{start_range + len(chunk)}")
+                resp = self.session.put(
+                    self.__upload_urls[clip],
+                    data=chunk,
+                    headers={'Content-Type': 'application/octet-stream'},
+                    timeout=(10, 120)
+                )
+                resp.raise_for_status()
+                # header 存在但值为 None（异常网关响应）时 `.strip` 抛 AttributeError——
+                # 分片上传失败信息会变成天书（#124 B10）
+                etag = (resp.headers.get("Etag") or "").strip('"')
+                self.__etags.append(etag)
+                logger.info(f"分片{clip}上传成功: {etag}")
 
     def __commit_upload(self) -> None:
         """提交上传数据"""
@@ -243,7 +242,6 @@ class BcutTranscriber(Transcriber):
             
             # 提取分段数据
             segments = []
-            full_text = ""
             
             for u in result_json.get("utterances", []):
                 text = u.get("transcript", "").strip()
@@ -251,7 +249,6 @@ class BcutTranscriber(Transcriber):
                 start_time = float(u.get("start_time", 0)) / 1000.0
                 end_time = float(u.get("end_time", 0)) / 1000.0
                 
-                full_text += text + " "
                 segments.append(TranscriptSegment(
                     start=start_time,
                     end=end_time,
@@ -261,7 +258,7 @@ class BcutTranscriber(Transcriber):
             # 创建结果对象
             result = TranscriptResult(
                 language=result_json.get("language", "zh"),
-                full_text=full_text.strip(),
+full_text=" ".join(seg.text for seg in segments).strip(),
                 segments=segments,
                 raw=result_json
             )

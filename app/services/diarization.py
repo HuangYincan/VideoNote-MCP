@@ -16,9 +16,18 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+# 模块级单例（#125 B14）：Pipeline.from_pretrained 每次重载要下载/加载多 GB 权重，
+# 首次成功后缓存复用；首次失败不缓存（下次调用重试，报错现场保留）。
+# 加载与推理同锁：pyannote 3.x Pipeline 是带内部状态机的非线程安全对象，
+# 与 whisper 共享单例同款纪律——正确性优先于该步骤并行度。
+_pipeline_lock = threading.Lock()
+_pipeline_cache: Optional[object] = None
+_pipeline_token = ""
 
 _DIARIZATION_MODEL = "pyannote/speaker-diarization-3.1"
 _INSTALL_HINT = (
@@ -44,10 +53,6 @@ def diarize_audio(
     """
     if not os.path.exists(wav_path):
         raise FileNotFoundError(f"文件不存在: {wav_path}")
-    try:
-        from pyannote.audio import Pipeline
-    except ImportError:
-        raise RuntimeError(_INSTALL_HINT)
 
     token = hf_token or os.environ.get("HUGGINGFACE_HUB_TOKEN") or ""
     if not token:
@@ -63,18 +68,12 @@ def diarize_audio(
             "HUGGINGFACE_HUB_TOKEN，或跑 `videonote setup` 在向导里保存。"
         )
 
-    try:
-        pipeline = Pipeline.from_pretrained(_DIARIZATION_MODEL, token=token)
-    except Exception as exc:  # noqa: BLE001 —— 模型加载/授权失败
-        raise RuntimeError(
-            f"pyannote 模型加载失败（可能需要先在 huggingface.co 同意模型授权）: {exc}"
-        )
-
     if num_speakers is not None and (not isinstance(num_speakers, int) or num_speakers < 1):
         logger.warning(f"num_speakers={num_speakers!r} 无效（需 ≥1 的整数），回退自动检测")
         num_speakers = None
     kwargs = {"num_speakers": num_speakers} if num_speakers else {}
-    diarization = pipeline(wav_path, **kwargs)
+    with _pipeline_lock:
+        diarization = _get_pipeline(token)(wav_path, **kwargs)
 
     turns: List[dict] = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
@@ -86,6 +85,27 @@ def diarize_audio(
             }
         )
     return turns
+
+
+def _get_pipeline(token: str):
+    """加载（或复用）pyannote pipeline；token 变化时重新加载。失败不缓存。"""
+    global _pipeline_cache, _pipeline_token
+    # 调用方已持 _pipeline_lock；此处不再加锁（加载与推理同一把锁内）
+    if _pipeline_cache is not None and _pipeline_token == token:
+        return _pipeline_cache
+    try:
+        from pyannote.audio import Pipeline
+    except ImportError:
+        raise RuntimeError(_INSTALL_HINT)
+    try:
+        pipeline = Pipeline.from_pretrained(_DIARIZATION_MODEL, token=token)
+    except Exception as exc:  # noqa: BLE001 —— 模型加载/授权失败
+        raise RuntimeError(
+            f"pyannote 模型加载失败（可能需要先在 huggingface.co 同意模型授权）: {exc}"
+        )
+    _pipeline_cache = pipeline
+    _pipeline_token = token
+    return pipeline
 
 
 def assign_speakers(

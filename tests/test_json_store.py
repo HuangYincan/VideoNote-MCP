@@ -90,6 +90,23 @@ class CookieManagerCorruptionTest(unittest.TestCase):
             self.assertEqual(mgr.get("bilibili"), "SESS=x")
             self.assertFalse(Path(td, "downloader.json.tmp").exists())
 
+    def test_legacy_flat_cookie_format_compat(self):
+        """旧格式 {platform: "cookie 字符串"} 照常可读（#125 B9），不因值类型裸崩。"""
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "downloader.json"
+            p.write_text('{"bilibili": "SESS=legacy", "douyin": 123}', encoding="utf-8")
+            mgr = CookieConfigManager(filepath=str(p))
+            # 字符串旧格式 → 原样返回
+            self.assertEqual(mgr.get("bilibili"), "SESS=legacy")
+            self.assertTrue(mgr.exists("bilibili"))
+            # 非字符串垃圾值 → None 而非 TypeError
+            self.assertIsNone(mgr.get("douyin"))
+            # list_all 兼容旧格式；垃圾值降级为空串而非裸崩
+            self.assertEqual(mgr.list_all(), {"bilibili": "SESS=legacy", "douyin": ""})
+            # 新格式混合读
+            mgr.set("kuaishou", "KW=abc")
+            self.assertEqual(mgr.get("kuaishou"), "KW=abc")
+
 
 class TranscriberConfigCorruptionTest(unittest.TestCase):
     def test_corrupt_falls_back_to_env_with_warning(self):

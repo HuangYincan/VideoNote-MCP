@@ -24,6 +24,7 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{_DB}")
 
 from app.db.init_db import init_db  # noqa: E402
 from app.db.video_task_dao import (  # noqa: E402
+    delete_all_tasks,
     delete_task,
     get_task_by_video,
     insert_video_task,
@@ -104,6 +105,17 @@ class DaoTest(unittest.TestCase):
         insert_video_task("BV1", "bilibili", tid)
         delete_task(tid)
         self.assertNotIn(tid, [t["task_id"] for t in list_tasks()])
+
+    def test_delete_all_tasks(self):
+        """delete_all_tasks 一次清空索引（#125 B12，cleanup_all 用，不再 N+1 循环）。"""
+        insert_video_task("BV1", "bilibili", _tid())
+        insert_video_task("BV2", "bilibili", _tid())
+        deleted = delete_all_tasks()
+        # 全量跑时表里可能已有其它测试的行：至少清掉本次的 2 条，且清空后表必为空
+        self.assertGreaterEqual(deleted, 2)
+        self.assertEqual(list_tasks(), [])
+        # 空表再清：返回 0 而非抛错（cleanup_all 幂等）
+        self.assertEqual(delete_all_tasks(), 0)
 
 
 class ListTasksPaginationTest(unittest.TestCase):

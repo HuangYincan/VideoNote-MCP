@@ -96,11 +96,9 @@ class MLXWhisperTranscriber(Transcriber):
 
                 # 转换为标准格式
                 segments = []
-                full_text = ""
 
                 for segment in result["segments"]:
                     text = segment["text"].strip()
-                    full_text += text + " "
                     segments.append(TranscriptSegment(
                         start=segment["start"],
                         end=segment["end"],
@@ -109,7 +107,7 @@ class MLXWhisperTranscriber(Transcriber):
 
                 transcript_result = TranscriptResult(
                     language=result.get("language", "unknown"),
-                    full_text=full_text.strip(),
+full_text=" ".join(seg.text for seg in segments).strip(),
                     segments=segments,
                     raw=result
                 )

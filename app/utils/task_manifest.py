@@ -345,7 +345,7 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
 
 
 def cleanup_all_files(include_config: bool = False, include_models: bool = False) -> Dict:
-    """全局清理（恢复出厂）：清空 note_results / static/screenshots / note_cache 的任务产物。
+    """全局清理（恢复出厂）：清空 note_results / static/screenshots / static/cover / covers / note_cache 的任务产物。
 
     **logs/ 刻意不清**（#121 C3）：MCP 进程持有 mcp_stderr.log 的打开 fd，unlink 后
     日志写入进入已删除的 inode——文件消失、磁盘不回收、无报错直到重启；日志也不属
@@ -364,18 +364,19 @@ def cleanup_all_files(include_config: bool = False, include_models: bool = False
 
     _empty(get_note_dir(), "note_results")
     _empty(get_screenshots_dir(), "static/screenshots")
+    # local 封面两处目录（#125 B4）：每个 local 任务各产 1 个文件，此前永不清理
+    _empty(get_screenshots_dir().parent / "cover", "static/cover")
+    _empty(get_data_dir() / "covers", "covers")
     # logs/ 不清理（#121 C3）：MCP 进程持有 mcp_stderr.log 的打开 fd，unlink 后
     # 日志写入进入已删除的 inode——文件消失、磁盘不回收、无任何报错直到重启；
     # 且日志不属于任务产物。保留并记录到 kept。
     result["kept"].append(f"logs（{get_logs_dir()}）")
     _empty(get_cache_dir(), "note_cache")
-    # 同步清空全局任务索引（尽力而为）
+    # 同步清空全局任务索引（尽力而为；#125 B12 单条 DELETE 替代 N+1 循环）
     try:
-        from app.db.video_task_dao import list_tasks as _list
-        from app.db.video_task_dao import delete_task
+        from app.db.video_task_dao import delete_all_tasks
 
-        for t in _list():
-            delete_task(t["task_id"])
+        delete_all_tasks()
     except Exception:
         pass
 

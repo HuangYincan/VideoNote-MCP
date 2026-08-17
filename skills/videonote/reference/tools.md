@@ -184,7 +184,7 @@
 ## 其它
 
 - `health_check()` —— `server_version` / ffmpeg / db / 队列 / keyed_providers / `skill_refresh`。
-- `preflight(url?, platform?, provider_id?)` —— 提交前体检：ffmpeg / 磁盘剩余 / 转写器就绪 / 供应商 key+模型 / 队列，url 非空时预解析时长。`ok=false` 时先修 detail 再提交，避免长任务半路失败。
+- `preflight(url?, platform?, provider_id?, need_provider=true)` —— 提交前体检：ffmpeg / 磁盘剩余 / 转写器就绪 / 供应商 key+模型 / 队列，url 非空时预解析时长。`ok=false` 时先修 detail 再提交，避免长任务半路失败。`prepare_note_material` 流程不需要 LLM，传 `need_provider=false` 跳过供应商 key/模型检查（#125 C9）。
 - `validate_url(url)` —— 识别平台（bilibili/youtube/douyin/tiktok/kuaishou/local 共 6 种）。内置平台之外返回 `{supported: true, platform: "generic"}`（yt-dlp 通用提取，覆盖 1800+ 站点）；仅当 yt-dlp 也失败时 Agent 接手解析。
 - `set_downloader_cookie` —— **拒绝写入 Cookie**。B 站：`! videonote login bilibili` / `! videonote setup`。
 - `fetch_comments(video_url, limit=20)` —— B 站热门评论（供生成前预览）。

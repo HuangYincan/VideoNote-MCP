@@ -45,8 +45,8 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 
 ## 4. 默认值
 
-展示当前笔记默认值：**Read** `{health_check 返回的 data_dir}/config/app_config.json`
-（含风格 / 插图 / 视频理解 / 评论弹幕 / 导出格式 / 默认模型）。
+展示当前笔记默认值：调 **`read_app_config()`**（含风格 / 插图 / 视频理解 / 评论弹幕 /
+导出格式 / 默认模型；已过滤敏感字段，不要直接 Read 原始 app_config.json，见 #125 C10）。
 - 安装时 `/plugin` 的 userConfig 已收过默认值，这里主要是**展示确认**。
 - 要修改 → 让用户输 `! videonote setup`（全屏向导，独立终端更稳），或编辑该 JSON。
 

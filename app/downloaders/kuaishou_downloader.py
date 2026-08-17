@@ -99,8 +99,10 @@ class KuaiShouDownloader(Downloader, ABC):
             subprocess.run([
                 "ffmpeg", "-y", "-i", mp4_path, "-vn", "-acodec", "libmp3lame", mp3_path
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            raise Exception("ffmpeg 转换 MP3 失败")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            # 带原始异常链与退出码：后台任务只看到一句话无法区分超时/非零退出（#125 B11）
+            detail = getattr(e, "returncode", None)
+            raise Exception(f"ffmpeg 转换 MP3 失败（{'退出码 ' + str(detail) if detail is not None else '超时'}）") from e
 
         return AudioDownloadResult(
             file_path=mp3_path,
@@ -120,8 +122,20 @@ class KuaiShouDownloader(Downloader, ABC):
             video_url: str,
             output_dir: Union[str, None] = None,
     ) -> str:
-        result = self.download(video_url, output_dir)
-        return result.video_path
+        # 只下载视频、不转 mp3：need_video 场景（截图/视频理解）之后会从 mp4 提取
+        # 音频；旧实现走完整 download() 必然白做一次全量 ffmpeg 转码 + 双份磁盘
+        # 占用（#125 B2）。与其他 downloader 的 download_video 语义一致。
+        if output_dir is None:
+            output_dir = get_data_dir()
+        if not output_dir:
+            output_dir = self.cache_data
+        os.makedirs(output_dir, exist_ok=True)
+        ks = KuaiShou()
+        video_raw_info = ks.run(video_url)
+        photo_info = video_raw_info['visionVideoDetail']['photo']
+        mp4_path = os.path.join(output_dir, f"{photo_info['id']}.mp4")
+        self._download_mp4(photo_info, mp4_path)
+        return mp4_path
 
 
 if __name__ == '__main__':

@@ -238,6 +238,20 @@ class TaskManifestTest(unittest.TestCase):
         self.assertIn("config", res["kept"])
         self.assertIn("models", res["kept"])
 
+    def test_cleanup_all_clears_covers(self):
+        """local 封面目录（static/cover + data/covers）随 cleanup_all 一并清（#125 B4）。"""
+        cover1 = self.screens.parent / "cover"
+        cover2 = self.root / "covers"
+        cover1.mkdir(parents=True, exist_ok=True)
+        cover2.mkdir(parents=True, exist_ok=True)
+        (cover1 / "c1.jpg").write_bytes(b"c")
+        (cover2 / "c2.jpg").write_bytes(b"c")
+        res = cleanup_all_files()
+        self.assertIn("static/cover", res["cleaned"])
+        self.assertIn("covers", res["cleaned"])
+        self.assertEqual(list(cover1.iterdir()), [])
+        self.assertEqual(list(cover2.iterdir()), [])
+
     def test_cleanup_all_include_config(self):
         (self.note_dir / "y.json").write_text("{}", encoding="utf-8")
         (self.cfg / "app_config.json").write_text("{}", encoding="utf-8")

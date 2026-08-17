@@ -469,5 +469,66 @@ class AtomicWriteGuardTest(unittest.TestCase):
         self.assertGreaterEqual(src.count("write_text_atomic("), 3)
 
 
+class SingleResolveBilibiliTest(unittest.TestCase):
+    """b23.tv lookup 只解一次短链（#125 B6）：BV 与 p 都从真实 URL 提。"""
+
+    def test_derive_resolves_short_url_once(self):
+        from unittest import mock
+
+        from app.services.note_cache import derive_video_id
+
+        with mock.patch("app.utils.url_parser.resolve_bilibili_short_url") as m_resolve:
+            m_resolve.return_value = "https://www.bilibili.com/video/BV1vc411b7Wa?p=3"
+            ident = derive_video_id("https://b23.tv/abc123?p=3", "bilibili")
+        m_resolve.assert_called_once()
+        self.assertEqual(ident, "BV1vc411b7Wa:p3")
+
+    def test_non_short_url_no_resolve_call(self):
+        from unittest import mock
+
+        from app.services.note_cache import derive_video_id
+
+        with mock.patch("app.utils.url_parser.resolve_bilibili_short_url") as m_resolve:
+            ident = derive_video_id("https://www.bilibili.com/video/BV1vc411b7Wa", "bilibili")
+        m_resolve.assert_not_called()
+        self.assertEqual(ident, "BV1vc411b7Wa")
+
+
+class StatusFallbackTest(unittest.TestCase):
+    """_update_status 写入失败时保留上次落盘终态，不截断成损坏状态（#125 B3）。"""
+
+    def setUp(self):
+        for tid in ("stf001", "stf002"):
+            shutil.rmtree(NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def tearDown(self):
+        for tid in ("stf001", "stf002"):
+            shutil.rmtree(NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def _mk_task_dir(self, tid):
+        td = NOTE_OUTPUT_DIR / tid
+        td.mkdir(parents=True, exist_ok=True)
+        return td / "status.json"
+
+    def test_existing_final_state_preserved_on_write_failure(self):
+        g = NoteGenerator()
+        status_file = self._mk_task_dir("stf001")
+        status_file.write_text('{"status": "SUCCESS", "message": "完成"}', encoding="utf-8")
+        with mock.patch("app.services.note.Path.replace", side_effect=OSError("磁盘满")):
+            g._update_status("stf001", "FAILED", message="新错误")
+        # 上次落盘的终态（SUCCESS）原样保留——进程重启后任务不显示损坏
+        data = json.loads(status_file.read_text(encoding="utf-8"))
+        self.assertEqual(data["status"], "SUCCESS")
+        self.assertEqual(data["message"], "完成")
+
+    def test_no_prior_file_writes_error_text(self):
+        g = NoteGenerator()
+        status_file = self._mk_task_dir("stf002")
+        with mock.patch("app.services.note.Path.replace", side_effect=OSError("磁盘满")):
+            g._update_status("stf002", "FAILED", message="新错误")
+        self.assertTrue(status_file.exists())
+        self.assertIn("Error writing status", status_file.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -162,11 +162,9 @@ class WhisperTranscriber(Transcriber):
                 segments_raw, info = self.model.transcribe(file_path)
 
                 segments = []
-                full_text = ""
 
                 for seg in segments_raw:
                     text = seg.text.strip()
-                    full_text += text + " "
                     segments.append(TranscriptSegment(
                         start=seg.start,
                         end=seg.end,
@@ -175,7 +173,7 @@ class WhisperTranscriber(Transcriber):
 
                 result = TranscriptResult(
                     language=info.language,
-                    full_text=full_text.strip(),
+full_text=" ".join(seg.text for seg in segments).strip(),
                     segments=segments,
                     raw=info
                 )

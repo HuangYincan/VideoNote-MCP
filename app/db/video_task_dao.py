@@ -98,6 +98,23 @@ def list_tasks(limit: Optional[int] = None, offset: int = 0) -> list:
         db.close()
 
 
+# 清空全局索引（cleanup_all 用）：单条 DELETE 替代 list + N 条单删（#125 B12）。
+# 返回受影响行数；失败时抛给调用方显式处理（空表不是失败）。调用方保证只在
+# 显式 cleanup_all 语义下调用，绝不因卸载/升级触发。
+def delete_all_tasks() -> int:
+    db = next(get_db())
+    try:
+        deleted = db.query(VideoTask).delete(synchronize_session=False)
+        db.commit()
+        logger.info(f"Cleared task index: {deleted} rows")
+        return deleted
+    except Exception as e:
+        logger.error(f"Failed to clear task index: {e}")
+        raise
+    finally:
+        db.close()
+
+
 # 按 task_id 删一条全局索引（清理任务时调用）
 def delete_task(task_id: str):
     db = next(get_db())

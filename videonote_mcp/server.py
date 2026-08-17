@@ -179,6 +179,22 @@ def _resolve_int_config(key: str, env_name: str, default: int) -> int:
     """app_config 整数配置解析（共享实现见 config.resolve_int_config，#120）。"""
     return resolve_int_config(key, env_name, default)
 
+
+def _coerce_int(value, default: int, clamp_min: Optional[int] = None) -> int:
+    """显式数值参数安全转换：垃圾值打 warning 回退 default（#125 C5）。
+
+    与 extract_frames 的 warning 回退口径一致——裸 int("abc") 报
+    "invalid literal for int()" 天书错误，Agent 无法得知合法形状。
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        logger.warning(f"数值参数 {value!r} 无法解析，回退默认 {default}")
+        n = default
+    if clamp_min is not None:
+        n = max(clamp_min, n)
+    return n
+
 # 确保数据库表存在（幂等，init_db 使用 create_all）；空库时预置内置供应商
 # （openai/deepseek/qwen/groq/ollama…，固定 id + 正确 base_url + 空 key，用 update_provider 填 key）
 init_db()
@@ -832,14 +848,14 @@ def generate_note(
         video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
     if video_interval is None:
         video_interval = _resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 0)
-    video_interval = max(0, int(video_interval or 0))  # 下限钳制，避免 0/负值进流水线
+    video_interval = _coerce_int(video_interval or 0, 0, clamp_min=0)  # 下限钳制，避免 0/负值进流水线
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
         include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
     if comments_limit is None:
         comments_limit = _resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
-    comments_limit = max(1, int(comments_limit or 20))  # 下限钳制
+    comments_limit = _coerce_int(comments_limit or 20, 20, clamp_min=1)  # 下限钳制
 
     # 风格/截图默认：参数没传（None）时用 setup ③ 配置的默认（默认 detailed / 关）
     if style is None:
@@ -936,14 +952,14 @@ def prepare_note_material(
         video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
     if video_interval is None:
         video_interval = _resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 0)
-    video_interval = max(0, int(video_interval or 0))  # 下限钳制，避免 0/负值进流水线
+    video_interval = _coerce_int(video_interval or 0, 0, clamp_min=0)  # 下限钳制，避免 0/负值进流水线
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
         include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
     if comments_limit is None:
         comments_limit = _resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
-    comments_limit = max(1, int(comments_limit or 20))  # 下限钳制
+    comments_limit = _coerce_int(comments_limit or 20, 20, clamp_min=1)  # 下限钳制
 
     # 并发上限：与 generate_note 一致
     _check_grid_size(grid_size)
@@ -1033,6 +1049,7 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
         elapsed = None
     result = None
     result_error = None
+    result_pending = False
     result_file = task_dir / "result.json"
     if status == "SUCCESS" and result_file.exists():
         try:
@@ -1063,6 +1080,10 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
             # 让 Agent 能区分「成功但内容不可读」与「任务不存在」（#124 A10）
             logger.error(f"读取结果文件失败 task_id={task_id}: {e}")
             result_error = f"结果文件读取失败（可能写盘中断）: {e}"
+    elif status == "SUCCESS":
+        # SUCCESS 但 result.json 不存在（结果尚未落盘/被手动删/旧版本任务）：
+        # 不静默 result:null——Agent 无法区分「无结果」与「任务失败」（#125 C3）
+        result_pending = True
 
     payload = {
         "status": status,
@@ -1074,6 +1095,8 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
     }
     if result_error:
         payload["result_error"] = result_error
+    if result_pending:
+        payload["result_pending"] = True
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -1328,8 +1351,8 @@ def list_tasks(limit: Optional[int] = None, offset: int = 0) -> str:
     """
     from app.db.video_task_dao import list_tasks as _list
 
-    offset = max(0, int(offset or 0))
-    limit = max(1, int(limit)) if limit is not None else None
+    offset = _coerce_int(offset or 0, 0, clamp_min=0)
+    limit = _coerce_int(limit, 1, clamp_min=1) if limit is not None else None
     tasks = _list(limit=limit, offset=offset)
     return json.dumps(tasks, ensure_ascii=False)
 
@@ -1375,7 +1398,9 @@ def cleanup_note(task_id: str, include_note: bool = False) -> str:
                 },
                 ensure_ascii=False,
             )
-    return json.dumps(cleanup_task_files(task_id, include_note=include_note), ensure_ascii=False)
+    result = cleanup_task_files(task_id, include_note=include_note)
+    result["ok"] = True  # 与拒绝路径 {ok:false} 对称（#125 A11）
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -1469,7 +1494,7 @@ def fetch_subtitles(video_url: str, platform: Optional[str] = None) -> str:
     - platform: 可省略，自动识别。
 
     同步、快，适合快速预览字幕。成功返回
-    {language, full_text, segments}（segments 每项含 start/end/text）；
+    {ok: true, language, full_text, segments}（segments 每项含 start/end/text）；
     无字幕或获取失败返回 {ok: False, error}，不会抛异常。
     需要语音转写（ASR，把音频变成字幕）用 transcribe_media；
     需要完整 AI 笔记用 generate_note。
@@ -1916,11 +1941,21 @@ def list_transcriber_models() -> str:
 
 @mcp.tool()
 def download_transcriber_model(model_size: str, transcriber_type: str = "fast-whisper") -> str:
-    """在后台下载 whisper 模型（仅本地引擎需要）。下载中/完成后用 list_transcriber_models 查询。"""
+    """在后台下载 whisper 模型（仅本地引擎需要）。下载中/完成后用 list_transcriber_models 查询。
+
+    尺寸校验与 set_transcriber 同源（resolve_whisper_model）：内置档位 / 自定义模型名 /
+    HF repo_id（含 "/"）/ 本地目录都能预下载——旧白名单只认 6 档，按 #108 配了自定义
+    尺寸后 preflight 报「未下载」且无下载路径（#125 C7）。
+    """
+    from app.transcriber.whisper_models import resolve_whisper_model
+
     size = model_size.strip().lower()
-    if size not in WHISPER_MODEL_SIZES:
+    try:
+        resolve_whisper_model(size)
+    except ValueError:
         raise ValueError(
-            f"未知模型尺寸: {model_size}（可选: {', '.join(WHISPER_MODEL_SIZES)}）"
+            f"未知 whisper 模型尺寸: {model_size}（可选: {', '.join(WHISPER_MODEL_SIZES)}"
+            "，或自定义模型名 / HF repo_id / 本地目录）"
         )
     if transcriber_type == "fast-whisper":
         key = size
@@ -2306,8 +2341,9 @@ def inspect_video(url: str, platform: Optional[str] = None) -> str:
     """解析视频链接，列出可独立生成笔记的条目（B 站分 P / YouTube 播放列表 / 单集）。
 
     **只解析、不下载、不提交任务。** 多集时 entries[].url 可直接喂给
-    `generate_note` / `prepare_note_material`；Agent 按单视频流程处理（多集用
-    subagent，不要在同一消息里并行塞多个 generate_note）。
+    `generate_note` / `prepare_note_material`；一个链接内的多集（分 P/播放列表）
+    用一条 `batch_generate_notes` 全出笔记（#125 C4，与 #110 batch 口径一致）；
+    互相独立的链接才各自开 subagent。
 
     返回 {ok, platform, kind: single|multi, title, video_id, current_p?,
     total, truncated, entries:[{p, title, duration, url, video_id}]}。
@@ -2356,7 +2392,8 @@ def batch_generate_notes(
     from app.services.inspect import inspect_video as _inspect
 
     # 上界钳制：防止一条 MCP 调用内做上千次串行解析/排队（docs 审计 F7）
-    max_entries = max(1, min(int(max_entries or 10), 50))
+    max_entries = _coerce_int(max_entries or 10, 10, clamp_min=1)
+    max_entries = min(max_entries, 50)  # 上界钳制
     parsed = _inspect(video_url, platform=platform)
     if not parsed.get("ok"):
         # inspect 失败归一为批量形状（#121 C6）：此前直接透传 inspect 的

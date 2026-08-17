@@ -2,6 +2,32 @@
 
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
 
+## Wave F 批 14（2026-08-17 · 第 9 轮双代理扫描 #125，612 tests）
+
+- **损坏配置不再抹掉其余配置（A1）**：`get_app_config` 遇损坏 JSON 打 warning + `.corrupt` 备份 + 按空配置处理——`set_app_config` 读 `{}` 写回把 default_model/notes_dir 全抹掉的窗口关闭。
+- **CLI export 假成功修正（A2）**：`_errors` 不再被当导出格式计数——全部落盘失败时报「没有成功导出任何格式」+ 失败原因。
+- **结果窗口可见（A3）**：SUCCESS 但 result.json 尚未落盘 → `result_pending: true`——Agent 不再拿到 result:null 却无从判断。
+- **工具口径统一（A4/A6/A7/A9）**：`inspect_video` 改「多集全出笔记 → 一条 batch」；`fetch_subtitles` docstring 补 `{ok: true}`；模型下载校验与 `set_transcriber` 同源（自定义尺寸可预下载）；tools.md 补 `preflight.need_provider`。
+- **数值参数天书错误（A5）**：6 处裸 `int()` 统一 `_coerce_int`——`"abc"` 等垃圾值 warning 回退默认，不再 invalid literal 崩后台任务。
+- **转写默认 small（A8）**：配置兜底 `tiny` → `small`（与 #34 默认口径一致，中文质量不再被配置缺失拉低）。
+- **cleanup 形状对齐（A11）**：`cleanup_task_files` 成功路径补 `ok: true`——Agent 统一按 ok 判读。
+- **抖音短链缓存命中（B1）**：`v.douyin.com` 解析失败回退解短链——App 分享默认短链不再每次重下+重转写。
+- **快手 download_video 免白转（B2）**：直接 `_download_mp4`，need_video 场景不再多一次全量 ffmpeg 转码 + 双份磁盘。
+- **状态文件写入失败不再毁终态（B3）**：原子写失败回退保留已落盘 SUCCESS，只在无原文时写错误说明。
+- **封面目录纳入全局清理（B4）**：`static/cover/` + `data/covers/` 随 cleanup_all 清理——local 任务不再永久累积。
+- **短链只解一次（B6）**：b23.tv lookup 不再 BV/p 各解一次短链（慢网省 5-10s）。
+- **ytdlp_retry 不再白等（B7）**：FileNotFoundError（yt-dlp 缺失/路径不存在）立即抛出——顺带修了 except 缺 `as e` 会 NameError 的隐藏 bug。
+- **空 choices 明确报错（B8）**：`_first_choice_content` 统一 merge/summarize 两处——上游异常响应不再 IndexError 天书。
+- **旧格式 cookie 兼容（B9）**：`{platform: "字符串"}` 旧格式照常读，垃圾值降级空串不裸崩。
+- **full_text 线性拼接（B10）**：5 个转写器统一 `" ".join`——万段级转写不再 O(n²) 累计拷贝。
+- **快手转码失败带链（B11）**：ffmpeg 失败 `from e` + 退出码/超时区分——后台任务不再只看一句话。
+- **cleanup_all 批量删索引（B12）**：`delete_all_tasks` 单条 DELETE——大量任务时不再 N+1 SQL。
+- **<1s 视频不再静默 0 帧（B13）**：duration<1s 回退 t=0 单帧 + warning。
+- **pyannote 只加载一次（B14）**：Pipeline 模块级单例（首次失败不缓存，token 变化重载）——分离任务不再每次重建多 GB 模型。
+- **bcut 分段读文件（B15）**：分片从文件 seek+read，多 GB 音频不再整读 + 切片复制——顺带修了多分片只留最后一片 etag 的隐藏 bug。
+- **YouTube 代理 Session 释放（B16）**：显式 `close()`/`__del__`——连接池条目不再泄漏到 GC。
+- **B5 测试补全**：KuaishouTranscriber（成功/空结果/业务错误/网络错误链）、BilibiliDmPatch（参数形状/幂等注入/缺失降级）、screenshot_marker（m:ss/[m:ss]/星号变体）首次覆盖。
+
 ## Wave F 批 13（2026-08-17 · 第 8 轮双代理扫描 #124，582 tests）
 
 - **转写向导默认值漏 funasr（A1）**：`_TRANSCRIBER_ENGINES` 同源复用——当前引擎为 funasr 时回车确认不再无意识切回 fast-whisper。

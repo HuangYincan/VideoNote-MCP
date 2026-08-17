@@ -33,7 +33,12 @@ class CookieConfigManager:
     def get(self, platform: str) -> Optional[str]:
         with self._lock:
             data = self._read()
-            return data.get(platform, {}).get("cookie")
+            val = data.get(platform)
+            # 旧格式 {platform: "cookie 字符串"} 兼容：新格式 {platform: {cookie: ...}}
+            # 值类型异常不裸崩（json_store 容错只覆盖文件层，不覆盖值类型，#125 B9）
+            if isinstance(val, dict):
+                return val.get("cookie")
+            return val if isinstance(val, str) else None
 
     def set(self, platform: str, cookie: str):
         with self._lock:
@@ -51,7 +56,10 @@ class CookieConfigManager:
     def list_all(self) -> Dict[str, str]:
         with self._lock:
             data = self._read()
-            return {k: v.get("cookie", "") for k, v in data.items()}
+            out = {}
+            for k, v in data.items():
+                out[k] = v.get("cookie", "") if isinstance(v, dict) else (v if isinstance(v, str) else "")
+            return out
 
     def exists(self, platform: str) -> bool:
         return self.get(platform) is not None

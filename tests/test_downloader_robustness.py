@@ -13,6 +13,7 @@
 import json
 import os
 import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -486,6 +487,141 @@ class KuaishouTitleCleanTest(unittest.TestCase):
         # 换行/空格被清洗，不再把原始 caption 透传给 DB/prompt
         self.assertNotIn("\n", result.title)
         self.assertEqual(result.title, "标题带_换行")
+
+
+class KuaishouDownloadVideoTest(unittest.TestCase):
+    """download_video 只下载 mp4、不白做 ffmpeg 转码（#125 B2）。"""
+
+    def _photo_info(self):
+        return {
+            "id": "ph1", "caption": "标题", "duration": 10,
+            "coverUrl": "https://x/c.jpg", "photoUrl": "https://x/v.mp4",
+        }
+
+    def test_no_mp3_no_ffmpeg(self):
+        from app.downloaders.kuaishou_downloader import KuaiShouDownloader
+
+        dl = KuaiShouDownloader()
+        video_raw = {"visionVideoDetail": {"photo": self._photo_info()}, "tags": []}
+        with mock.patch("app.downloaders.kuaishou_downloader.KuaiShou") as m_ks:
+            m_ks.return_value.run.return_value = video_raw
+            with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
+                resp = mock.Mock()
+                resp.status_code = 200
+                resp.__enter__ = mock.Mock(return_value=resp)
+                resp.__exit__ = mock.Mock(return_value=False)
+                resp.iter_content = mock.Mock(return_value=iter([b"x"]))
+                m_get.return_value = resp
+                with mock.patch("app.downloaders.kuaishou_downloader.subprocess.run") as m_ff:
+                    with tempfile.TemporaryDirectory() as td:
+                        path = dl.download_video("https://v.kuaishou.com/x", output_dir=td)
+                        self.assertEqual(path, os.path.join(td, "ph1.mp4"))
+                        self.assertTrue(os.path.exists(path))
+                        m_ff.assert_not_called()  # 只下视频：ffmpeg 转 mp3 一步都不许跑
+                        self.assertFalse(os.path.exists(os.path.join(td, "ph1.mp3")))
+
+
+class KuaishouFfmpegFailureTest(unittest.TestCase):
+    """ffmpeg 转换失败带退出码 + 保留原始异常链（#125 B11）。"""
+
+    def _photo_info(self):
+        return {
+            "id": "ph1", "caption": "标题", "duration": 10,
+            "coverUrl": "https://x/c.jpg", "photoUrl": "https://x/v.mp4",
+        }
+
+    def _run(self, exc):
+        from app.downloaders.kuaishou_downloader import KuaiShouDownloader
+
+        dl = KuaiShouDownloader()
+        video_raw = {"visionVideoDetail": {"photo": self._photo_info()}, "tags": []}
+        with mock.patch("app.downloaders.kuaishou_downloader.KuaiShou") as m_ks:
+            m_ks.return_value.run.return_value = video_raw
+            with mock.patch("app.downloaders.kuaishou_downloader.requests.get") as m_get:
+                resp = mock.Mock()
+                resp.status_code = 200
+                resp.__enter__ = mock.Mock(return_value=resp)
+                resp.__exit__ = mock.Mock(return_value=False)
+                resp.iter_content = mock.Mock(return_value=iter([b"x"]))
+                m_get.return_value = resp
+                with mock.patch(
+                    "app.downloaders.kuaishou_downloader.subprocess.run", side_effect=exc
+                ):
+                    with tempfile.TemporaryDirectory() as td:
+                        dl.download("https://v.kuaishou.com/x", output_dir=td)
+
+    def test_called_process_error_has_returncode(self):
+        with self.assertRaises(Exception) as ctx:
+            self._run(subprocess.CalledProcessError(2, ["ffmpeg"]))
+        self.assertIn("退出码 2", str(ctx.exception))
+        self.assertIsInstance(ctx.exception.__cause__, subprocess.CalledProcessError)
+
+    def test_timeout_has_no_returncode(self):
+        with self.assertRaises(Exception) as ctx:
+            self._run(subprocess.TimeoutExpired("ffmpeg", 600))
+        self.assertIn("超时", str(ctx.exception))
+        self.assertIsInstance(ctx.exception.__cause__, subprocess.TimeoutExpired)
+
+
+class YtdlpRetryFileNotFoundTest(unittest.TestCase):
+    """ytdlp_retry 对 FileNotFoundError 立即抛出，不做指数退避空等（#125 B7）。"""
+
+    def test_file_not_found_raises_immediately(self):
+        from app.downloaders.common import ytdlp_retry
+
+        exc = FileNotFoundError("yt-dlp 未安装或路径不存在")
+        with mock.patch("app.downloaders.common.time.sleep") as m_sleep:
+            with self.assertRaises(FileNotFoundError):
+                ytdlp_retry(mock.Mock(side_effect=exc), attempts=3, base_delay=1.5)
+        m_sleep.assert_not_called()  # 不是瞬时错误：一次也不退避
+
+    def test_connection_error_retries_then_raises(self):
+        from app.downloaders.common import ytdlp_retry
+
+        exc = ConnectionError("socket closed")
+        with mock.patch("app.downloaders.common.time.sleep"):
+            with self.assertRaises(ConnectionError):
+                ytdlp_retry(mock.Mock(side_effect=exc), attempts=3, base_delay=0.1)
+
+
+class YoutubeSubtitleSessionTest(unittest.TestCase):
+    """代理 Session 显式 close（#125 B16）：不再把连接池泄漏到 GC。"""
+
+    def _fetch_with_proxy(self):
+        from app.downloaders.youtube_subtitle import YouTubeSubtitleFetcher
+
+        with mock.patch(
+            "app.downloaders.youtube_subtitle.ProxyConfigManager"
+        ) as m_pcm:
+            m_pcm.return_value.get_proxy_url.return_value = "http://127.0.0.1:7890"
+            # import requests 在 __init__ 内部（局部 import），模块顶层无 requests
+            # 符号 → patch 全局 requests.Session
+            with mock.patch("requests.Session") as m_sess:
+                return YouTubeSubtitleFetcher(), m_sess
+
+    def test_proxy_session_created_and_closeable(self):
+        fetcher, m_sess = self._fetch_with_proxy()
+        session = m_sess.return_value
+        session.proxies = {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+        fetcher.close()
+        session.close.assert_called_once()
+
+    def test_close_idempotent_and_gc_safe(self):
+        fetcher, _ = self._fetch_with_proxy()
+        fetcher.close()
+        fetcher.close()  # 二次 close 不崩
+        del fetcher  # __del__ 兜底不崩
+
+    def test_no_proxy_no_session(self):
+        from app.downloaders.youtube_subtitle import YouTubeSubtitleFetcher
+
+        with mock.patch(
+            "app.downloaders.youtube_subtitle.ProxyConfigManager"
+        ) as m_pcm:
+            m_pcm.return_value.get_proxy_url.return_value = None
+            fetcher = YouTubeSubtitleFetcher()
+            fetcher.close()  # 无 session 时 close 是 no-op
+            self.assertFalse(hasattr(fetcher, "_session"))
 
 
 if __name__ == "__main__":

@@ -27,12 +27,31 @@ class YouTubeSubtitleFetcher:
                 session = requests.Session()
                 session.proxies = {"http": proxy, "https": proxy}
                 self._api = YouTubeTranscriptApi(http_client=session)
+                # 保留引用以便显式 close：Session 不 close 会泄漏连接池条目
+                # 直到 GC，且 youtube-transcript-api 不会替我们释放（#125 B16）
+                self._session = session
                 logger.info(f"YouTube 字幕走代理: {proxy}")
             except Exception as e:
                 logger.warning(f"为 youtube-transcript-api 注入代理失败，回退无代理: {e}")
                 self._api = YouTubeTranscriptApi()
         else:
             self._api = YouTubeTranscriptApi()
+
+    def close(self) -> None:
+        """显式释放代理 Session（连接池/打开 fd）。"""
+        session = getattr(self, "_session", None)
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+            self._session = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def fetch_subtitles(
         self,
