@@ -13,7 +13,6 @@ import os
 import shutil
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -51,42 +50,6 @@ class FunASRDeviceTest(unittest.TestCase):
         tr = FunASRTranscriber()
         self.assertTrue(callable(tr.close))
         tr.close()  # 不崩
-
-
-# ---------------- B2：WhisperModelRegistry 无锁 RMW ----------------
-
-class WhisperRegistryConcurrencyTest(unittest.TestCase):
-    """#127 B2：add_custom_model 并发 RMW 不互抹（同 cookie_manager #124 B15）。"""
-
-    def test_concurrent_adds_preserve_both(self):
-        from app.transcriber import whisper_models
-
-        cfg_dir = tempfile.mkdtemp(prefix="vn_whisper_")
-        try:
-            reg = whisper_models.WhisperModelRegistry(filepath=str(Path(cfg_dir) / "whisper_models.json"))
-            errors = []
-
-            def add(name: str):
-                try:
-                    for _ in range(15):
-                        reg.add_custom_model(name, f"org/{name}")
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(exc)
-
-            t1 = threading.Thread(target=add, args=("m1",))
-            t2 = threading.Thread(target=add, args=("m2",))
-            t1.start()
-            t2.start()
-            t1.join(timeout=30)
-            t2.join(timeout=30)
-
-            self.assertFalse(errors)
-            data = reg.get_custom_models()
-            # 无锁时后写者覆盖先写者，两个模型必丢一个
-            self.assertIn("m1", data)
-            self.assertIn("m2", data)
-        finally:
-            shutil.rmtree(cfg_dir, ignore_errors=True)
 
 
 # ---------------- B3：whisper 家族 close() ----------------

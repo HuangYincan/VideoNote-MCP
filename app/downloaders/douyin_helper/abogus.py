@@ -404,13 +404,6 @@ class ABogus:
         raise ValueError
 
     @staticmethod
-    def convert_to_char_code(a):
-        d = []
-        for i in a:
-            d.append(ord(i))
-        return d
-
-    @staticmethod
     def split_array(arr, chunk_size=64):
         result = []
         for i in range(0, len(arr), chunk_size):
@@ -447,30 +440,7 @@ class ABogus:
         return self.reg_to_array(self.reg)
 
     @classmethod
-    def generate_result_unit(cls, n, s):
-        r = ""
-        for i, j in zip(range(18, -1, -6), (16515072, 258048, 4032, 63)):
-            r += cls.__str[s][(n & j) >> i]
-        return r
-
-    @classmethod
-    def generate_result_end(cls, s, e="s4"):
-        r = ""
-        b = ord(s[120]) << 16
-        r += cls.__str[e][(b & 16515072) >> 18]
-        r += cls.__str[e][(b & 258048) >> 12]
-        r += "=="
-        return r
-
-    @classmethod
     def generate_result(cls, s, e="s4"):
-        # r = ""
-        # for i in range(len(s)//4):
-        #     b = ((ord(s[i * 3]) << 16) | (ord(s[i * 3 + 1]))
-        #          << 8) | ord(s[i * 3 + 2])
-        #     r += cls.generate_result_unit(b, e)
-        # return r
-
         r = []
 
         for i in range(0, len(s), 3):
@@ -497,19 +467,6 @@ class ABogus:
 
         r.append("=" * ((4 - len(r) % 4) % 4))
         return "".join(r)
-
-    @classmethod
-    def generate_args_code(cls):
-        a = []
-        for j in range(24, -1, -8):
-            a.append(cls.__arguments[0] >> j)
-        a.append(cls.__arguments[1] / 256)
-        a.append(cls.__arguments[1] % 256)
-        a.append(cls.__arguments[1] >> 24)
-        a.append(cls.__arguments[1] >> 16)
-        for j in range(24, -1, -8):
-            a.append(cls.__arguments[2] >> j)
-        return [int(i) & 255 for i in a]
 
     def generate_method_code(self, method: str = "GET") -> list[int]:
         return self.sm3_to_array(self.sm3_to_array(method + self.__end_string))
@@ -613,8 +570,6 @@ class ABogus:
         string_2 = self.generate_string_2(urlencode(url_params) if isinstance(
             url_params, dict) else url_params, method, start_time, end_time, )
         string = string_1 + string_2
-        # return self.generate_result(
-        #     string, "s4") + self.generate_result_end(string, "s4")
         return self.generate_result(string, "s4")
 
 

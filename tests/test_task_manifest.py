@@ -21,10 +21,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite:////tmp/videonote_pytest/video_not
 from app.utils.task_manifest import (  # noqa: E402
     cleanup_all_files,
     cleanup_task_files,
-    get_task_meta,
     get_task_paths,
     list_task_files,
-    record_task_meta,
     record_task_paths,
 )
 
@@ -89,7 +87,6 @@ class TaskManifestTest(unittest.TestCase):
                 task_dir / "result.json",
             ],
         )
-        record_task_meta(task_id, {"title": "测试笔记"})
         return task_dir
 
     # ---------- manifest 记录 / 读取 ----------
@@ -106,13 +103,6 @@ class TaskManifestTest(unittest.TestCase):
         self.assertIn(str(td / "c.json"), paths)
         # manifest 落在任务文件夹内
         self.assertTrue((td / "manifest.json").exists())
-
-    def test_record_meta_preserved(self):
-        tid = "meta01"
-        record_task_paths(tid, [str(self.note_dir / tid / "x.json")])
-        record_task_meta(tid, {"title": "标题A"})
-        record_task_paths(tid, [str(self.note_dir / tid / "y.json")])  # 再次记路径，meta 不丢
-        self.assertEqual(get_task_meta(tid).get("title"), "标题A")
 
     def test_get_task_paths_missing(self):
         self.assertEqual(get_task_paths("nope"), [])
@@ -135,8 +125,8 @@ class TaskManifestTest(unittest.TestCase):
         self.assertTrue(any("raw" == Path(s).name for s in info["existing"]))
         self.assertTrue(any(s.endswith("note.md") for s in info["existing"]))
         self.assertTrue(task_dir.exists())
-        # meta 透出
-        self.assertEqual(info["meta"].get("title"), "测试笔记")
+        # meta 透出（写端 record_task_meta 已删为死代码 #134，恒为空 dict 但字段保留）
+        self.assertEqual(info["meta"], {})
 
     # ---------- cleanup_note ----------
 

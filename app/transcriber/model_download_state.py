@@ -34,8 +34,8 @@ _errors: Dict[str, str] = {}
 def try_mark(key: str) -> bool:
     """原子「未在下载 → 标记为下载中」；返回 True 表示本调用赢得下载权。
 
-    is_downloading + mark_downloading 的两步检查有跨线程竞态（调用线程之间），
-    MCP 端应改用本原语（#124 A7）。
+    旧 is_downloading + mark_downloading 两步检查有跨线程竞态（调用线程之间），
+    MCP 端统一用本原语（#124 A7）。
     """
     with _lock:
         if _status.get(key) == DOWNLOADING:
@@ -43,12 +43,6 @@ def try_mark(key: str) -> bool:
         _status[key] = DOWNLOADING
         _errors.pop(key, None)  # 重新开始下载，清掉上一次的失败原因
         return True
-
-
-def mark_downloading(key: str) -> None:
-    with _lock:
-        _status[key] = DOWNLOADING
-        _errors.pop(key, None)  # 重新开始下载，清掉上一次的失败原因
 
 
 def mark_done(key: str) -> None:
@@ -78,11 +72,6 @@ def downloading_keys() -> list:
     """当前所有正在下载的 key（#123 A1：cleanup include_models 前要查这个，防删模型目录打断下载）。"""
     with _lock:
         return [k for k, st in _status.items() if st == DOWNLOADING]
-
-
-def get_error(key: str) -> Optional[str]:
-    with _lock:
-        return _errors.get(key)
 
 
 def status_row(name: str, downloaded: bool, key: Optional[str] = None) -> dict:

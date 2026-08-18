@@ -1,4 +1,5 @@
 """app 层静默降级加固（docs/05 #106 扫描 2/3/7 号）：模型名解析、分块时长探测、播放列表坏条目。"""
+import json
 import sys
 import tempfile
 import unittest
@@ -113,32 +114,34 @@ class InspectPlaylistBadEntryTest(unittest.TestCase):
         self.assertIn("无可用条目", out["error"])
 
 
-class WhisperModelsAtomicWriteTest(unittest.TestCase):
-    """自定义 whisper 模型配置原子写（#123 B6）：直接 write_text 中断会留下截断 JSON。
+class WhisperCustomJsonReadTest(unittest.TestCase):
+    """自定义 whisper 模型走手工编辑 JSON 的读路径（#134：写 API 已删为死代码）。
 
-    tmp + replace 原子写：无 .tmp 残留、写后可读、内容正确。
+    resolve / visible_model_names 仍读 config/whisper_models.json 的自定义登记
+    （手工编辑即可生效）；坏 JSON 按空处理不静默崩。
     """
 
-    def test_add_custom_atomic_write_no_tmp_leftover(self):
+    def test_handwritten_custom_json_honored_by_resolve(self):
         from app.transcriber.whisper_models import WhisperModelRegistry
 
         with tempfile.TemporaryDirectory() as td:
-            reg = WhisperModelRegistry(filepath=str(Path(td) / "whisper_models.json"))
-            reg.add_custom_model("my-model", "local/models/ct2")
-            self.assertFalse(Path(td, "whisper_models.json.tmp").exists())  # 无半成品残留
-            data = reg.get_custom_models()
-            self.assertEqual(data, {"my-model": "local/models/ct2"})
-            self.assertEqual(reg.resolve("my-model"), "local/models/ct2")  # 写后立即可用
+            cfg = Path(td) / "whisper_models.json"
+            cfg.write_text(json.dumps({"my-model": "local/models/ct2"}), encoding="utf-8")
+            reg = WhisperModelRegistry(filepath=str(cfg))
+            self.assertEqual(reg.resolve("my-model"), "local/models/ct2")
+            self.assertIn("my-model", reg.visible_model_names())
 
-    def test_remove_custom_atomic(self):
+    def test_bad_custom_json_falls_back_to_empty(self):
         from app.transcriber.whisper_models import WhisperModelRegistry
 
         with tempfile.TemporaryDirectory() as td:
-            reg = WhisperModelRegistry(filepath=str(Path(td) / "whisper_models.json"))
-            reg.add_custom_model("m1", "repo/x")
-            reg.remove_custom_model("m1")
-            self.assertEqual(reg.get_custom_models(), {})
-            self.assertFalse(Path(td, "whisper_models.json.tmp").exists())
+            cfg = Path(td) / "whisper_models.json"
+            cfg.write_text("{broken", encoding="utf-8")
+            reg = WhisperModelRegistry(filepath=str(cfg))
+            with self.assertLogs("app.transcriber.whisper_models", level="WARNING"):
+                self.assertNotIn("whatever", reg.visible_model_names())
+            # resolve 不受坏自定义 JSON 影响（回到内置档）
+            self.assertTrue(reg.resolve("small").startswith("Systran/"))
 
 
 if __name__ == "__main__":

@@ -19,9 +19,9 @@
 | `app/db/` | engine, init_db, provider_dao, model_dao, video_task_dao + `app/db/models/`（models, providers, video_tasks）（sqlite_client **已删除** 2026-08-17：全仓零引用 + CWD 相对 DB 路径死引信） |
 | `app/models/` | audio_model, gpt_model, model_config, notes_model, transcriber_model（provide_model / video_record **已删除** 2026-08-17 #132 C10：全库零引用死模块） |
 | `app/enmus/` | exception, note_enums, task_status_enums |
-| `app/exceptions/` | biz_exception, note, provider, **task**（**不含** exception_handlers —— 仅 FastAPI 用） |
+| `app/exceptions/` | note, provider, **task**（biz_exception **已删除** 2026-08-18 #134：全仓零引用死类；**不含** exception_handlers —— 仅 FastAPI 用） |
 | `app/decorators/` | timeit |
-| `app/validators/` | video_url_validator |
+| `app/validators/` | **整个子包已删除**（2026-08-18 #134：video_url_validator 全仓零引用死模块，上游同步时勿重引入） |
 | `app/services/` | note, constant, provider, cookie_manager, transcriber_config_manager, proxy_config_manager, **pipeline**, **merge**, **diarization**, **note_cache**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用；**task_serial_executor 已删** —— 2026-08-17 全仓零引用死模块，MCP 用自己的线程池） |
 | `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, logger, path_helper, url_parser, openai_client, env_checker, **task_manifest**, **json_store**, **url_safety** + **本仓库新增** `model_status.py`（见下）（status_code **已删除** 2026-08-17 #132 C10：全库零引用死模块；**不含** response / export / ppt_generator / minio_client） |
 | `videonote_mcp/export/` | SRT/VTT/JSON 确定性导出（不在上游 `utils/export.py`） |

@@ -13,7 +13,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from pydantic import HttpUrl
 
-from app.db.video_task_dao import delete_task_by_video, insert_video_task
+from app.db.video_task_dao import insert_video_task
 from app.downloaders.base import Downloader
 from app.enmus.exception import NoteErrorEnum, ProviderErrorEnum
 from app.enmus.note_enums import DownloadQuality
@@ -505,17 +505,6 @@ class NoteGenerator:
             return None
 
     @staticmethod
-    def delete_note(video_id: str, platform: str) -> int:
-        """
-        删除数据库中对应 video_id 与 platform 的任务记录
-
-        :param video_id: 视频 ID
-        :param platform: 平台标识
-        :return: 删除的记录数
-        """
-        logger.info(f"删除笔记记录 (video_id={video_id}, platform={platform})")
-        return delete_task_by_video(video_id, platform)
-
     # ---------------- 私有方法 ----------------
 
     def _init_transcriber(self) -> Transcriber:

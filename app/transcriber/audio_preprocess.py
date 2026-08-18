@@ -118,23 +118,6 @@ def denoise(wav_path: str) -> str:
         return wav_path
 
 
-def preprocess_pipeline(
-    input_path: Union[str, Path],
-    max_seconds: int = 1800,
-    enable_denoise: bool = False,
-    work_dir: Optional[Union[str, Path]] = None,
-) -> List[str]:
-    """一次性预处理：归一 → （可选降噪）→ 超长分块。
-
-    返回可直接喂给转写引擎的音频文件路径列表（≤ max_seconds 时单元素）。
-    归一后文件落在 work_dir（缺省输入同目录）；分块在归一文件旁。
-    """
-    wav = normalize_to_wav(input_path, out_dir=work_dir)
-    if enable_denoise:
-        wav = denoise(wav)
-    return chunk_if_long(wav, max_seconds=max_seconds, out_dir=work_dir)
-
-
 def cleanup_preprocess_files(wav_path: str) -> None:
     """清理预处理产生的临时文件（`<名>_16k.wav` / `_part_*.wav` / `_denoised.wav`）。
 

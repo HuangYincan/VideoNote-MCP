@@ -50,8 +50,8 @@ def probe_chat(
 ) -> dict:
     """最小 chat 请求探测（/v1/models 不可用时的兜底）。
 
-    与 app/gpt/provider/OpenAI_compatible_provider.py 的 test_connection 同款
-    请求，但返回错误文本便于展示。返回 {"ok": bool, "error": str | None}。
+    与 app/gpt 的 OpenAICompatibleProvider 同款请求（其 test_connection 已删为
+    死代码 #134，本函数是唯一 probe 路径），但返回错误文本便于展示。返回 {"ok": bool, "error": str | None}。
     """
     try:
         client = build_openai_client(

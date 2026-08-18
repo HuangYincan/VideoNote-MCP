@@ -676,3 +676,12 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **测试基建修复**：test_url_safety 类名非 Test 前缀从未被 pytest 收集——#132 A1 的 21 个 SSRF 回归测试实际从未执行，重命名后 36 用例进套件。
 - **C1 依赖修正**：FastMCP 由 mcp 包自带（mcp.server.fastmcp），直接依赖从未被 import 的独立 fastmcp 包 → 改声明 `mcp>=1.29.0`，lock -500 行；**C2 VENDOR.md 分叉清单同步**；**C3 action-gh-release v2→v3**。
 - **743 passed + ruff F/I-clean**（691 → +52：+14 契约/批量 + 36 收集修复 + 2 batch）。
+
+## Wave G 批 23（2026-08-18 · 死代码清理专项 #134，743→741 tests）
+
+用户确认清理后的专项轮（承接批 22 审计结论）。
+
+- **删除 2 个死模块**：`app/validators/` 整包（video_url_validator 全仓零引用）、`app/exceptions/biz_exception.py`（零引用死类）。
+- **删除 ~15 个死函数**：whisper_models 自定义模型写 API ×6（读端保留，写端改手工编辑 `config/whisper_models.json`）、delete_note + delete_task_by_video 链、bilibili delete_video、get_all_models、get_enabled_providers、mark_downloading/get_error、preprocess_pipeline、get_app_dir、apply_to_env、OpenAI provider test_connection、abogus 4 个生成辅助、record_task_meta。
+- **工具冗余结论**：无实质冗余（wait_for_note = deprecated compat、_stage_label = micro-tool），**39 工具名单不变**。
+- **741 passed + ruff F/I-clean**（743 − 2：删 WhisperRegistryConcurrencyTest + test_record_meta_preserved；WhisperModelsAtomicWriteTest 重写为 WhisperCustomJsonReadTest 2→2 净 0）。

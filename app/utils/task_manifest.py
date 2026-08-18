@@ -129,27 +129,12 @@ def get_task_paths(task_id: str) -> List[str]:
     return list(_read_manifest(task_id).get("paths", []))
 
 
-def record_task_meta(task_id: str, meta: dict) -> None:
-    """把任务语义元数据（title/summary 等）合并进 manifest 的 meta 键。
-
-    与 record_task_paths 同文件（保留 paths），供 get_task_files 展示。
-    """
-    if not task_id or not meta:
-        return
-    try:
-        data = _read_manifest(task_id)
-        data["meta"] = {**data.get("meta", {}), **meta}
-        f = manifest_path(task_id)
-        f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(f)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("记录 task meta 失败 task_id=%s: %s", task_id, e)
-
-
 def get_task_meta(task_id: str) -> dict:
-    """读 manifest 的 meta 键；不存在返回 {}。"""
+    """读 manifest 的 meta 键（get_task_files 响应契约字段）；不存在返回 {}。
+
+    写端 record_task_meta 已删（#134 死代码）——生产不再写 meta，此读函数
+    保留仅为 list_task_files 的响应形状稳定。
+    """
     return dict(_read_manifest(task_id).get("meta", {}))
 
 

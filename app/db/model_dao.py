@@ -1,6 +1,5 @@
 from app.db.engine import get_db
 from app.db.models.models import Model
-from app.db.models.providers import Provider
 
 
 def get_model_by_provider_and_name(provider_id: int, model_name: str):
@@ -52,18 +51,5 @@ def delete_model(model_id: int):
         if model:
             db.delete(model)
             db.commit()
-    finally:
-        db.close()
-
-
-def get_all_models():
-    db = next(get_db())
-    try:
-        # 只查询启用状态供应商的模型
-        models = db.query(Model).join(Provider, Model.provider_id == Provider.id).filter(Provider.enabled == 1).all()
-        return [
-            {"id": m.id, "provider_id": m.provider_id, "model_name": m.model_name}
-            for m in models
-        ]
     finally:
         db.close()

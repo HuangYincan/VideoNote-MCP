@@ -189,16 +189,6 @@ class BilibiliDownloader(Downloader, ABC):
 
         return video_path
 
-    def delete_video(self, video_path: str) -> str:
-        """
-        删除视频文件
-        """
-        if os.path.exists(video_path):
-            os.remove(video_path)
-            return f"视频文件已删除: {video_path}"
-        else:
-            return f"视频文件未找到: {video_path}"
-
     def download_subtitles(self, video_url: str, output_dir: str = None,
                            langs: List[str] = None) -> Optional[TranscriptResult]:
         """

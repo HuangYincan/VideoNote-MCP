@@ -71,14 +71,6 @@ def insert_provider(id: str, name: str, api_key: str, base_url: str, logo: str, 
         db.close()
 
 
-def get_enabled_providers():
-    db = next(get_db())
-    try:
-        return db.query(Provider).filter_by(enabled=1).all()
-    finally:
-        db.close()
-
-
 def get_provider_by_name(name: str):
     db = next(get_db())
     try:
