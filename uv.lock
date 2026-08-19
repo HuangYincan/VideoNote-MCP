@@ -4021,7 +4021,7 @@ wheels = [
 
 [[package]]
 name = "videonote"
-version = "0.1.7"
+version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -4078,7 +4078,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "huggingface-hub", specifier = ">=0.30.0" },
     { name = "inquirerpy", specifier = ">=0.3.4" },
-    { name = "mcp", specifier = ">=1.29.0" },
+    { name = "mcp", specifier = ">=1.29.0,<2" },
     { name = "mlx-whisper", marker = "extra == 'mlx'" },
     { name = "noisereduce", marker = "extra == 'preprocess'" },
     { name = "openai", specifier = ">=1.70.0" },

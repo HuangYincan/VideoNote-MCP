@@ -1,6 +1,6 @@
 [project]
 name = "videonote"
-version = "0.1.7"
+version = "0.1.8"
 description = "VideoNote 能力 MCP 封装：视频链接 → AI Markdown 笔记（内嵌下载/转写/LLM 流水线，无需启动 FastAPI 后端）"
 readme = "README.md"
 # 上界 3.14：faster-whisper(ctranslate2) 等目前尚未提供 3.14 wheel
@@ -13,9 +13,9 @@ authors = [{ name = "HuangYincan" }]
 # （weasyprint/pdfkit/python-docx/markdown_pdf/PyMuPDF）、gmssl/pycryptodomex/bs4/lxml（下载器未用）。
 dependencies = [
     # MCP SDK：FastMCP 是 mcp 包自带的 mcp.server.fastmcp 子模块（#133 C1）。
-    # 曾误声明独立 fastmcp 包（3.4.x）——全仓零 import，uvx 安装不读 lock 时
-    # 若其放开 mcp 上界/移除 server.fastmcp 会直接挂；改为直接声明实际使用的 mcp。
-    "mcp>=1.29.0",
+    # 曾误声明独立 fastmcp 包（3.4.x）；后 mcp 2.0 移除 server.fastmcp（2026-08-19
+    # 实测 v0.1.7 事故）——uvx 安装不读 lock 解析最新会拿到 2.x 启动即崩，锁 <2。
+    "mcp>=1.29.0,<2",
     "yt-dlp>=2025.3.31",
     "openai>=1.70.0",
     "faster-whisper>=1.1.1",
