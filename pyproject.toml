@@ -3,7 +3,7 @@ name = "videonote-mcp"
 version = "0.1.5"
 description = "VideoNote 能力 MCP 封装：视频链接 → AI Markdown 笔记（内嵌下载/转写/LLM 流水线，无需启动 FastAPI 后端）"
 readme = "README.md"
-# 上界 3.14：av / faster-whisper(ctranslate2) 等目前尚未提供 3.14 wheel
+# 上界 3.14：faster-whisper(ctranslate2) 等目前尚未提供 3.14 wheel
 requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "HuangYincan" }]
@@ -12,22 +12,24 @@ authors = [{ name = "HuangYincan" }]
 # 已去掉：FastAPI/uvicorn/starlette、chromadb（无 RAG）、celery/kombu/redis、导出栈
 # （weasyprint/pdfkit/python-docx/markdown_pdf/PyMuPDF）、gmssl/pycryptodomex/bs4/lxml（下载器未用）。
 dependencies = [
-    "fastmcp>=2.0",
-    # 转写完成事件（events/，blinker 信号）
-    "blinker>=1.9.0",
+    # MCP SDK：FastMCP 是 mcp 包自带的 mcp.server.fastmcp 子模块（#133 C1）。
+    # 曾误声明独立 fastmcp 包（3.4.x）——全仓零 import，uvx 安装不读 lock 时
+    # 若其放开 mcp 上界/移除 server.fastmcp 会直接挂；改为直接声明实际使用的 mcp。
+    "mcp>=1.29.0",
     "yt-dlp>=2025.3.31",
     "openai>=1.70.0",
     "faster-whisper>=1.1.1",
     "ffmpeg-python>=0.2.0",
     "huggingface_hub>=0.30.0",
     "httpx>=0.28.1",
-    "av>=14.2.0",
     "pillow>=11.0.0",
     "pydantic>=2.11.2",
     "python-dotenv>=1.1.0",
     "requests>=2.32.3",
     "SQLAlchemy>=2.0.41",
     "youtube-transcript-api>=1.0.0",
+    # 敏感信息机器级加密（docs/05 #29：providers.api_key / app_config hf_token 落盘加密）
+    "cryptography>=42.0.0",
     # 抖音 ABogus 签名（douyin_helper/abogus.py）
     "gmssl>=3.2.2",
     # 交互式 setup 向导（方向键选择/高亮；无则回退纯文本提示）
@@ -45,8 +47,10 @@ preprocess = ["noisereduce", "scipy"]
 diarization = ["pyannote.audio>=3.1", "torch", "torchaudio"]
 # 中文转写（可选，重依赖：torch + funasr，Paraformer-zh + VAD + 标点）
 funasr = ["funasr", "torch"]
-# 本地 / CI 单测（CI 用 `uv run --with pytest`，不必进 lock）
-dev = ["pytest>=8"]
+
+[dependency-groups]
+# 本地 / CI 单测与 lint（uv sync 默认装 dev group；ruff 版本随 lock 固定）
+dev = ["pytest>=8", "ruff>=0.9"]
 
 [project.scripts]
 videonote = "videonote_mcp.cli:main"
@@ -60,5 +64,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # 用显式 glob 而非 packages：hatchling 的 packages 递归会漏掉 vendored 的深层子包
-# （如 app/db/models），glob 确保 app/、events/、videonote_mcp/ 全部被打进 wheel
-include = ["videonote_mcp/**", "app/**", "events/**"]
+# （如 app/db/models），glob 确保 app/、videonote_mcp/ 全部被打进 wheel
+# skills/** 与 release.yml 的 wheel 内容门禁对齐（wheel 自包含 Skill 资产）
+include = ["videonote_mcp/**", "app/**", "skills/**"]

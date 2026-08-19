@@ -9,7 +9,7 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 
 ## 0. 前置：确认 MCP 工具已挂载（最重要，不满足则停下）
 
-**本命令的一切配置操作都依赖 videonote 的 MCP 工具**（`health_check` / `list_providers` / `get_transcriber_config` 等，工具名可能带前缀如 `mcp__videonote__*` 或 `mcp__plugin_videonote_videonote__*`，**按工具名判断，不按前缀**）。
+**本命令的一切配置操作都依赖 videonote 的 MCP 工具**（`health_check` / `get_config` 等，工具名可能带前缀如 `mcp__videonote__*` 或 `mcp__plugin_videonote_videonote__*`，**按工具名判断，不按前缀**）。
 先确认本会话里是否挂载了它们。**不要用 CLI / 读配置文件代替 MCP 工具**，也不要自行判断「哪份配置权威」——server 返回的 `data_dir` 才是权威（不要像 diff 数据目录那样去猜）。
 
 - **已挂载** → 继续第 1 步。
@@ -28,7 +28,7 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 
 ## 2. LLM 供应商（API key）
 
-调用 **`list_providers`**，列出已配置供应商（id / 名称 / key 是否已填）。
+调用 **`get_config()`**，看 `providers` 列表（id / 名称 / key 掩码）与 `app_config.default_provider_id`。
 - 已有供应商填了 key → 跳过本步。
 - 没有已填 key 的供应商 → **让用户在本会话输入**：
   `! videonote providers list`（看供应商 id）
@@ -38,15 +38,15 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 
 ## 3. 语音转写引擎
 
-调用 **`get_transcriber_config`**，看当前引擎 / 模型尺寸 / 预处理 / 说话人分离。
-- 本地引擎（fast-whisper / mlx-whisper）模型未下载 → 调 **`download_transcriber_model(model_size, transcriber_type)`** 后台下载，用 `list_transcriber_models` 查进度；或让用户输 `! videonote transcriber download <size>`。
-- 要切换引擎 / 尺寸 → 调 **`set_transcriber(...)`**（fast-whisper / groq / bcut / kuaishou / mlx-whisper）。
+调用 **`get_config()`**，看 `transcriber` 段（引擎 / 模型尺寸 / 预处理 / 说话人分离 / 就绪状态）。
+- 本地引擎（fast-whisper / mlx-whisper）模型未下载 → 让用户输 `! videonote transcriber download <size>`。
+- 要切换引擎 / 尺寸 → 让用户输 `! videonote transcriber set --engine fast-whisper|groq|bcut|kuaishou|mlx-whisper|funasr [--size <size>]`。
 - 云端引擎（groq / bcut / kuaishou）无需下载模型。
 
 ## 4. 默认值
 
-展示当前笔记默认值：**Read** `{health_check 返回的 data_dir}/config/app_config.json`
-（含风格 / 插图 / 视频理解 / 评论弹幕 / 导出格式 / 默认模型）。
+展示当前笔记默认值：`get_config()` 的 `app_config` 段（含风格 / 插图 / 视频理解 / 评论弹幕 /
+导出格式 / 默认模型；已过滤敏感字段，不要直接 Read 原始 app_config.json，见 #125 C10）。
 - 安装时 `/plugin` 的 userConfig 已收过默认值，这里主要是**展示确认**。
 - 要修改 → 让用户输 `! videonote setup`（全屏向导，独立终端更稳），或编辑该 JSON。
 
@@ -60,8 +60,8 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 ## 6. 数据管理（可选）
 
 - **`list_tasks`** 列全部任务（按语义标题识别）。
-- 清理单任务：**`get_task_files(task_id)`** 先看占用的文件 → **`cleanup_note(task_id, include_note?)`**。
-- 全局清理：**`cleanup_all(include_config?, include_models?)`**（默认保留配置与模型）。
+- 清理单任务：**`cleanup_note(task_id, include_note?, dry_run=True)`** 先看占用的文件 → `dry_run=False` 再删。
+- 全局清理：**`cleanup_all(dry_run=True)`** 先预览 → 确认后 `cleanup_all(include_config?, include_models?)`（默认保留配置与模型）。
 
 ---
 

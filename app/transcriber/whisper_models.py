@@ -8,8 +8,9 @@
 本模块把映射**显式化 + 可配置**（对齐 mlx_whisper_transcriber.MLX_MODEL_MAP 的模式）：
   - 内置：size → faster-whisper 兼容的 CT2 repo_id（多数为 Systran/faster-whisper-{size}；
     turbo 用社区维护版，见 BUILTIN_WHISPER_MODELS）
-  - 自定义：用户在 config/whisper_models.json 登记 {名称: "<repo_id 或本地路径>"}
-    （JSON 持久化；Docker 下随 config 卷持久化）
+  - 自定义：在 config/whisper_models.json 手工登记 {名称: "<repo_id 或本地路径>"}
+    （写 API 曾为 add/remove_custom_model，#134 清理为死代码删除——产品侧已无登记入口，
+    手工编辑 JSON 即可；resolve/visible 读路径保留）
 
 解析优先级（resolve）：自定义 > 内置 > 直通（含 "/" 当 repo_id；已存在目录当本地路径）。
 加载 / 下载 / 完整性检测三处统一调用 resolve，路径不再各写各的。
@@ -72,7 +73,7 @@ class WhisperModelRegistry:
         self.path = Path(filepath)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    # ---- 持久化 ----
+    # ---- 持久化（只读；写入 = 手工编辑 JSON，产品侧已无登记入口，#134） ----
     def _read_custom(self) -> Dict[str, str]:
         if not self.path.exists():
             return {}
@@ -90,14 +91,7 @@ class WhisperModelRegistry:
                 out[name] = val["target"].strip()
         return out
 
-    def _write_custom(self, data: Dict[str, str]) -> None:
-        with self.path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
     # ---- 查询 ----
-    def get_custom_models(self) -> Dict[str, str]:
-        return self._read_custom()
-
     def visible_model_names(self) -> List[str]:
         """给前端下拉 / 下载状态用：默认可见内置档位 + 全部自定义名称。"""
         names = list(DEFAULT_VISIBLE_BUILTINS)
@@ -105,13 +99,6 @@ class WhisperModelRegistry:
             if name not in names:
                 names.append(name)
         return names
-
-    def is_known(self, name: str) -> bool:
-        try:
-            self.resolve(name)
-            return True
-        except ValueError:
-            return False
 
     def resolve(self, name: str) -> str:
         """模型名 → 可加载标识（HF repo_id 或本地路径）。
@@ -130,27 +117,8 @@ class WhisperModelRegistry:
             return name
         raise ValueError(
             f"未知 whisper 模型 '{name}'。内置可选: {', '.join(BUILTIN_WHISPER_MODELS)}；"
-            "或在「音频转写配置」添加自定义模型（HF repo_id 或本地路径）。"
+            "或在 config/whisper_models.json 手工登记自定义模型（HF repo_id 或本地路径）。"
         )
-
-    # ---- 增删 ----
-    def add_custom_model(self, name: str, target: str) -> Dict[str, str]:
-        name = (name or "").strip()
-        target = (target or "").strip()
-        if not name or not target:
-            raise ValueError("模型名称与目标（HF repo_id 或本地路径）都不能为空")
-        if name in BUILTIN_WHISPER_MODELS:
-            raise ValueError(f"'{name}' 与内置模型重名，请换一个名称")
-        data = self._read_custom()
-        data[name] = target
-        self._write_custom(data)
-        return data
-
-    def remove_custom_model(self, name: str) -> Dict[str, str]:
-        data = self._read_custom()
-        data.pop((name or "").strip(), None)
-        self._write_custom(data)
-        return data
 
 
 # 模块级单例

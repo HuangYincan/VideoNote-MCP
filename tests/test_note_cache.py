@@ -25,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import videonote_mcp.server as server  # noqa: F401 —— 触发 setup_environment，隔离数据目录
 from app.models.audio_model import AudioDownloadResult
 from app.services import note_cache
-from app.services.note import NOTE_OUTPUT_DIR, NoteGenerator, pipeline as note_pipeline
+from app.services.note import NOTE_OUTPUT_DIR, NoteGenerator
+from app.services.note import pipeline as note_pipeline
 from app.services.transcriber_config_manager import TranscriberConfigManager
 
 
@@ -95,7 +96,7 @@ class IdentityTest(unittest.TestCase):
         self.assertIsNone(note_cache.derive_video_id("https://example.com/x", "generic"))
 
     def test_engine_key_local_pins_size_cloud_does_not(self):
-        self.assertEqual(note_cache.engine_key("fast-whisper", "small"), "fast-whisper:small")
+        self.assertEqual(note_cache.engine_key("fast-whisper", "small"), "fast-whisper-small")
         self.assertEqual(note_cache.engine_key("fast-whisper", ""), "fast-whisper")
         self.assertEqual(note_cache.engine_key("groq", "small"), "groq")
         self.assertEqual(note_cache.engine_key("funasr", ""), "funasr")
@@ -124,7 +125,7 @@ class CacheRoundTripTest(unittest.TestCase):
         self.assertFalse(dest.exists())
 
     def test_hit_copies_to_dest(self):
-        _cache_entry("youtube:abcDEF12345", "fast-whisper:small",
+        _cache_entry("youtube-abcDEF12345", "fast-whisper-small",
                      '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
         dest = self._dest("t2")
         src = note_cache.lookup_transcript(
@@ -134,7 +135,7 @@ class CacheRoundTripTest(unittest.TestCase):
         self.assertEqual(json.loads(dest.read_text(encoding="utf-8"))["full_text"], "hi")
 
     def test_engine_change_misses_but_subtitle_is_bonus(self):
-        _cache_entry("youtube:abcDEF12345", "fast-whisper:small",
+        _cache_entry("youtube-abcDEF12345", "fast-whisper-small",
                      '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
         dest = self._dest("t3")
         # 换引擎（funasr）→ 不命中 fast-whisper:small，避免误用旧引擎结果
@@ -144,7 +145,7 @@ class CacheRoundTripTest(unittest.TestCase):
             )
         )
         # 平台字幕键引擎无关：引擎键未命中后作为兜底
-        _cache_entry("youtube:abcDEF12345", note_cache.SUBTITLE_KEY,
+        _cache_entry("youtube-abcDEF12345", note_cache.SUBTITLE_KEY,
                      '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
         self.assertIsNotNone(
             note_cache.lookup_transcript(
@@ -160,7 +161,7 @@ class CacheRoundTripTest(unittest.TestCase):
         )
         note_cache.promote_transcript(
             "youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345",
-            "fast-whisper:small", src,
+            "fast-whisper-small", src,
         )
         dest = self._dest("t5")
         self.assertIsNotNone(
@@ -170,7 +171,7 @@ class CacheRoundTripTest(unittest.TestCase):
         )
 
     def test_bili_multi_p_identity_is_distinct(self):
-        _cache_entry("bilibili:BV1xx411c7mD:p2", note_cache.SUBTITLE_KEY, "{}")
+        _cache_entry("bilibili-BV1xx411c7mD-p2", note_cache.SUBTITLE_KEY, "{}")
         dest = self._dest("t6")
         # p=1 与 p=2 身份不同 → 不互相污染
         self.assertIsNone(
@@ -192,7 +193,7 @@ class CacheRoundTripTest(unittest.TestCase):
         )
         # 身份是单个冒号组件（platform:video_id），不是嵌套目录
         self.assertTrue(
-            (note_cache.cache_root() / "bilibili:BV1xx411c7mD:p2" / "transcript_subtitle.json").exists()
+            (note_cache.cache_root() / "bilibili-BV1xx411c7mD-p2" / "transcript_subtitle.json").exists()
         )
 
     def test_normalize_bili_video_id(self):
@@ -215,7 +216,7 @@ class CacheRoundTripTest(unittest.TestCase):
             note_cache.promote_media(
                 "youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345", str(src)
             )
-            media_dir = self.root / "youtube:abcDEF12345" / "media"
+            media_dir = self.root / "youtube-abcDEF12345" / "media"
             self.assertTrue((media_dir / "audio.mp3").exists())
             dest = NOTE_OUTPUT_DIR / "t10" / "raw"
             copied = note_cache.lookup_media("https://www.youtube.com/watch?v=abcDEF12345", "youtube", dest)
@@ -227,6 +228,62 @@ class CacheRoundTripTest(unittest.TestCase):
         dest = NOTE_OUTPUT_DIR / "t11" / "raw"
         self.assertIsNone(note_cache.lookup_media("https://www.youtube.com/watch?v=abcDEF12345", "youtube", dest))
 
+    def test_lookup_media_skips_tmp_leftover(self):
+        """media 目录混入 .tmp 残留（promote 原子替换之间进程被杀）时只复制真媒体（#123 B2）。"""
+        url = "https://www.youtube.com/watch?v=abcDEF12345"
+        with tempfile.TemporaryDirectory() as td:
+            ident = note_cache.identity_for(url, "youtube")
+            cache = note_cache.cache_root() / ident / "media"
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / "audio.mp3").write_bytes(b"real")
+            (cache / "audio.mp3.tmp").write_bytes(b"half")  # 半成品残留
+            (cache / "notes.txt").write_text("非媒体", encoding="utf-8")  # 非常见后缀
+            out = note_cache.lookup_media(url, "youtube", Path(td))
+            self.assertIsNotNone(out)
+            copied = Path(out)
+            self.assertEqual(copied.name, "audio.mp3")
+            self.assertEqual(copied.read_bytes(), b"real")
+
+    def test_lookup_media_tmp_only_misses(self):
+        """media 目录只有 .tmp 半成品 → miss（不把半截音频交给下游）。"""
+        url = "https://www.youtube.com/watch?v=abcDEF12345"
+        with tempfile.TemporaryDirectory() as td:
+            ident = note_cache.identity_for(url, "youtube")
+            cache = note_cache.cache_root() / ident / "media"
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / "audio.mp3.tmp").write_bytes(b"half")
+            out = note_cache.lookup_media(url, "youtube", Path(td))
+            self.assertIsNone(out)
+
+    def test_sha256_cached_single_computation_per_file_state(self):
+        """本地文件哈希按 (path, mtime, size) 缓存：同状态只算一次；文件修改后重算（#123 B4）。"""
+        from app.services.note_cache import _sha256_cached
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "video.mp4"
+            p.write_bytes(b"hello")
+            st = p.stat()
+            h1 = _sha256_cached(str(p), st.st_mtime_ns, st.st_size)
+            h2 = _sha256_cached(str(p), st.st_mtime_ns, st.st_size)  # 同 key → 缓存命中
+            self.assertEqual(h1, h2)
+            p.write_bytes(b"changed content!!")  # 内容变（size 变）→ 新 key
+            st2 = p.stat()
+            h3 = _sha256_cached(str(p), st2.st_mtime_ns, st2.st_size)
+            self.assertNotEqual(h1, h3)
+
+    def test_sha256_cached_backed_by_sha256_file(self):
+        """缓存内部仍走 _sha256_file（正确性同源），且同状态只调一次底层。"""
+        from app.services.note_cache import _sha256_cached
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "v.mp4"
+            p.write_bytes(b"data")
+            st = p.stat()
+            with mock.patch("app.services.note_cache._sha256_file", return_value="h") as m_hash:
+                _sha256_cached(str(p), st.st_mtime_ns, st.st_size)
+                _sha256_cached(str(p), st.st_mtime_ns, st.st_size)
+            m_hash.assert_called_once()  # 第二次命中缓存，不再算
+
     def test_promote_media_missing_src_noop(self):
         note_cache.promote_media("youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345", "/nonexistent.mp3")
         self.assertFalse(self.root.exists())
@@ -236,12 +293,12 @@ class CacheRoundTripTest(unittest.TestCase):
         src.write_text(json.dumps({"language": "zh", "full_text": "", "segments": []}), encoding="utf-8")
         note_cache.promote_transcript(
             "youtube", "https://www.youtube.com/watch?v=abcDEF12345", "abcDEF12345",
-            "fast-whisper:small", src,
+            "fast-whisper-small", src,
         )
-        self.assertFalse((self.root / "youtube:abcDEF12345").exists())
+        self.assertFalse((self.root / "youtube-abcDEF12345").exists())
 
     def test_empty_cached_transcript_not_hit(self):
-        _cache_entry("youtube:abcDEF12345", "fast-whisper:small",
+        _cache_entry("youtube-abcDEF12345", "fast-whisper-small",
                      json.dumps({"language": "zh", "full_text": "", "segments": []}))
         dest = self._dest("t13")
         self.assertIsNone(
@@ -273,7 +330,7 @@ class GenerateIntegrationTest(unittest.TestCase):
 
     def test_hit_skips_download_and_transcribe(self):
         key = _current_engine_key()
-        _cache_entry("youtube:abcDEF12345", key, json.dumps({
+        _cache_entry("youtube-abcDEF12345", key, json.dumps({
             "language": "zh", "full_text": "缓存转写",
             "segments": [{"start": 0, "end": 1, "text": "缓存转写"}],
         }, ensure_ascii=False))
@@ -302,21 +359,45 @@ class GenerateIntegrationTest(unittest.TestCase):
         }
         with mock.patch.object(gen, "_get_downloader", return_value=downloader):
             with mock.patch.object(gen, "_init_transcriber") as init_tr:
-                with mock.patch.object(note_pipeline, "fetch_subtitles", return_value=None):
-                    with mock.patch.object(note_pipeline, "transcribe_audio", return_value=transcript_dict):
-                        result = gen.generate(
-                            video_url=self.YT_URL, platform="youtube",
-                            task_id="cachemiss00001", material_only=True,
-                        )
+                # 无字幕视频：generate 主路径已试过 downloader.download_subtitles（None），
+                # _get_transcript 走 skip_subtitle=True → pipeline.fetch_subtitles 不得再调
+                # （重复 API 调用，#123 B1）
+                with mock.patch.object(
+                    note_pipeline, "fetch_subtitles",
+                    side_effect=AssertionError("不应重复调用字幕 API"),
+                ), mock.patch.object(note_pipeline, "transcribe_audio", return_value=transcript_dict):
+                    result = gen.generate(
+                        video_url=self.YT_URL, platform="youtube",
+                        task_id="cachemiss00001", material_only=True,
+                    )
         # miss → 完整下载 + 转写
         self.assertFalse(downloader.download.call_args.kwargs.get("skip_download"))
         init_tr.assert_called_once()
         self.assertEqual(result.transcript.full_text, "fresh")
         # promote 进缓存：再跑一次就能命中
         key = _current_engine_key()
-        entry = note_cache.cache_root() / "youtube:abcDEF12345" / f"transcript_{key}.json"
+        entry = note_cache.cache_root() / "youtube-abcDEF12345" / f"transcript_{key}.json"
         self.assertTrue(entry.exists())
         self.assertEqual(json.loads(entry.read_text(encoding="utf-8"))["full_text"], "fresh")
+
+    def test_get_transcript_skip_subtitle_avoids_second_fetch(self):
+        """_get_transcript(skip_subtitle=True) 直接走转写，不重复调 pipeline.fetch_subtitles。"""
+        from app.enmus.task_status_enums import TaskStatus
+
+        gen = self._gen()
+        downloader = mock.Mock()
+        with tempfile.TemporaryDirectory() as td:
+            cache_file = Path(td) / "transcript.json"
+            with mock.patch.object(
+                note_pipeline, "fetch_subtitles",
+                side_effect=AssertionError("skip_subtitle=True 时不应调字幕 API"),
+            ), mock.patch.object(gen, "_transcribe_audio", return_value=None) as m_tr:
+                out = gen._get_transcript(
+                    downloader, "https://example.com/v", "/no/audio", cache_file,
+                    TaskStatus.TRANSCRIBING, "t1", skip_subtitle=True,
+                )
+        self.assertIsNone(out)
+        m_tr.assert_called_once()
 
     def test_miss_promotes_media_and_hit_copies_audio(self):
         # run1 完整下载（真实音频文件）→ promote 出媒体缓存；run2 命中 → audio_path 指向
@@ -342,7 +423,7 @@ class GenerateIntegrationTest(unittest.TestCase):
                                 video_url=self.YT_URL, platform="youtube",
                                 task_id="media000001", material_only=True,
                             )
-            media_dir = self.cache / "youtube:abcDEF12345" / "media"
+            media_dir = self.cache / "youtube-abcDEF12345" / "media"
             self.assertTrue((media_dir / "abcDEF12345.mp3").exists())
 
             gen2 = self._gen()
@@ -357,6 +438,97 @@ class GenerateIntegrationTest(unittest.TestCase):
             self.assertTrue(Path(ap).exists(), f"audio_path 悬空: {ap}")
             self.assertIn("media000002", str(ap))
             self.assertEqual(Path(ap).read_bytes(), b"fake-mp3")
+
+
+class AtomicWriteGuardTest(unittest.TestCase):
+    """note.py 的缓存/笔记产物全部经原子写（#124 B13）：源级断言防回归。
+
+    转写缓存截断 → 下次任务重下+重转写（小时级成本）；note.md 截断 → 半残不可恢复。
+    不跑 generate 全流程，直接 AST 扫描源码：产物路径上不允许裸 .write_text。
+    """
+
+    def _note_src(self):
+        src = Path(__file__).resolve().parents[1] / "app" / "services" / "note.py"
+        return src.read_text(encoding="utf-8")
+
+    def test_no_bare_write_text_on_products(self):
+        import ast
+
+        tree = ast.parse(self._note_src())
+        writes = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr == "write_text" and isinstance(node.func.value, ast.Attribute):
+                    writes.append(node.lineno)
+        # 允许的例外：write_text 仅出现在 write_text_atomic 内部实现（app/utils/json_store.py）
+        self.assertEqual(writes, [], f"note.py 仍有裸 write_text: {writes}")
+
+    def test_atomic_helpers_imported_and_used(self):
+        src = self._note_src()
+        self.assertIn("from app.utils.json_store import write_json_atomic, write_text_atomic", src)
+        self.assertGreaterEqual(src.count("write_json_atomic("), 5)
+        self.assertGreaterEqual(src.count("write_text_atomic("), 3)
+
+
+class SingleResolveBilibiliTest(unittest.TestCase):
+    """b23.tv lookup 只解一次短链（#125 B6）：BV 与 p 都从真实 URL 提。"""
+
+    def test_derive_resolves_short_url_once(self):
+        from unittest import mock
+
+        from app.services.note_cache import derive_video_id
+
+        with mock.patch("app.utils.url_parser.resolve_bilibili_short_url") as m_resolve:
+            m_resolve.return_value = "https://www.bilibili.com/video/BV1vc411b7Wa?p=3"
+            ident = derive_video_id("https://b23.tv/abc123?p=3", "bilibili")
+        m_resolve.assert_called_once()
+        self.assertEqual(ident, "BV1vc411b7Wa:p3")
+
+    def test_non_short_url_no_resolve_call(self):
+        from unittest import mock
+
+        from app.services.note_cache import derive_video_id
+
+        with mock.patch("app.utils.url_parser.resolve_bilibili_short_url") as m_resolve:
+            ident = derive_video_id("https://www.bilibili.com/video/BV1vc411b7Wa", "bilibili")
+        m_resolve.assert_not_called()
+        self.assertEqual(ident, "BV1vc411b7Wa")
+
+
+class StatusFallbackTest(unittest.TestCase):
+    """_update_status 写入失败时保留上次落盘终态，不截断成损坏状态（#125 B3）。"""
+
+    def setUp(self):
+        for tid in ("stf001", "stf002"):
+            shutil.rmtree(NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def tearDown(self):
+        for tid in ("stf001", "stf002"):
+            shutil.rmtree(NOTE_OUTPUT_DIR / tid, ignore_errors=True)
+
+    def _mk_task_dir(self, tid):
+        td = NOTE_OUTPUT_DIR / tid
+        td.mkdir(parents=True, exist_ok=True)
+        return td / "status.json"
+
+    def test_existing_final_state_preserved_on_write_failure(self):
+        g = NoteGenerator()
+        status_file = self._mk_task_dir("stf001")
+        status_file.write_text('{"status": "SUCCESS", "message": "完成"}', encoding="utf-8")
+        with mock.patch("app.services.note.Path.replace", side_effect=OSError("磁盘满")):
+            g._update_status("stf001", "FAILED", message="新错误")
+        # 上次落盘的终态（SUCCESS）原样保留——进程重启后任务不显示损坏
+        data = json.loads(status_file.read_text(encoding="utf-8"))
+        self.assertEqual(data["status"], "SUCCESS")
+        self.assertEqual(data["message"], "完成")
+
+    def test_no_prior_file_writes_error_text(self):
+        g = NoteGenerator()
+        status_file = self._mk_task_dir("stf002")
+        with mock.patch("app.services.note.Path.replace", side_effect=OSError("磁盘满")):
+            g._update_status("stf002", "FAILED", message="新错误")
+        self.assertTrue(status_file.exists())
+        self.assertIn("Error writing status", status_file.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

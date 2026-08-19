@@ -40,24 +40,3 @@ def get_model_dir(subdir: str = "whisper") -> str:
     os.makedirs(path, exist_ok=True)
     return path
 
-
-def get_app_dir(subdir: str = "") -> str:
-    """
-    返回一个稳定的可写目录（下载缓存 / 中间帧等）。
-    - 优先 VIDEONOTE_DATA_DIR（由 videonote_mcp.config 设置）
-    - 开发时：使用项目 data 目录
-    - 打包后：使用 exe 所在目录
-    """
-    env = os.getenv("VIDEONOTE_DATA_DIR")
-    if env:
-        full_path = os.path.join(env, subdir)
-        os.makedirs(full_path, exist_ok=True)
-        return full_path
-    if getattr(sys, 'frozen', False):
-        base_dir = os.path.dirname(sys.executable)
-    else:
-        base_dir = PROJECT_ROOT
-
-    full_path = os.path.join(base_dir, subdir)
-    os.makedirs(full_path, exist_ok=True)
-    return full_path

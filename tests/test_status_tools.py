@@ -18,6 +18,7 @@
 import json
 import shutil
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -117,9 +118,11 @@ class StatusLightTest(unittest.TestCase):
             # 路径类轻量字段保留（Agent 需要它们去 Read 图/找文件）
             self.assertEqual(result["frames"], ["file:///tmp/frame_1.jpg"])
             self.assertEqual(result["video_path"], "/tmp/video.mp4")
-            # 文本重载默认剥掉
-            self.assertNotIn("transcript", result)
-            self.assertNotIn("comments_danmaku", result)
+            # 素材包契约（docs 审计 G3）：transcript/comments 是主产物，默认保留；
+            # 但 raw（原始 API 响应）恒剥
+            self.assertIn("transcript", result)
+            self.assertIn("comments_danmaku", result)
+            self.assertNotIn("raw", result["transcript"])
             # 显式要则给
             full = json.loads(server.get_task_status(mid, include_transcript=True))
             self.assertIn("transcript", full["result"])
@@ -176,7 +179,8 @@ class GetTranscriptTest(unittest.TestCase):
         data = json.loads(server.get_task_transcript(self.task_id, "0-2"))
         self.assertTrue(data["ok"])
         self.assertEqual([s["text"] for s in data["segments"]], ["第一句", "第二句"])
-        self.assertEqual(data["full_text"], "第一句\n第二句")
+        # 切片与全量 full_text（缓存，空格分隔）同一分隔符（#127 A8）
+        self.assertEqual(data["full_text"], "第一句 第二句")
         self.assertTrue(data["meta"]["truncated"])
         self.assertEqual(data["meta"]["returned_segments"], 2)
 
@@ -242,50 +246,123 @@ class StageElapsedTest(unittest.TestCase):
             shutil.rmtree(tdir, ignore_errors=True)
 
 
-class WaitForNoteTest(unittest.TestCase):
+class CancelRaceTest(unittest.TestCase):
+    """cancel_note 两方向（#121 C5）：排队→CANCELLED+弹 registry；运行中→只发信号。
+
+    WaitForNoteTest 的 setUp 会造 SUCCESS 终态任务（取消走 DONE 分支），
+    这里独立成类保证起点没有 status.json。
+    """
+
     def setUp(self):
-        self.task_id = "waitnote00001"
-        self.task_dir = _make_success_task(self.task_id)
+        self.task_id = "cancelrace0001"
+        self.task_dir = server.NOTE_OUTPUT_DIR / self.task_id
+        self.task_dir.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
         shutil.rmtree(self.task_dir, ignore_errors=True)
+        with server._tasks_lock:
+            server._task_futures.pop(self.task_id, None)
+            server._task_events.pop(self.task_id, None)
+            server._status_memory.pop(self.task_id, None)
 
-    def test_unknown_task_is_not_found(self):
-        resp = json.loads(server.get_task_status("nosuch000001"))
-        self.assertEqual(resp["status"], "NOT_FOUND")
-        self.assertIsNone(resp["result"])
+    def test_cancel_queued_task_writes_cancelled_and_pops(self):
+        """排队中（future.cancel() 成功）→ 写 CANCELLED + 移出 registry（#121 C5）。"""
+        from concurrent.futures import Future
 
-    def test_wait_unknown_returns_immediately(self):
-        resp = json.loads(server.wait_for_note("nosuch000002", timeout=30, poll_interval=5))
-        self.assertEqual(resp["status"], "NOT_FOUND")
-
-    def test_wait_forwards_include_transcript(self):
-        # SUCCESS 立刻返回；wait_for_note 不再 sleep
-        light = json.loads(server.wait_for_note(self.task_id, timeout=1, poll_interval=1))
-        self.assertEqual(light["status"], "SUCCESS")
-        self.assertNotIn("transcript", light["result"])
-
-        full = json.loads(
-            server.wait_for_note(self.task_id, timeout=1, poll_interval=1, include_transcript=True)
-        )
-        self.assertEqual(full["status"], "SUCCESS")
-        self.assertIn("transcript", full["result"])
-
-    def test_wait_pending_does_not_block(self):
-        pid = "waitpend00001"
-        pdir = server.NOTE_OUTPUT_DIR / pid
-        pdir.mkdir(parents=True, exist_ok=True)
-        (pdir / "status.json").write_text(
-            json.dumps({"status": "TRANSCRIBING", "message": "转写中"}, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        queued = Future()  # 未启动：not done → cancel() 返回 True
+        ev = threading.Event()
+        with server._tasks_lock:
+            server._task_futures[self.task_id] = queued
+            server._task_events[self.task_id] = ev
         try:
-            resp = json.loads(server.wait_for_note(pid, timeout=30, poll_interval=5))
-            self.assertEqual(resp["status"], "TRANSCRIBING")
-            self.assertTrue(resp.get("deprecated"))
+            resp = json.loads(server.cancel_note(self.task_id))
         finally:
-            shutil.rmtree(pdir, ignore_errors=True)
+            with server._tasks_lock:
+                server._task_futures.pop(self.task_id, None)
+                server._task_events.pop(self.task_id, None)
+        self.assertEqual(resp["status"], "CANCELLED")
+        status = json.loads(
+            (server.NOTE_OUTPUT_DIR / self.task_id / "status.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(status["status"], "CANCELLED")
+        # registry 已弹：worker 不会执行，不会出现二次写
+        self.assertNotIn(self.task_id, server._task_futures)
+
+    def test_cancel_running_task_returns_cancelling_signal(self):
+        """运行中（future.cancel() 失败）→ 只发协作信号，终态由 worker 写（#121 C5）。
+
+        此前 cancel 直接写盘 CANCELLED：检查与写入之间 worker 完成时把刚写的
+        SUCCESS 覆盖成「已取消」，而 result.json 已有完整笔记。
+        """
+        from concurrent.futures import Future
+
+        running = Future()
+        running.set_running_or_notify_cancel()  # running → cancel() 返回 False
+        ev = threading.Event()
+        with server._tasks_lock:
+            server._task_futures[self.task_id] = running
+            server._task_events[self.task_id] = ev
+        try:
+            resp = json.loads(server.cancel_note(self.task_id))
+        finally:
+            with server._tasks_lock:
+                server._task_futures.pop(self.task_id, None)
+                server._task_events.pop(self.task_id, None)
+        self.assertEqual(resp["status"], "CANCELLING")
+        self.assertIn("下一阶段边界", resp["message"])
+        self.assertTrue(ev.is_set())  # 信号已发
+        # 不写盘：终态留给 worker（避免与 worker 的 SUCCESS/FAILED 写竞争）
+        self.assertFalse((server.NOTE_OUTPUT_DIR / self.task_id / "status.json").exists())
 
 
-if __name__ == "__main__":
-    unittest.main()
+class CancelTerminalWordingTest(unittest.TestCase):
+    """cancel_note 终态措辞区分（#122 A8）。
+
+    任务恰好在取消时到达终态：此前一律「任务已完成」——FAILED 任务被 Agent
+    误读成「成功产出笔记」。按终态区分措辞。
+    """
+
+    def setUp(self):
+        self.task_id = "termword0001"
+        self.task_dir = server.NOTE_OUTPUT_DIR / self.task_id
+        self.task_dir.mkdir(parents=True, exist_ok=True)
+        from concurrent.futures import Future
+
+        self._done = Future()
+        self._done.set_result(None)
+        self._ev = threading.Event()
+        with server._tasks_lock:
+            server._task_futures[self.task_id] = self._done
+            server._task_events[self.task_id] = self._ev
+
+    def tearDown(self):
+        shutil.rmtree(self.task_dir, ignore_errors=True)
+        with server._tasks_lock:
+            server._task_futures.pop(self.task_id, None)
+            server._task_events.pop(self.task_id, None)
+
+    def _set_status(self, status):
+        (self.task_dir / "status.json").write_text(
+            json.dumps({"status": status}, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def test_failed_terminal_message(self):
+        self._set_status("FAILED")
+        resp = json.loads(server.cancel_note(self.task_id))
+        self.assertEqual(resp["status"], "DONE")
+        self.assertIn("失败", resp["message"])
+        self.assertNotIn("完成", resp["message"])
+
+    def test_cancelled_terminal_message(self):
+        self._set_status("CANCELLED")
+        resp = json.loads(server.cancel_note(self.task_id))
+        self.assertEqual(resp["status"], "DONE")
+        self.assertIn("已取消", resp["message"])
+
+    def test_success_terminal_message(self):
+        self._set_status("SUCCESS")
+        resp = json.loads(server.cancel_note(self.task_id))
+        self.assertEqual(resp["status"], "DONE")
+        self.assertIn("已完成", resp["message"])
+
+

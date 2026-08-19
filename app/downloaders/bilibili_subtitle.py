@@ -21,7 +21,11 @@ import requests
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
-from app.utils.url_parser import extract_video_id, extract_bilibili_p_number, resolve_bilibili_short_url
+from app.utils.url_parser import (
+    extract_bilibili_p_number,
+    extract_video_id,
+    resolve_bilibili_short_url,
+)
 
 logger = get_logger(__name__)
 
@@ -67,11 +71,15 @@ class BilibiliSubtitleFetcher:
                 cid = pages[p - 1].get("cid")
                 logger.info(f"分 P 视频: bvid={bvid} p={p} 共 {len(pages)} 集, 取第 {p} 集 cid={cid}")
                 return int(cid) if cid else None
-            else:
-                # 没有 p 参数或 p 超出范围，取第 1 集
-                cid = pages[0].get("cid")
-                logger.info(f"非分 P 或 p 无效: bvid={bvid} 取第 1 集 cid={cid}")
-                return int(cid) if cid else None
+            if p is not None:
+                # 显式 p 越界：返回 None 让上层走转写，绝不静默取第 1 集
+                # （调用方会以为拿到了第 p 集的字幕/评论，实际是第 1 集内容，#121 B4）
+                logger.warning(f"p 越界: bvid={bvid} p={p} 但共 {len(pages)} 集，返回 None")
+                return None
+            # 没给 p：默认取第 1 集
+            cid = pages[0].get("cid")
+            logger.info(f"非分 P 或 p 无效: bvid={bvid} 取第 1 集 cid={cid}")
+            return int(cid) if cid else None
         # 单集视频
         cid = data.get("data", {}).get("cid")
         return int(cid) if cid else None
@@ -149,7 +157,8 @@ class BilibiliSubtitleFetcher:
                 # B 站 AI 字幕需要登录态（SESSDATA cookie）；没配 cookie 时 API 返回空列表
                 logger.info(
                     f"{bvid} (cid={cid}) 无字幕轨：未配置 B 站 SESSDATA cookie，"
-                    "AI 字幕拿不到。配置 `set_downloader_cookie(bilibili, SESSDATA=...)` 后可直接用 AI 字幕、跳过语音识别"
+                    "AI 字幕拿不到。配置请走 CLI：`! videonote login bilibili`（扫码）"
+                    "或 `videonote setup` 向导；MCP 工具不收 cookie（安全红线）"
                 )
             else:
                 logger.info(f"{bvid} (cid={cid}) 没有可用字幕轨")

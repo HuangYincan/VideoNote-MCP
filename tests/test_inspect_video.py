@@ -1,5 +1,7 @@
 """inspect_video：分 P / 播放列表解析（mock 网络）。"""
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -7,7 +9,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services import inspect as inspect_mod
-
 
 VIEW_MULTI = {
     "code": 0,
@@ -142,11 +143,73 @@ class InspectYtdlpTest(unittest.TestCase):
         self.assertEqual(out["entries"][0]["video_id"], "ccccccccccc")
 
     def test_local_passthrough(self):
-        out = inspect_mod.inspect_video("/tmp/foo.mp4")
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "foo.mp4")
+            with open(p, "wb") as f:
+                f.write(b"fake")
+            out = inspect_mod.inspect_video(p)
         self.assertTrue(out["ok"])
         self.assertEqual(out["platform"], "local")
         self.assertEqual(out["kind"], "single")
-        self.assertEqual(out["entries"][0]["url"], "/tmp/foo.mp4")
+        self.assertEqual(out["entries"][0]["url"], p)
+
+    def test_local_missing_rejected(self):
+        # #130 A5：不存在的本地路径返回 ok:false——否则 Agent 拿到 ok:true 后把
+        # 幻影路径喂给 generate_note 才报「本地文件不存在」
+        out = inspect_mod.inspect_video("/tmp/videonote_never_exists.mp4")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["platform"], "local")
+        self.assertIn("不存在", out["error"])
+
+
+class InspectCookieInjectionTest(unittest.TestCase):
+    """#122 B3：yt-dlp 路径 cookie 改用 http_headers 注入。
+
+    旧实现写 Netscape 临时文件但域名绑死 .example.com、cookie 塞进 generic 字段，
+    yt-dlp 永远不会带上；也不留临时文件。
+    """
+
+    def _capture_opts(self, info):
+        captured = {}
+
+        class _YDL:
+            def __init__(self, opts):
+                captured["opts"] = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, download=False):
+                return info
+
+        return captured, _YDL
+
+    def test_cookie_injected_as_http_header(self):
+        captured, ydl_cls = self._capture_opts(
+            {"id": "c0000000000", "title": "t", "webpage_url": "https://www.youtube.com/watch?v=c0000000000"}
+        )
+        with mock.patch("yt_dlp.YoutubeDL", ydl_cls), mock.patch(
+            "app.services.cookie_manager.CookieConfigManager.get", return_value="SESSDATA=abc"
+        ):
+            out = inspect_mod.inspect_video("https://www.youtube.com/watch?v=c0000000000")
+        self.assertTrue(out["ok"])
+        self.assertEqual(captured["opts"]["http_headers"], {"Cookie": "SESSDATA=abc"})
+        self.assertNotIn("cookiefile", captured["opts"])  # 不再依赖 Netscape 临时文件
+
+    def test_no_cookie_no_http_headers(self):
+        captured, ydl_cls = self._capture_opts(
+            {"id": "c0000000001", "title": "t", "webpage_url": "https://www.youtube.com/watch?v=c0000000001"}
+        )
+        with mock.patch("yt_dlp.YoutubeDL", ydl_cls), mock.patch(
+            "app.services.cookie_manager.CookieConfigManager.get", return_value=""
+        ):
+            out = inspect_mod.inspect_video("https://www.youtube.com/watch?v=c0000000001")
+        self.assertTrue(out["ok"])
+        self.assertNotIn("http_headers", captured["opts"])
+        self.assertNotIn("cookiefile", captured["opts"])
 
 
 if __name__ == "__main__":

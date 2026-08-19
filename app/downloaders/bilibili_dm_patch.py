@@ -63,8 +63,13 @@ def apply_bilibili_dm_img_patch() -> bool:
         # _sign_wbi; caller-supplied query params (e.g. try_look/qn) take
         # precedence over the injected dummies.
         # fatal 是较新 yt-dlp 加入的 kwarg，必须透传，否则调用方传 fatal=True 会 TypeError。
+        # 但 yt-dlp 版本低于引入 fatal 的版本时（pyproject 无上限约束），透传会
+        # TypeError 让所有 B 站 playurl 下载全挂——TypeError 时降级无 fatal 重调（#126 B3）。
         merged_query = {**build_dm_img_params(), **(query or {})}
-        return original(self, bvid, cid, headers=headers, query=merged_query, fatal=fatal)
+        try:
+            return original(self, bvid, cid, headers=headers, query=merged_query, fatal=fatal)
+        except TypeError:
+            return original(self, bvid, cid, headers=headers, query=merged_query)
 
     _patched_download_playinfo._bili_dm_patched = True
     BilibiliBaseIE._download_playinfo = _patched_download_playinfo

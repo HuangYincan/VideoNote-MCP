@@ -1,17 +1,22 @@
-import os
 import logging
+import os
+import tempfile
+import threading
 from abc import ABC
-from typing import Union, Optional, List
+from typing import List, Optional, Union
 
 import yt_dlp
 
 from app.downloaders.base import Downloader, DownloadQuality
+from app.downloaders.common import ytdlp_cancel_hook, ytdlp_retry
 from app.downloaders.youtube_subtitle import YouTubeSubtitleFetcher
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
+from app.services.cookie_manager import CookieConfigManager
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.path_helper import get_data_dir
 from app.utils.url_parser import extract_video_id
+from app.utils.url_safety import assert_public_http_url, sanitize_url
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +26,50 @@ def _apply_proxy(ydl_opts: dict) -> dict:
     proxy = ProxyConfigManager().get_proxy_url()
     if proxy:
         ydl_opts['proxy'] = proxy
-        logger.info(f"yt-dlp 走代理: {proxy}")
+        # 代理 URL 可能含 user:pass@（docs/05 第 16 轮 A4）：日志只留 host，不落凭据
+        logger.info(f"yt-dlp 走代理: {sanitize_url(proxy)}")
     return ydl_opts
 
 
 class YoutubeDownloader(Downloader, ABC):
     def __init__(self):
-
         super().__init__()
+        # YouTube Cookie（docs/05 #34）：经 setup ③「平台 Cookie」填 youtube；
+        # 高清/年龄限制/地区限制视频需要登录态，匿名时照常降级
+        self._cookie_mgr = CookieConfigManager()
+        self._cookie = self._cookie_mgr.get('youtube')
+        self._cookiefile = self._write_netscape_cookie_file()
+
+    def _write_netscape_cookie_file(self) -> Optional[str]:
+        """将 Cookie 写入 Netscape 格式临时文件，返回文件路径（供 yt-dlp cookiefile 使用）。"""
+        if not self._cookie:
+            return None
+        lines = ["# Netscape HTTP Cookie File\n"]
+        for pair in self._cookie.split("; "):
+            if "=" in pair:
+                key, value = pair.split("=", 1)
+                lines.append(f".youtube.com\tTRUE\t/\tFALSE\t0\t{key}\t{value}\n")
+        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
+        tmp.writelines(lines)
+        tmp.close()
+        try:
+            os.chmod(tmp.name, 0o600)
+        except OSError:
+            pass
+        logger.info("已生成 YouTube Netscape Cookie 文件（条目: %d）", len(lines) - 1)
+        return tmp.name
+
+    def _cleanup_cookie_file(self) -> None:
+        path = getattr(self, "_cookiefile", None)
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self._cookiefile = None
+
+    def __del__(self):
+        self._cleanup_cookie_file()
 
     def download(
         self,
@@ -37,7 +78,10 @@ class YoutubeDownloader(Downloader, ABC):
         quality: DownloadQuality = "fast",
         need_video: Optional[bool] = False,
         skip_download: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
+        # SSRF 防护（docs/05 第 16 轮 A1）：YouTube URL 也经 yt-dlp 抓取
+        assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()
         if not output_dir:
@@ -51,14 +95,17 @@ class YoutubeDownloader(Downloader, ABC):
             'outtmpl': output_path,
             'noplaylist': True,
             'quiet': False,
+            'progress_hooks': [ytdlp_cancel_hook(cancel_event)],
         }
+        if self._cookiefile:
+            ydl_opts['cookiefile'] = self._cookiefile
 
         if skip_download:
             ydl_opts['skip_download'] = True
 
         _apply_proxy(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=not skip_download)
+            info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
             video_id = info.get("id")
             title = info.get("title")
             duration = info.get("duration", 0)
@@ -81,16 +128,28 @@ class YoutubeDownloader(Downloader, ABC):
         self,
         video_url: str,
         output_dir: Union[str, None] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """
         下载视频，返回视频文件路径
         """
+        # SSRF 防护（docs/05 第 16 轮 A1）
+        assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()
         video_id = extract_video_id(video_url, "youtube")
+        if not video_id:
+            raise ValueError(f"无法从链接提取 YouTube 视频 ID: {video_url}")
         video_path = os.path.join(output_dir, f"{video_id}.mp4")
-        if os.path.exists(video_path):
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
             return video_path
+        # 0 字节/半截残留（上次中断，docs/05 第 16 轮 B11）：删掉重下，
+        # 否则抽帧拿到损坏视频报泛化错误；kuaishou mp3 已有同款守卫（#124 B1）
+        if os.path.exists(video_path):
+            try:
+                os.unlink(video_path)
+            except OSError:
+                pass
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, "%(id)s.%(ext)s")
 
@@ -100,11 +159,14 @@ class YoutubeDownloader(Downloader, ABC):
             'noplaylist': True,
             'quiet': False,
             'merge_output_format': 'mp4',  # 确保合并成 mp4
+            'progress_hooks': [ytdlp_cancel_hook(cancel_event)],
         }
+        if self._cookiefile:
+            ydl_opts['cookiefile'] = self._cookiefile
 
         _apply_proxy(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
+            info = ytdlp_retry(ydl.extract_info, video_url, download=True)
             video_id = info.get("id")
             video_path = os.path.join(output_dir, f"{video_id}.mp4")
 
@@ -129,7 +191,10 @@ class YoutubeDownloader(Downloader, ABC):
 
         video_id = extract_video_id(video_url, "youtube")
         fetcher = YouTubeSubtitleFetcher()
-        print(
-            f"尝试获取字幕，video_id={video_id}, langs={langs}"
-        )
-        return fetcher.fetch_subtitles(video_id, langs)
+        logger.info("尝试获取字幕，video_id=%s, langs=%s", video_id, langs)
+        try:
+            return fetcher.fetch_subtitles(video_id, langs)
+        finally:
+            # 显式释放代理 Session（#125 B16 定义了 close 但唯一生产调用路径
+            # 直接 return 没调——MCP 长驻进程 GC 不保证及时，连接池泄漏仍在，#126 B2）
+            fetcher.close()

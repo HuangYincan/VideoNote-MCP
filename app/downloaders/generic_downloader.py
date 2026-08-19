@@ -7,18 +7,21 @@ og:video / video 标签 / m3u8 等）。本类不指定 `ie_key`，让 yt-dlp �
 对应 `detect_platform` 返回 `"generic"` 的平台（见 pipeline.py）。若 yt-dlp 也
 解析失败（登录墙 / JS 难题），上游 server 层会回退到 `handoff_result` 让 Agent 接手。
 """
-import os
 import logging
+import os
+import threading
 from abc import ABC
-from typing import Union, Optional
+from typing import Optional, Union
 
 import yt_dlp
 
 from app.downloaders.base import Downloader, DownloadQuality
+from app.downloaders.common import ytdlp_cancel_hook, ytdlp_retry
 from app.downloaders.youtube_downloader import _apply_proxy
 from app.models.notes_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.path_helper import get_data_dir
+from app.utils.url_safety import assert_public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -29,41 +32,18 @@ class GenericDownloader(Downloader, ABC):
     def __init__(self):
         super().__init__()
         self._cookie_mgr = CookieConfigManager()
-        self._cookiefile = None
+        self._cookie = None  # None=未取，""=已取但无配置
 
-    def _ensure_cookie(self) -> None:
-        """若配置过平台 Cookie，写成 Netscape cookiefile 供 yt-dlp 使用。
+    def _get_cookie(self) -> str:
+        """取 setup ③ 填的 generic 槽位 cookie。
 
-        跨平台 cookie 无统一槽位，仅当 detect_platform 识别出具体平台时可用；
-        generic 场景多数站点无需登录，这里保持惰性（首次下载才写文件）。
+        generic 站点无统一域名可预知，Netscape 文件会把 cookie 绑死在
+        example.com 使 yt-dlp 永远不带 —— 改用 http_headers 的 Cookie 头
+        直接注入，对目标站点及其 CDN 分片请求统一生效。
         """
-        if self._cookiefile is not None:
-            return
-        cookie = self._cookie_mgr.get("generic") or ""
-        if not cookie:
-            self._cookiefile = ""
-            return
-        import tempfile
-
-        fd, path = tempfile.mkstemp(suffix=".txt")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(
-                "# Netscape HTTP Cookie File\n"
-                f"example.com\tTRUE\t/\tTRUE\t0\tgeneric\t{cookie}\n"
-            )
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
-        self._cookiefile = path
-
-    def __del__(self):
-        path = getattr(self, "_cookiefile", None)
-        if path:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        if self._cookie is None:
+            self._cookie = self._cookie_mgr.get("generic") or ""
+        return self._cookie
 
     def download(
         self,
@@ -72,7 +52,10 @@ class GenericDownloader(Downloader, ABC):
         quality: DownloadQuality = "fast",
         need_video: Optional[bool] = False,
         skip_download: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
+        # SSRF 防护（docs/05 第 16 轮 A1）：generic 是任意 URL 进入 yt-dlp 的入口
+        assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()
         if not output_dir:
@@ -85,17 +68,18 @@ class GenericDownloader(Downloader, ABC):
             "outtmpl": output_path,
             "noplaylist": True,
             "quiet": False,
+            "progress_hooks": [ytdlp_cancel_hook(cancel_event)],
         }
         if skip_download:
             ydl_opts["skip_download"] = True
-        self._ensure_cookie()
-        if self._cookiefile:
-            ydl_opts["cookiefile"] = self._cookiefile
+        cookie = self._get_cookie()
+        if cookie:
+            ydl_opts["http_headers"] = {"Cookie": cookie}
         _apply_proxy(ydl_opts)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=not skip_download)
+                info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
                 video_id = info.get("id")
                 title = info.get("title")
                 duration = info.get("duration", 0)
@@ -117,8 +101,14 @@ class GenericDownloader(Downloader, ABC):
             video_path=None,
         )
 
-    def download_video(self, video_url: str, output_dir: Union[str, None] = None) -> str:
+    def download_video(
+        self,
+        video_url: str,
+        output_dir: Union[str, None] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
         """通用视频下载：尽量合并 mp4。generic 场景主要用于音频，视频下载尽力而为。"""
+        assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()
         os.makedirs(output_dir, exist_ok=True)
@@ -129,11 +119,15 @@ class GenericDownloader(Downloader, ABC):
             "noplaylist": True,
             "quiet": False,
             "merge_output_format": "mp4",
+            "progress_hooks": [ytdlp_cancel_hook(cancel_event)],
         }
-        self._ensure_cookie()
-        if self._cookiefile:
-            ydl_opts["cookiefile"] = self._cookiefile
+        cookie = self._get_cookie()
+        if cookie:
+            ydl_opts["http_headers"] = {"Cookie": cookie}
         _apply_proxy(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
-        return os.path.join(output_dir, f"{info.get('id')}.mp4")
+            info = ytdlp_retry(ydl.extract_info, video_url, download=True)
+        output_path = os.path.join(output_dir, f"{info.get('id')}.mp4")
+        if not os.path.exists(output_path):
+            raise RuntimeError(f"下载完成但未找到视频文件: {output_path}")
+        return output_path

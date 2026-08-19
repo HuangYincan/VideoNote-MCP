@@ -1,20 +1,25 @@
-import os
+import glob as _glob
 import json
 import logging
+import os
+import shutil
 import tempfile
+import threading
 from abc import ABC
-from typing import Union, Optional, List
+from typing import List, Optional, Union
 
 import yt_dlp
 
-from app.downloaders.base import Downloader, DownloadQuality
+from app.downloaders.base import QUALITY_MAP, Downloader, DownloadQuality
 from app.downloaders.bilibili_dm_patch import apply_bilibili_dm_img_patch
 from app.downloaders.bilibili_subtitle import BilibiliSubtitleFetcher
+from app.downloaders.common import ytdlp_cancel_hook, ytdlp_retry
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
-from app.utils.path_helper import get_data_dir
-from app.utils.url_parser import extract_video_id
 from app.services.cookie_manager import CookieConfigManager
+from app.utils.path_helper import get_data_dir
+from app.utils.url_parser import extract_bilibili_p_number, extract_video_id
+from app.utils.url_safety import sanitize_url
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +56,17 @@ class BilibiliDownloader(Downloader, ABC):
         logger.info("已生成 B站 Netscape Cookie 文件: %s (条目: %d)", tmp.name, len(lines) - 1)
         return tmp.name
 
-    def __del__(self):
+    def _cleanup_cookie_file(self) -> None:
         path = getattr(self, "_cookiefile", None)
         if path:
             try:
                 os.unlink(path)
             except OSError:
                 pass
+        self._cookiefile = None
+
+    def __del__(self):
+        self._cleanup_cookie_file()
 
     def download(
         self,
@@ -66,6 +75,7 @@ class BilibiliDownloader(Downloader, ABC):
         quality: DownloadQuality = "fast",
         need_video: Optional[bool] = False,
         skip_download: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
         if output_dir is None:
             output_dir = get_data_dir()
@@ -83,18 +93,20 @@ class BilibiliDownloader(Downloader, ABC):
                 {
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
-                    'preferredquality': '64',
+                    # quality 参数真正生效：fast=32k / medium=64k / slow=128k
+                    'preferredquality': QUALITY_MAP.get(quality, '64'),
                 }
             ],
             'noplaylist': True,
             'quiet': False,
+            'progress_hooks': [ytdlp_cancel_hook(cancel_event)],
         }
         if self._cookiefile:
             ydl_opts['cookiefile'] = self._cookiefile
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # skip_download=True（已有字幕只需元信息）：download=False 只取 metadata
-            info = ydl.extract_info(video_url, download=not skip_download)
+            info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
             video_id = info.get("id")
             title = info.get("title")
             duration = info.get("duration", 0)
@@ -116,6 +128,7 @@ class BilibiliDownloader(Downloader, ABC):
         self,
         video_url: str,
         output_dir: Union[str, None] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """
         下载视频，返回视频文件路径
@@ -124,14 +137,33 @@ class BilibiliDownloader(Downloader, ABC):
         if output_dir is None:
             output_dir = get_data_dir()
         os.makedirs(output_dir, exist_ok=True)
-        print("video_url",video_url)
+        logger.debug("video_url=%s", sanitize_url(video_url))
         video_id=extract_video_id(video_url, "bilibili")
-        # 多 P 视频 yt-dlp 的 id 是 {BV}_pN（缓存名 {BV}_pN.mp4），与纯 BV 不同 →
-        # 用前缀 glob 匹配，否则缓存永远不命中、每次重新下载
-        import glob as _glob
-        existing = _glob.glob(os.path.join(output_dir, f"{video_id}*.mp4"))
-        if existing:
-            return existing[0]
+        if not video_id:
+            raise ValueError(f"无法从链接提取 B 站视频 ID: {video_url}")
+        # 多 P 视频 yt-dlp 的 id 是 {BV}_pN（缓存名 {BV}_pN.mp4），N 与 URL 的 p 参数一致。
+        # 旧前缀 glob（{BV}*.mp4）会误配别的视频（BV12345_p1.mp4 命中 BV1234 的查询）；
+        # #121 B5 改 `{BV}_p*.mp4` 仍跨 P 通配——?p=2 请求可能命中 BV_p1.mp4（拿错集视频）。
+        # 精确匹配（#122 B2）：带 p → {BV}_p{p}.mp4；无 p → 单集 {BV}.mp4 或分 P 第 1 集
+        # {BV}_p1.mp4（都无通配，绝不误配其它视频/其它 P）
+        p_num = extract_bilibili_p_number(video_url)
+        if p_num:
+            existing = _glob.glob(os.path.join(output_dir, f"{video_id}_p{p_num}.mp4"))
+        else:
+            existing = _glob.glob(os.path.join(output_dir, f"{video_id}.mp4")) or _glob.glob(
+                os.path.join(output_dir, f"{video_id}_p1.mp4")
+            )
+        # 复用前校验非空（docs/05 第 16 轮 B11）：0 字节/半截残留（上次中断）
+        # 删掉重下，不把损坏文件当成功产物（kuaishou mp3 同款守卫 #124 B1）
+        valid = [p for p in existing if os.path.getsize(p) > 0]
+        for stale in existing:
+            if os.path.getsize(stale) == 0:
+                try:
+                    os.unlink(stale)
+                except OSError:
+                    pass
+        if valid:
+            return valid[0]
 
         output_path = os.path.join(output_dir, "%(id)s.%(ext)s")
 
@@ -142,12 +174,13 @@ class BilibiliDownloader(Downloader, ABC):
             'noplaylist': True,
             'quiet': False,
             'merge_output_format': 'mp4',  # 确保合并成 mp4
+            'progress_hooks': [ytdlp_cancel_hook(cancel_event)],
         }
         if self._cookiefile:
             ydl_opts['cookiefile'] = self._cookiefile
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
+            info = ytdlp_retry(ydl.extract_info, video_url, download=True)
             video_id = info.get("id")
             video_path = os.path.join(output_dir, f"{video_id}.mp4")
 
@@ -155,16 +188,6 @@ class BilibiliDownloader(Downloader, ABC):
             raise FileNotFoundError(f"视频文件未找到: {video_path}")
 
         return video_path
-
-    def delete_video(self, video_path: str) -> str:
-        """
-        删除视频文件
-        """
-        if os.path.exists(video_path):
-            os.remove(video_path)
-            return f"视频文件已删除: {video_path}"
-        else:
-            return f"视频文件未找到: {video_path}"
 
     def download_subtitles(self, video_url: str, output_dir: str = None,
                            langs: List[str] = None) -> Optional[TranscriptResult]:
@@ -181,7 +204,8 @@ class BilibiliDownloader(Downloader, ABC):
         if not CookieConfigManager().get("bilibili"):
             logger.info(
                 "未配置 B 站 SESSDATA cookie：AI 字幕拿不到，将走语音识别。"
-                "配置 `set_downloader_cookie(bilibili, SESSDATA=...)` 后可直接用 B 站 AI 字幕、跳过语音识别"
+                "配置请走 CLI：`! videonote login bilibili`（扫码）或 `videonote setup` 向导；"
+                "MCP 工具不收 cookie（安全红线）"
             )
         # 1) 优先走 B 站官方 player API（直拉，无需下视频；AI 字幕需 SESSDATA cookie）
         try:
@@ -191,9 +215,13 @@ class BilibiliDownloader(Downloader, ABC):
         except Exception as e:
             logger.warning(f"player API 直拉字幕异常，回退到 yt-dlp: {e}")
 
-        # 2) Fallback：原 yt-dlp 路径（更脆弱，遇到签名/Cookie 问题失败概率较高）
+        # 2) Fallback：原 yt-dlp 路径（更脆弱，遇到签名/Cookie 问题失败概率较高）。
+        # 调用方没给 output_dir 时落专属临时目录、解析后整体清理——yt-dlp 字幕文件
+        # 曾是数据根目录的常驻垃圾（每次回退都留下 {BV}.{lang}.{ext}，从不删除，#121 B6）
+        owned_tmpdir = None
         if output_dir is None:
-            output_dir = get_data_dir()
+            owned_tmpdir = tempfile.mkdtemp(prefix="videonote_subs_")
+            output_dir = owned_tmpdir
         if not output_dir:
             output_dir = self.cache_data
         os.makedirs(output_dir, exist_ok=True)
@@ -220,7 +248,7 @@ class BilibiliDownloader(Downloader, ABC):
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=True)
+                info = ytdlp_retry(ydl.extract_info, video_url, download=True)
 
                 # 查找下载的字幕文件
                 subtitles = info.get('requested_subtitles') or {}
@@ -272,6 +300,10 @@ class BilibiliDownloader(Downloader, ABC):
         except Exception as e:
             logger.warning(f"获取B站字幕失败: {e}")
             return None
+        finally:
+            # 自建临时目录：成功（字幕已解析进内存）/失败都清掉，不留垃圾
+            if owned_tmpdir:
+                shutil.rmtree(owned_tmpdir, ignore_errors=True)
 
     def _parse_srt_content(self, srt_content: str, language: str) -> Optional[TranscriptResult]:
         """
@@ -284,6 +316,8 @@ class BilibiliDownloader(Downloader, ABC):
         import re
         try:
             segments = []
+            # 部分工具产出的 SRT 是 CRLF 行尾，正则按 \n 匹配会整段失配
+            srt_content = srt_content.replace("\r\n", "\n")
             # SRT 格式: 序号\n时间戳\n文本\n\n
             pattern = r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})\n(.*?)(?=\n\n|\n\d+\n|$)'
             matches = re.findall(pattern, srt_content, re.DOTALL)

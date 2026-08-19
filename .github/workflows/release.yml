@@ -5,25 +5,72 @@ on:
     tags: ['v*']
 
 jobs:
+  test:
+    name: Test gate (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies (Python ${{ matrix.python-version }})
+        run: |
+          uv python install ${{ matrix.python-version }}
+          uv sync --frozen --python ${{ matrix.python-version }}
+      - name: Ruff F-class lint
+        run: uv run ruff check --select F .
+      - name: Unit tests
+        run: uv run pytest -q
+
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
+    needs: test
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Verify version matches tag
         run: |
           pkg_version="$(grep -m1 '^version' pyproject.toml | sed -E 's/version = "([^"]+)"/\1/')"
+          init_version="$(grep -m1 '__version__' videonote_mcp/__init__.py | sed -E 's/__version__ = "([^"]+)"/\1/')"
+          plugin_version="$(grep -m1 '"version"' .claude-plugin/plugin.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
           tag_version="${GITHUB_REF_NAME#v}"
-          echo "pyproject version: $pkg_version"
-          echo "tag version:      $tag_version"
-          if [ "$pkg_version" != "$tag_version" ]; then
-            echo "::error::pyproject.toml version ($pkg_version) 与 tag ($GITHUB_REF_NAME) 不一致，拒绝发布"
+          echo "pyproject version:      $pkg_version"
+          echo "__init__ version:       $init_version"
+          echo "plugin.json version:    $plugin_version"
+          echo "tag version:            $tag_version"
+          if [ "$pkg_version" != "$tag_version" ] || [ "$init_version" != "$tag_version" ] || [ "$plugin_version" != "$tag_version" ]; then
+            echo "::error::版本不一致（pyproject=$pkg_version / __init__=$init_version / plugin=$plugin_version / tag=${GITHUB_REF_NAME}），拒绝发布"
             exit 1
           fi
-          echo "✅ 版本一致，继续发布"
+          echo "✅ 四处版本一致，继续发布"
+      - name: Build wheel and verify contents
+        run: |
+          uv build --no-sources
+          wheel="$(ls dist/*.whl | head -1)"
+          echo "wheel: $wheel"
+          python - <<EOF
+          import zipfile, glob, sys
+          wheel = glob.glob("dist/*.whl")[0]
+          with zipfile.ZipFile(wheel) as z:
+              names = z.namelist()
+          required = [
+              "videonote_mcp/server.py",
+              "app/services/note.py",
+              "app/services/constant.py",
+              "skills/videonote/SKILL.md",
+              "skills/videonote/reference/tools.md",
+          ]
+          missing = [r for r in required if not any(n.endswith(r) for n in names)]
+          if missing:
+              print("::error::wheel 缺少文件: %s" % missing)
+              sys.exit(1)
+          print("✅ wheel 内容完整（%d 个文件）" % len(names))
+          EOF
       - name: Create release for tag
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true

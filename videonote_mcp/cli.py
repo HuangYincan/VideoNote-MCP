@@ -9,11 +9,21 @@ API key 的设计原则：key 由用户在独立终端写入（不经过 agent �
 """
 import argparse
 import builtins
+import json
 import os
+import re
 import sys
 from pathlib import Path
+from typing import List
 
-from videonote_mcp.config import get_app_config, remove_app_config, set_app_config, setup_environment
+from videonote_mcp.config import (
+    get_app_config,
+    remove_app_config,
+    resolve_default_export_formats,
+    resolve_int_config,
+    set_app_config,
+    setup_environment,
+)
 
 # 提前初始化运行时环境（数据目录、DB、输出目录）——必须在 import provider_probe / app.*
 # 之前执行。provider_probe 会连累 app.utils.logger（其日志目录依赖 VIDEONOTE_DATA_DIR），
@@ -88,9 +98,10 @@ def _tqdm_bar():
 
 def _download_whisper(size: str) -> None:
     """在终端下载 fast-whisper 模型（阻塞，带进度条）。"""
+    from huggingface_hub import snapshot_download
+
     from app.transcriber.whisper_models import is_local_target, resolve_whisper_model
     from app.utils.path_helper import get_model_dir
-    from huggingface_hub import snapshot_download
 
     target = resolve_whisper_model(size)
     model_dir = get_model_dir("whisper")
@@ -112,9 +123,10 @@ def _download_mlx_model(size: str) -> None:
     下载只需 huggingface_hub，**不 import mlx_whisper** —— 其依赖链（numba 等）
     有循环导入风险，且下载模型根本不需要 mlx 运行时。
     """
+    from huggingface_hub import snapshot_download
+
     from app.utils.model_status import MLX_REPO_MAP
     from app.utils.path_helper import get_model_dir
-    from huggingface_hub import snapshot_download
 
     repo_id = MLX_REPO_MAP.get(size)
     if not repo_id:
@@ -137,7 +149,11 @@ def _model_dir(engine: str, size: str) -> "str | None":
 
         repo = MLX_REPO_MAP.get(size)
         return os.path.join(get_model_dir("mlx-whisper"), repo) if repo else None
-    from app.transcriber.whisper_models import hf_cache_dirname, is_local_target, resolve_whisper_model
+    from app.transcriber.whisper_models import (
+        hf_cache_dirname,
+        is_local_target,
+        resolve_whisper_model,
+    )
 
     try:
         target = resolve_whisper_model(size)
@@ -155,6 +171,7 @@ def _show_uninstall_option(inq, pick: str, size: str, label: str) -> None:
         print(f"  位置：{model_path}", file=sys.stdout)
         if inq.confirm(message="卸载该模型？", default=False, keybindings=_KB).execute():
             import shutil
+
             from app.utils.path_helper import get_model_dir
 
             shutil.rmtree(model_path, ignore_errors=True)
@@ -260,8 +277,12 @@ def _wizard_llm(inq) -> None:
                 base_url = inq.text(message="base_url（如 https://relay.example.com/v1）", keybindings=_KB).execute()
                 key = inq.secret(message="API key（隐藏输入）", keybindings=_KB).execute()
                 if name and base_url and key:
-                    new_id = ProviderService.add_provider(name=name, api_key=key, base_url=base_url, logo="custom", type_="custom")
-                    print(f"{_GREEN}✓ 已新增 {name} → id={new_id}{_RESET}", file=sys.stdout)
+                    try:
+                        new_id = ProviderService.add_provider(name=name, api_key=key, base_url=base_url, logo="custom", type_="custom")
+                        print(f"{_GREEN}✓ 已新增 {name} → id={new_id}{_RESET}", file=sys.stdout)
+                    except ValueError as exc:
+                        # 重名等校验错误就地消化，向导不崩（已填的 key/base_url 不浪费，#120）
+                        print(f"{_YELLOW}⚠ {exc}（未新增）{_RESET}", file=sys.stdout)
                 else:
                     print(f"{_YELLOW}⚠ 信息不完整，未新增{_RESET}", file=sys.stdout)
                 continue
@@ -300,11 +321,28 @@ def _edit_provider(inq, pid) -> None:
     _show_header(f"编辑供应商 {pid}")
     key = inq.secret(message="新的 API key（直接回车保持不变）", keybindings=_KB).execute()
     if key:
-        ProviderService.update_provider(pid, {"api_key": key})
-        print(f"{_GREEN}✓ 已更新 {pid} 的 key{_RESET}", file=sys.stdout)
+        # #123 B8：update_provider 对不存在返回 None、对真实异常（DB 锁等）抛
+        # ValueError——后者必须如实报出原因，不能伪装成「不存在」。
+        try:
+            updated = ProviderService.update_provider(pid, {"api_key": key})
+        except ValueError as e:
+            print(f"{_YELLOW}⚠ {e}{_RESET}", file=sys.stdout)
+            updated = None
+        if updated:
+            print(f"{_GREEN}✓ 已更新 {pid} 的 key{_RESET}", file=sys.stdout)
+        elif updated is None:
+            print(f"{_YELLOW}⚠ 更新 {pid} 的 key 失败（供应商不存在？）{_RESET}", file=sys.stdout)
     base_url = inq.text(message="base_url（直接回车保持不变）", keybindings=_KB).execute()
     if base_url:
-        ProviderService.update_provider(pid, {"base_url": base_url})
+        try:
+            updated = ProviderService.update_provider(pid, {"base_url": base_url})
+        except ValueError as e:
+            print(f"{_YELLOW}⚠ {e}{_RESET}", file=sys.stdout)
+            updated = None
+        if updated:
+            print(f"{_GREEN}✓ 已更新 {pid} 的 base_url{_RESET}", file=sys.stdout)
+        elif updated is None:
+            print(f"{_YELLOW}⚠ 更新 {pid} 的 base_url 失败（供应商不存在？）{_RESET}", file=sys.stdout)
 
 
 def _test_and_set_default(inq, pid) -> None:
@@ -419,7 +457,9 @@ def _wizard_transcriber(inq) -> None:
             pick = inq.select(
                 message=f"当前引擎：{cur}",
                 choices=choices,
-                default=cur_engine if cur_engine in ("fast-whisper", "groq", "bcut", "kuaishou", "mlx-whisper") else "fast-whisper",
+                # 与 _TRANSCRIBER_ENGINES 同源：漏 funasr 会让当前引擎为 funasr 的用户
+                # 回车确认时被光标默认位切回 fast-whisper（#124 A1）
+                default=cur_engine if cur_engine in _TRANSCRIBER_ENGINES else "fast-whisper",
                 keybindings=_KB,
             ).execute()
             if pick == "back":
@@ -475,7 +515,10 @@ def _wizard_transcriber(inq) -> None:
                 print(f"{_GREEN}✓ 已切换 {pick} / {size}{_RESET}", file=sys.stdout)
                 print(f"{_DIM}（检查模型是否已下载…）{_RESET}", file=sys.stdout)
                 # 本地引擎：检查模型是否已下载，未下载则询问是否现在下载
-                from app.utils.model_status import check_mlx_whisper_model_exists, check_whisper_model_exists
+                from app.utils.model_status import (
+                    check_mlx_whisper_model_exists,
+                    check_whisper_model_exists,
+                )
 
                 if pick == "fast-whisper":
                     downloaded = check_whisper_model_exists(size, "whisper")
@@ -557,9 +600,9 @@ def _wizard_other(inq) -> None:
 
             notes_dir = get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or "（默认 note_results/{task_id}/）"
             vu_on = bool(get_app_config().get("video_understanding", False))
-            vu_int = int(get_app_config().get("video_interval") or 6)
+            vu_int = resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 6)
             cm_on = bool(get_app_config().get("include_comments", False))
-            cm_lim = int(get_app_config().get("comments_limit") or 20)
+            cm_lim = resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
             st_style = get_app_config().get("default_style") or "detailed"
             ss_on = bool(get_app_config().get("default_screenshot", False))
             ad_on = bool(get_app_config().get("agent_direct", False))
@@ -573,7 +616,7 @@ def _wizard_other(inq) -> None:
                     {"name": f"视频理解默认（{'开' if vu_on else '关'} / {vu_int}s，需多模态模型）", "value": "video"},
                     {"name": f"评论/弹幕整合默认（{'开' if cm_on else '关'} / {cm_lim}条，需 SESSDATA）", "value": "comments"},
                     {"name": f"笔记默认（风格 {st_style} / 截图 {'开' if ss_on else '关'} / AGENT直接写 {'开' if ad_on else '关'}）", "value": "note-default"},
-                    {"name": f"导出格式默认（生成后自动导出：{','.join(get_app_config().get('default_export_formats') or ['无'])}）", "value": "export-default"},
+                    {"name": f"导出格式默认（生成后自动导出：{_format_list_display(get_app_config().get('default_export_formats'))}）", "value": "export-default"},
                     {"name": "← 返回主菜单", "value": "back"},
                 ],
                 keybindings=_KB,
@@ -581,7 +624,7 @@ def _wizard_other(inq) -> None:
             if pick == "back":
                 return
             if pick == "bili-login":
-                _login_cli([])
+                _login_cli([], exit_on_fail=False)
             elif pick == "cookie":
                 _show_header("平台 Cookie")
                 platform = inq.select(
@@ -617,7 +660,7 @@ def _wizard_other(inq) -> None:
                 _show_header("视频理解默认")
                 print(f"{_DIM}视频理解把画面按间隔抽帧发给多模态 LLM（需 qwen-vl / gpt-4o 等；会下载整个视频、比纯转写慢）。{_RESET}", file=sys.stdout)
                 cur_on = bool(get_app_config().get("video_understanding", False))
-                cur_int = int(get_app_config().get("video_interval") or 6)
+                cur_int = resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 6)
                 on = inq.confirm(message="默认开启视频理解？", default=cur_on, keybindings=_KB).execute()
                 set_app_config("video_understanding", bool(on))
                 iv = inq.text(message=f"帧间隔秒数（当前 {cur_int}，默认 6）", keybindings=_KB).execute()
@@ -634,7 +677,7 @@ def _wizard_other(inq) -> None:
                 _show_header("评论/弹幕整合默认")
                 print(f"{_DIM}把弹幕+评论区观点整合进笔记（需 B 站 SESSDATA；没配则评论拿不到，任务不阻断）。{_RESET}", file=sys.stdout)
                 cur_on = bool(get_app_config().get("include_comments", False))
-                cur_lim = int(get_app_config().get("comments_limit") or 20)
+                cur_lim = resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
                 on = inq.confirm(message="默认整合弹幕+评论区观点？", default=cur_on, keybindings=_KB).execute()
                 set_app_config("include_comments", bool(on))
                 lim = inq.text(message=f"评论条数（当前 {cur_lim}，默认 20）", keybindings=_KB).execute()
@@ -752,6 +795,33 @@ def _wizard_data_list(inq) -> None:
     _press_any_key()
 
 
+_TERMINAL_STATUSES = ("SUCCESS", "FAILED", "CANCELLED")
+
+
+def _list_running_tasks() -> List[str]:
+    """返回状态仍为「进行中」的任务（读 note_results/{task_id}/status.json）。
+
+    MCP 侧 cleanup_note/cleanup_all 用进程内 _task_futures 守卫；CLI 是独立进程
+    拿不到，改以磁盘 status.json 为准（独立步骤任务也写它，比 video_tasks 表全）。
+    进程被杀会残留中间状态——调用方须二次确认后才能清理（交互式 CLI 允许用户
+    判断后强清，与 MCP 的硬拒绝区别于此）。
+    """
+    import glob
+
+    from app.utils.task_manifest import get_note_dir
+
+    running = []
+    for sp in glob.glob(str(get_note_dir() / "*" / "status.json")):
+        try:
+            data = json.loads(Path(sp).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        st = str(data.get("status") or "").upper()
+        if st not in _TERMINAL_STATUSES:
+            running.append(Path(sp).parent.name)
+    return sorted(running)
+
+
 def _wizard_data_cleanup_one(inq) -> None:
     """选一个任务 → 确认清理（默认保留最终笔记）。"""
     from app.db.video_task_dao import list_tasks as _list
@@ -776,6 +846,27 @@ def _wizard_data_cleanup_one(inq) -> None:
 
     files = list_task_files(tid)
     print(f"{_DIM}该任务占用：{len(files.get('existing', []))} 个文件/目录{_RESET}", file=sys.stdout)
+    # 运行中任务守卫（#122 A6，与 MCP cleanup_note 的拒绝行为对齐）：
+    # 直接清理会删掉下载器/转写器正在写的目录。CLI 看不到 MCP 内存状态，
+    # 以磁盘 status.json 为准；非终态要求用户显式确认（可能被 MCP 进程占用）。
+    _task_status = ""
+    try:
+        from app.utils.task_manifest import get_note_dir
+
+        _task_status = str(
+            json.loads((get_note_dir() / str(tid) / "status.json").read_text(encoding="utf-8")).get("status", "")
+        ).upper()
+    except Exception:
+        pass
+    if _task_status and _task_status not in _TERMINAL_STATUSES:
+        if not inq.confirm(
+            message=f"任务 {tid[:8]} 状态为 {_task_status}（可能仍在运行）——确认清理？",
+            default=False,
+            keybindings=_KB,
+        ).execute():
+            print(f"{_YELLOW}已取消清理（任务仍在运行）{_RESET}", file=sys.stdout)
+            _press_any_key()
+            return
     include_note = inq.confirm(
         message="连最终笔记一起删？[n=保留笔记]",
         default=False,
@@ -794,6 +885,11 @@ def _wizard_data_cleanup_one(inq) -> None:
         f"笔记{'保留' if r.get('note_kept') else '已删'}{_RESET}",
         file=sys.stdout,
     )
+    for p in r.get("notes_kept_outside", []):
+        print(
+            f"{_YELLOW}⚠ 数据目录外的便携笔记未删除（沙箱红线）：{p}{_RESET}",
+            file=sys.stdout,
+        )
     _press_any_key()
 
 
@@ -803,11 +899,58 @@ def _wizard_data_cleanup_all(inq) -> None:
 
     _show_header("全局清理")
     print(
-        f"{_YELLOW}⚠ 将清空 note_results/（所有任务产物）、static/screenshots/、logs/。{_RESET}",
+        f"{_YELLOW}⚠ 将清空 note_results/（所有任务产物）、static/screenshots/、note_cache/。"
+        f"logs/ 保留（运行日志不属任务产物）。{_RESET}",
         file=sys.stdout,
     )
+    # 运行中任务守卫（#122 A6，与 MCP cleanup_all 的拒绝行为对齐）：全局清空会把
+    # 运行中任务的目录一并删掉。CLI 看不到 MCP 内存状态，以磁盘 status.json 为准。
+    running = _list_running_tasks()
+    if running:
+        shown = ", ".join(t[:8] for t in running[:8])
+        if len(running) > 8:
+            shown += f" 等 {len(running)} 个"
+        print(
+            f"{_YELLOW}⚠ {len(running)} 个任务状态未终态（可能仍在运行）：{shown}{_RESET}",
+            file=sys.stdout,
+        )
+        if not inq.confirm(
+            message="有任务可能仍在运行——仍要全局清理？",
+            default=False,
+            keybindings=_KB,
+        ).execute():
+            print(f"{_YELLOW}已取消全局清理（任务仍在运行）{_RESET}", file=sys.stdout)
+            _press_any_key()
+            return
     include_config = inq.confirm(message="连 config/（LLM key / cookie）一起清？", default=False, keybindings=_KB).execute()
     include_models = inq.confirm(message="连 models/（已下载模型）一起清？", default=False, keybindings=_KB).execute()
+    # 模型下载中守卫（#123 A1）：huggingface 下载中的文件带 .incomplete 后缀（cache_dir
+    # 的 blobs/ 与 local_dir 两种布局都会被覆盖）。CLI 独立进程看不到 MCP 端的内存下载态，
+    # 但磁盘残留能兜底「另一个进程正在下载模型」的竞态——删 models/ 会打断下载。
+    incomplete = []
+    if include_models:
+        try:
+            from app.utils.path_helper import get_model_dir
+
+            models_root = os.path.dirname(get_model_dir("whisper"))
+            if os.path.isdir(models_root):
+                incomplete = [str(p) for p in Path(models_root).rglob("*.incomplete")]
+        except Exception:
+            incomplete = []
+    if incomplete:
+        print(
+            f"{_YELLOW}⚠ 检测到 {len(incomplete)} 个未完成的模型下载文件（.incomplete）——"
+            "可能有模型正在下载中，删除 models/ 会打断下载。{_RESET}",
+            file=sys.stdout,
+        )
+        if not inq.confirm(
+            message="仍有模型下载未完成——仍要连 models/ 一起清？",
+            default=False,
+            keybindings=_KB,
+        ).execute():
+            print(f"{_YELLOW}已取消全局清理（模型下载未完成）{_RESET}", file=sys.stdout)
+            _press_any_key()
+            return
     if not inq.confirm(message="确认全局清理？此操作不可撤销", default=False, keybindings=_KB).execute():
         print(f"{_YELLOW}已取消全局清理{_RESET}", file=sys.stdout)
         return
@@ -819,7 +962,7 @@ def _wizard_data_cleanup_all(inq) -> None:
 def _press_any_key() -> None:
     try:
         input("（按回车返回）", )
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         pass
 
 
@@ -848,8 +991,12 @@ def _fallback_test_and_default(pid: str) -> None:
         print(f"   {i}) {m}", file=sys.stdout)
     if len(r["models"]) > 10:
         print(f"   … 共 {len(r['models'])} 个，仅显示前 10", file=sys.stdout)
-    sel = _ask("   选默认模型 [1-%d]，0=手动输入，空=不设置" % len(models), default="")
+    # 回车=保持现状（此前 `if not sel: _set_default_model(pid, None)` 把「跳过」
+    # 当「清除」——管道/EOF 场景跑一次 setup 就误删已设默认，#120）；清除要显式 clear
+    sel = _ask("   选默认模型 [1-%d]，0=手动输入，clear=清除默认，回车=保持" % len(models), default="")
     if not sel:
+        pass
+    elif sel == "clear":
         _set_default_model(pid, None)
     elif sel == "0":
         m = _ask("   手动输入模型名")
@@ -877,11 +1024,17 @@ def _setup_cli_fallback() -> None:
             pid = provs[int(sel) - 1]["id"]
             key = _ask_secret(f"   新的 API key（{pid}，留空不变）")
             if key:
-                ProviderService.update_provider(pid, {"api_key": key})
-                print(f"   ✓ 已更新 {pid} 的 key", file=sys.stdout)
+                try:
+                    ProviderService.update_provider(pid, {"api_key": key})
+                    print(f"   ✓ 已更新 {pid} 的 key", file=sys.stdout)
+                except ValueError as e:
+                    print(f"   ✗ {e}", file=sys.stdout)
             base_url = _ask(f"   新的 base_url（{pid}，留空不变）")
             if base_url:
-                ProviderService.update_provider(pid, {"base_url": base_url})
+                try:
+                    ProviderService.update_provider(pid, {"base_url": base_url})
+                except ValueError as e:
+                    print(f"   ✗ {e}", file=sys.stdout)
             _fallback_test_and_default(pid)
     if _ask("   新增中转站/自建供应商？[y/N]", default="N").lower() == "y":
         name = _ask("   供应商名称", default="我的中转站")
@@ -932,7 +1085,7 @@ def _setup_cli_fallback() -> None:
     print("\n③ 其他（视频理解默认 / 评论·弹幕整合默认 / 笔记默认）：", file=sys.stdout)
     print("   视频理解把画面按间隔抽帧发给多模态 LLM（需 qwen-vl / gpt-4o 等；会下载整个视频、比纯转写慢）", file=sys.stdout)
     cur_on = bool(get_app_config().get("video_understanding", False))
-    cur_int = int(get_app_config().get("video_interval") or 6)
+    cur_int = resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 6)
     on = _ask(f"   默认开启视频理解？[y/N]（当前 {'开' if cur_on else '关'}）", default="N").lower() == "y"
     set_app_config("video_understanding", bool(on))
     iv = _ask(f"   帧间隔秒数（当前 {cur_int}，默认 6）", default=str(cur_int))
@@ -944,7 +1097,7 @@ def _setup_cli_fallback() -> None:
     print(f"   ✓ 视频理解默认：{'开' if on else '关'} / {iv}s", file=sys.stdout)
     print("   评论/弹幕整合默认：把弹幕+评论区观点整合进笔记（需 B 站 SESSDATA；没配则评论拿不到，任务不阻断）", file=sys.stdout)
     cur_on = bool(get_app_config().get("include_comments", False))
-    cur_lim = int(get_app_config().get("comments_limit") or 20)
+    cur_lim = resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
     on = _ask(f"   默认整合弹幕+评论区观点？[y/N]（当前 {'开' if cur_on else '关'}）", default="N").lower() == "y"
     set_app_config("include_comments", bool(on))
     lim = _ask(f"   评论条数（当前 {cur_lim}，默认 20）", default=str(cur_lim))
@@ -1046,14 +1199,14 @@ def _providers_cli(argv) -> None:
     sub.add_parser("list", help="列出供应商（key 掩码）")
     p_set = sub.add_parser("set", help="给供应商填 key / base_url / name")
     p_set.add_argument("provider_id")
-    p_set.add_argument("--api-key", help="API key")
+    p_set.add_argument("--api-key", help="API key（会出现在 shell history；建议用 add 的交互输入填 key）")
     p_set.add_argument("--base-url", help="base_url")
     p_set.add_argument("--name", help="显示名")
-    p_add = sub.add_parser("add", help="新增供应商（如中转站）")
+    p_add = sub.add_parser("add", help="新增供应商（如中转站）；key 缺省走 getpass 交互输入")
     p_add.add_argument("--name", required=True)
-    p_add.add_argument("--api-key", required=True)
+    p_add.add_argument("--api-key", help="API key（缺省交互输入，不落 shell history / 进程列表）")
     p_add.add_argument("--base-url", required=True)
-    p_add.add_argument("--type", default="custom")
+    p_add.add_argument("--type", default="custom", help="恒为 custom（服务端强制，传其他值被忽略，#127 A4）")
     p_test = sub.add_parser("test", help="检测连接并列出可用模型（--default 设为默认模型）")
     p_test.add_argument("provider_id")
     p_test.add_argument("--default", help="把某个模型设为该供应商的默认模型")
@@ -1096,15 +1249,29 @@ def _providers_cli(argv) -> None:
             data["name"] = opts.name
         if not data:
             parser.error("至少提供 --api-key / --base-url / --name 之一")
-        updated = ProviderService.update_provider(opts.provider_id, data)
+        updated = None
+        try:
+            updated = ProviderService.update_provider(opts.provider_id, data)
+        except ValueError as e:
+            print(f"✗ {e}", file=sys.stderr)
+            sys.exit(1)
         if not updated:
             print(f"更新失败：供应商 {opts.provider_id} 不存在", file=sys.stderr)
             sys.exit(1)
         print(f"已更新 {opts.provider_id} (enabled={updated.get('enabled')})", file=sys.stdout)
     elif opts.cmd == "add":
-        new_id = ProviderService.add_provider(
-            name=opts.name, api_key=opts.api_key, base_url=opts.base_url, logo="custom", type_=opts.type
-        )
+        # key 缺省走 getpass 交互：不落 shell history / 进程列表（docs/05 #45）
+        key = opts.api_key
+        if not key:
+            key = _ask_secret(f"{opts.name} 的 API key（输入不回显）")
+        try:
+            new_id = ProviderService.add_provider(
+                name=opts.name, api_key=key, base_url=opts.base_url, logo="custom", type_=opts.type
+            )
+        except ValueError as e:
+            # 重名等业务错误：打印原因退出，不裸 traceback（向导有捕获、CLI 漏网，#124 A2）
+            print(f"✗ {e}", file=sys.stderr)
+            sys.exit(1)
         print(f"已新增 {opts.name} → id={new_id}", file=sys.stdout)
 
 
@@ -1122,7 +1289,7 @@ def _transcriber_cli(argv) -> None:
     sub.add_parser("list", help="查看当前转写引擎与就绪状态")
     p_set = sub.add_parser("set", help="切换转写引擎")
     p_set.add_argument("engine", choices=_TRANSCRIBER_ENGINES)
-    p_set.add_argument("--size", help="whisper 模型尺寸（tiny/base/small/medium/large-v3）")
+    p_set.add_argument("--size", help=f"whisper 模型尺寸（{'/'.join(_WHISPER_SIZES)}，或自定义模型名 / HF repo_id / 本地目录）")
     p_dl = sub.add_parser("download", help="下载本地 whisper 模型")
     p_dl.add_argument("size", choices=_WHISPER_SIZES)
     p_dl.add_argument("--engine", default="fast-whisper", choices=("fast-whisper", "mlx-whisper"), help="fast-whisper（默认）或 mlx-whisper（macOS）")
@@ -1143,12 +1310,33 @@ def _transcriber_cli(argv) -> None:
         print(f"可选引擎: {', '.join(_TRANSCRIBER_ENGINES)}", file=sys.stdout)
         print(f"whisper 尺寸: {', '.join(_WHISPER_SIZES)}", file=sys.stdout)
     elif opts.cmd == "set":
-        if opts.engine in ("fast-whisper", "mlx-whisper") and not opts.size:
-            opts.size = "small"
+        # 未带 --size 时保留现有 whisper_model_size（update_config(None) 不覆盖）——
+        # 曾静默重置 "small"，用户配好 large-v3 → 切 groq → 切回 fast-whisper 悄悄降级（#127 A8）
+        if opts.size:
+            # 与 MCP set_transcriber 同口径（#108）：非法尺寸被持久化后任务跑到
+            # TRANSCRIBING 才因模型加载失败；下载白名单有 choices，set 是自由串
+            from app.transcriber.whisper_models import resolve_whisper_model
+
+            try:
+                resolve_whisper_model(opts.size)
+            except ValueError:
+                print(
+                    f"✗ 未知 whisper 模型尺寸: {opts.size!r}（可选: {', '.join(_WHISPER_SIZES)}，"
+                    "或自定义模型名 / HF repo_id / 本地目录）",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         cfg = mgr.update_config(opts.engine, opts.size)
         print(f"已切换: {cfg['transcriber_type']} / {cfg['whisper_model_size']}", file=sys.stdout)
         if opts.engine == "fast-whisper":
-            print(f"（本地模型还需下载：videonote transcriber download {cfg['whisper_model_size']}）", file=sys.stdout)
+            size = cfg["whisper_model_size"]
+            if size in _WHISPER_SIZES:
+                print(f"（本地模型还需下载：videonote transcriber download {size}）", file=sys.stdout)
+            else:
+                print(
+                    f"（自定义尺寸 {size!r} 无预下载命令：首次转写时会自动从 HuggingFace 下载）",
+                    file=sys.stdout,
+                )
     elif opts.cmd == "download":
         try:
             if opts.engine == "mlx-whisper":
@@ -1187,20 +1375,27 @@ def _transcriber_cli(argv) -> None:
                 )
 
 
-def _login_cli(argv) -> None:
-    """`videonote login [bilibili]`：扫码登录 B 站，自动获取并保存 SESSDATA（AI 字幕用）。"""
+def _login_cli(argv, exit_on_fail: bool = True) -> None:
+    """`videonote login [bilibili]`：扫码登录 B 站，自动获取并保存 SESSDATA（AI 字幕用）。
+
+    exit_on_fail=False 时失败路径只返回不杀进程（setup 向导内调用，#120：
+    登录失败不再让整个向导带 traceback/退出，已配的其它设置不丢失）。
+    """
     if argv and argv[0] != "bilibili":
         print(f"未知平台: {argv[0]}（当前支持 bilibili）", file=sys.stderr)
         sys.exit(2)
     import time
     import urllib.parse
+
     import requests
 
     try:
         import qrcode
     except ImportError:
         print("需要 qrcode 库：`uv sync` 后重试", file=sys.stderr)
-        sys.exit(1)
+        if exit_on_fail:
+            sys.exit(1)
+        return
 
     _UA = {
         "User-Agent": (
@@ -1216,12 +1411,16 @@ def _login_cli(argv) -> None:
         ).json()
         if resp.get("code") != 0:
             print(f"生成二维码失败: {resp}", file=sys.stderr)
-            sys.exit(1)
+            if exit_on_fail:
+                sys.exit(1)
+            return
         qr_url = resp["data"]["url"]
         qrcode_key = resp["data"]["qrcode_key"]
     except Exception as e:
         print(f"生成二维码失败（网络？）: {e}", file=sys.stderr)
-        sys.exit(1)
+        if exit_on_fail:
+            sys.exit(1)
+        return
 
     _show_header("B 站扫码登录")
     print(f"{_YELLOW}请用 B 站 App「扫一扫」扫描下方二维码（约 1 分钟内有效）{_RESET}", file=sys.stdout)
@@ -1265,8 +1464,13 @@ def _login_cli(argv) -> None:
                     except Exception as e:
                         print(f"跟随登录 URL 拿 cookie 失败: {e}", file=sys.stderr)
                 if not sess:
-                    print(f"登录成功但未取到 SESSDATA：{data['url']}", file=sys.stderr)
-                    sys.exit(1)
+                    # 不打印完整 URL：crossDomain ticket 含敏感参数（#71）
+                    from urllib.parse import urlparse
+
+                    print(f"登录成功但未取到 SESSDATA（{urlparse(data['url']).netloc or '未知域名'}）", file=sys.stderr)
+                    if exit_on_fail:
+                        sys.exit(1)
+                    return
                 from app.services.cookie_manager import CookieConfigManager
 
                 CookieConfigManager().set("bilibili", f"SESSDATA={sess}")
@@ -1292,6 +1496,14 @@ def _login_cli(argv) -> None:
         print("（已取消）", file=sys.stdout)
 
 
+def _format_list_display(cfg) -> str:
+    """向导菜单里的导出格式显示：非列表垃圾配置（手动编辑 JSON 常见）显示「无」
+    而不是被 `','.join` 拆成字符（#124 A4）。"""
+    if isinstance(cfg, list) and cfg:
+        return ",".join(str(f) for f in cfg)
+    return "无"
+
+
 def _export_cli(argv) -> None:
     """`videonote export ...`：把已完成任务的转写导出为纯格式（srt/vtt/json）。"""
     parser = argparse.ArgumentParser(
@@ -1304,7 +1516,7 @@ def _export_cli(argv) -> None:
     p_run = sub.add_parser("export", help="导出指定任务（<task_id> 必填）")
     p_run.add_argument("task_id", help="已完成任务的 task_id（generate_note 返回）")
     p_run.add_argument("--format", default=None, help="逗号分隔的格式（srt,vtt,json），缺省取 setup 默认")
-    p_run.add_argument("--out-dir", default=None, help="输出目录（缺省 note_results/{task_id}/）")
+    p_run.add_argument("--out-dir", default=None, help="输出目录（缺省 note_results/{task_id}/gen/）")
 
     opts = parser.parse_args(argv)
     if opts.cmd == "list":
@@ -1313,40 +1525,103 @@ def _export_cli(argv) -> None:
             print(f"  - {f}: {desc}")
         return
 
-    # 缺省格式：命令行 > setup 配置 > 全三种
+    # 缺省格式：命令行 > setup 配置 > env > 默认 ["srt"]（与 MCP export_transcript 同源，
+    # #123 A6 统一 ["srt"]；非列表垃圾配置由 resolve_default_export_formats 守卫回退，#124 A4）
     formats = None
     if opts.format:
         formats = [f.strip() for f in opts.format.split(",") if f.strip()]
     if formats is None:
-        formats = get_app_config().get("default_export_formats") or ["srt", "vtt", "json"]
+        formats = resolve_default_export_formats() or ["srt"]
 
-    from videonote_mcp.export import export_transcript
+    from videonote_mcp.export import FORMATS, export_transcript
+
+    # 未知格式直接报错（与 MCP export 工具同口径；此前 exporter 只 warning 丢弃后
+    # 仍打印「✓ 已导出 N 个格式」——用户以为导出齐了实际缺文件，#120）
+    unknown = sorted(set(formats) - set(FORMATS))
+    if unknown:
+        print(
+            f"✗ 未知导出格式: {', '.join(unknown)}（支持: {', '.join(FORMATS)}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     note_output_dir = Path(os.environ.get("NOTE_OUTPUT_DIR", "note_results"))
-    task_dir = note_output_dir / opts.task_id
-    result_path = task_dir / "result.json"
-    if not result_path.exists():
-        print(f"✗ 找不到任务 {opts.task_id} 的结果文件（{result_path}），任务可能未成功", file=sys.stderr)
+    # task_id 进路径拼接前校验格式（与 MCP _validate_task_id 同源正则，防 ../ 逃逸）
+    if not re.fullmatch(r"^[A-Za-z0-9_-]{1,64}$", opts.task_id):
+        print(
+            f"✗ 非法 task_id: {opts.task_id!r}（应为 1-64 位字母/数字/下划线/连字符）",
+            file=sys.stderr,
+        )
         sys.exit(1)
+    task_dir = note_output_dir / opts.task_id
     import json as _json
 
+    # C1 门禁（#126）：与 MCP export_transcript 同口径，非 SUCCESS 任务拒绝导出。
+    # 此前 CLI 对 FAILED/运行中任务照常导出、MCP 拒绝——同一任务两套结论（CLI/MCP 不对称）。
+    # 与 MCP 一致放在参数校验后、读转写前；UNKNOWN（任务不存在/状态不可读）放行，
+    # 由下方「找不到任务」路径报准确原因，而不是误报「任务未成功」。
+    status_path = task_dir / "status.json"
+    task_status = None
+    if status_path.exists():
+        try:
+            task_status = _json.loads(status_path.read_text(encoding="utf-8")).get("status")
+        except Exception:
+            task_status = None
+    if task_status not in ("SUCCESS", "UNKNOWN", None):
+        print(
+            f"✗ 任务未成功（当前状态 {task_status}）：只有 SUCCESS 任务能导出转写",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # 与 server 侧 _load_task_transcript 同源（docs/05 #16）：gen/transcript.json 是
+    # 规范来源，缺失/损坏才退 result.json；损坏与「无转写」分开报（#120）
     transcript = None
-    try:
-        transcript = _json.loads(result_path.read_text(encoding="utf-8")).get("transcript")
-    except Exception:
-        pass
+    cache = task_dir / "gen" / "transcript.json"
+    if cache.exists():
+        try:
+            transcript = _json.loads(cache.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"⚠ 转写缓存损坏（{cache}）：{e}", file=sys.stderr)
+    if not transcript:
+        result_path = task_dir / "result.json"
+        if not result_path.exists():
+            print(f"✗ 找不到任务 {opts.task_id} 的结果文件（{result_path}），任务可能未成功", file=sys.stderr)
+            sys.exit(1)
+        try:
+            transcript = _json.loads(result_path.read_text(encoding="utf-8")).get("transcript")
+        except Exception as e:
+            print(f"✗ 任务 {opts.task_id} 的结果文件损坏：{e}", file=sys.stderr)
+            sys.exit(1)
     if not transcript:
         print(f"✗ 任务 {opts.task_id} 没有转写结果（可能未到转写阶段）", file=sys.stderr)
         sys.exit(1)
 
     out_dir = opts.out_dir or str(task_dir / "gen")
+    if opts.out_dir:
+        if opts.out_dir.startswith("file://"):
+            # file:// URI 规整（与 MCP export_transcript #107 同口径）：否则 Path("file:///…")
+            # 在 CWD 建字面 `file:` 目录（#126 C8）
+            from urllib.parse import unquote, urlparse
+
+            out_dir = unquote(urlparse(opts.out_dir).path or "")
+        else:
+            # `~` 展开：否则 Path("~/x") 在 CWD 建字面 `~` 目录（#130 A4，MCP 侧 _coerce_local_path 已展开）
+            out_dir = str(Path(opts.out_dir).expanduser())
     written = export_transcript(transcript, formats=formats, out_dir=out_dir, task_id=opts.task_id)
+    # 部分失败时 exporter 把 _errors 塞进 written（#125 C2）：先剥离再判空——
+    # 否则全部失败时 {"_errors": ...} 仍 truthy，`not written` 报错分支变死代码，
+    # 还打印「✓ 已导出 1 个格式: _errors」。与 server.export_transcript 同口径。
+    errors = written.pop("_errors", {}) if isinstance(written, dict) else {}
     if not written:
-        print(f"✗ 没有成功导出任何格式（请求: {formats}）", file=sys.stderr)
+        detail = f"；失败原因: {errors}" if errors else ""
+        print(f"✗ 没有成功导出任何格式（请求: {formats}）{detail}", file=sys.stderr)
         sys.exit(1)
     print(f"✓ 已导出 {len(written)} 个格式（task_id={opts.task_id}）：")
     for fmt, uri in written.items():
         print(f"  - {fmt}: {uri}")
+    if errors:
+        print(f"⚠ 部分格式导出失败: {errors}", file=sys.stderr)
 
 
 def main() -> None:

@@ -1,10 +1,8 @@
 """
 task_manifest 清理功能测试（不碰真实网络/数据库，只用临时目录）。
 
-运行：
-    cd /Users/acccan/.claude/jobs/80e51cb0/tmp/wt-an-cleanup
-    PYTHONPATH=/Users/acccan/.claude/jobs/80e51cb0/tmp/wt-an-cleanup \
-    /Users/acccan/hyc/tools/VideoNote-Mcp/.venv/bin/python tests/test_task_manifest.py
+运行（仓库根目录）：
+    PYTHONPATH=. .venv/bin/python tests/test_task_manifest.py
 """
 
 import os
@@ -23,10 +21,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite:////tmp/videonote_pytest/video_not
 from app.utils.task_manifest import (  # noqa: E402
     cleanup_all_files,
     cleanup_task_files,
-    get_task_meta,
     get_task_paths,
     list_task_files,
-    record_task_meta,
     record_task_paths,
 )
 
@@ -91,7 +87,6 @@ class TaskManifestTest(unittest.TestCase):
                 task_dir / "result.json",
             ],
         )
-        record_task_meta(task_id, {"title": "测试笔记"})
         return task_dir
 
     # ---------- manifest 记录 / 读取 ----------
@@ -108,13 +103,6 @@ class TaskManifestTest(unittest.TestCase):
         self.assertIn(str(td / "c.json"), paths)
         # manifest 落在任务文件夹内
         self.assertTrue((td / "manifest.json").exists())
-
-    def test_record_meta_preserved(self):
-        tid = "meta01"
-        record_task_paths(tid, [str(self.note_dir / tid / "x.json")])
-        record_task_meta(tid, {"title": "标题A"})
-        record_task_paths(tid, [str(self.note_dir / tid / "y.json")])  # 再次记路径，meta 不丢
-        self.assertEqual(get_task_meta(tid).get("title"), "标题A")
 
     def test_get_task_paths_missing(self):
         self.assertEqual(get_task_paths("nope"), [])
@@ -137,8 +125,8 @@ class TaskManifestTest(unittest.TestCase):
         self.assertTrue(any("raw" == Path(s).name for s in info["existing"]))
         self.assertTrue(any(s.endswith("note.md") for s in info["existing"]))
         self.assertTrue(task_dir.exists())
-        # meta 透出
-        self.assertEqual(info["meta"].get("title"), "测试笔记")
+        # meta 透出（写端 record_task_meta 已删为死代码 #134，恒为空 dict 但字段保留）
+        self.assertEqual(info["meta"], {})
 
     # ---------- cleanup_note ----------
 
@@ -170,6 +158,34 @@ class TaskManifestTest(unittest.TestCase):
         # 连最终笔记 + 整个任务文件夹一起删
         self.assertFalse(task_dir.exists())
         self.assertFalse(res["note_kept"])
+        self.assertEqual(res["notes_kept_outside"], [])
+
+    def test_cleanup_note_include_note_removes_portable_inside_data_dir(self):
+        # 便携笔记副本在数据目录内（notes_dir 设为数据目录子目录）→ 随 include_note=True 一起删
+        tid = "task03b"
+        self._make_task(tid)
+        portable = self.root / "notes" / "测试笔记"
+        (portable / "Assets").mkdir(parents=True, exist_ok=True)
+        (portable / "note.md").write_text("# 便携", encoding="utf-8")
+        (portable / "Assets" / "1.jpg").write_bytes(b"z")
+        record_task_paths(tid, [str(portable), str(portable / "note.md"), str(portable / "Assets")])
+        res = cleanup_task_files(tid, include_note=True)
+        self.assertFalse(portable.exists())
+        self.assertEqual(res["notes_kept_outside"], [])
+
+    def test_cleanup_note_include_note_reports_portable_outside(self):
+        # 便携笔记副本在数据目录外（用户指定 notes_dir 的典型场景）→ 沙箱红线不删，路径列出
+        tid = "task03c"
+        self._make_task(tid)
+        portable = self.root.parent / "outside_notes" / "测试笔记"
+        portable.mkdir(parents=True, exist_ok=True)
+        (portable / "note.md").write_text("# 便携", encoding="utf-8")
+        record_task_paths(tid, [str(portable), str(portable / "note.md")])
+        res = cleanup_task_files(tid, include_note=True)
+        # 数据目录外副本保留且被列出，manifest 已删（不再有其它引用）
+        self.assertTrue(portable.exists())
+        self.assertEqual(res["notes_kept_outside"], [str(portable)])
+        self.assertEqual(get_task_paths(tid), [])
 
     # ---------- 路径穿越防护 ----------
 
@@ -199,15 +215,32 @@ class TaskManifestTest(unittest.TestCase):
         (self.models / "whisper").mkdir(exist_ok=True)
         (self.models / "whisper" / "model.bin").write_bytes(b"m")
         res = cleanup_all_files(include_config=False, include_models=False)
-        # 清空 note_results / screenshots / logs
+        # 清空 note_results / screenshots
         self.assertEqual(list(self.note_dir.iterdir()), [])
         self.assertEqual(list(self.screens.iterdir()), [])
-        self.assertEqual(list(self.logs.iterdir()), [])
+        # logs/ 不清理（#121 C3）：MCP 进程持有 mcp_stderr.log 的打开 fd，unlink 后
+        # 日志写入进入已删除 inode——文件消失、磁盘不回收；且日志不属于任务产物
+        self.assertTrue((self.logs / "mcp_stderr.log").exists())
+        self.assertTrue(any(k.startswith("logs（") for k in res["kept"]))
         # 保留 config / models
         self.assertTrue((self.cfg / "app_config.json").exists())
         self.assertTrue((self.models / "whisper" / "model.bin").exists())
         self.assertIn("config", res["kept"])
         self.assertIn("models", res["kept"])
+
+    def test_cleanup_all_clears_covers(self):
+        """local 封面目录（static/cover + data/covers）随 cleanup_all 一并清（#125 B4）。"""
+        cover1 = self.screens.parent / "cover"
+        cover2 = self.root / "covers"
+        cover1.mkdir(parents=True, exist_ok=True)
+        cover2.mkdir(parents=True, exist_ok=True)
+        (cover1 / "c1.jpg").write_bytes(b"c")
+        (cover2 / "c2.jpg").write_bytes(b"c")
+        res = cleanup_all_files()
+        self.assertIn("static/cover", res["cleaned"])
+        self.assertIn("covers", res["cleaned"])
+        self.assertEqual(list(cover1.iterdir()), [])
+        self.assertEqual(list(cover2.iterdir()), [])
 
     def test_cleanup_all_include_config(self):
         (self.note_dir / "y.json").write_text("{}", encoding="utf-8")

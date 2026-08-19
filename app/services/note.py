@@ -7,16 +7,17 @@ import shutil
 import threading
 from dataclasses import asdict
 from pathlib import Path
-from typing import List, Optional, Tuple, Union, Any
+from typing import Any, List, Optional, Tuple, Union
+from uuid import uuid4
 
-from pydantic import HttpUrl
 from dotenv import load_dotenv
+from pydantic import HttpUrl
 
+from app.db.video_task_dao import insert_video_task
 from app.downloaders.base import Downloader
-from app.db.video_task_dao import delete_task_by_video, insert_video_task
 from app.enmus.exception import NoteErrorEnum, ProviderErrorEnum
-from app.enmus.task_status_enums import TaskStatus
 from app.enmus.note_enums import DownloadQuality
+from app.enmus.task_status_enums import TaskStatus
 from app.exceptions.note import NoteError
 from app.exceptions.provider import ProviderError
 from app.gpt.base import GPT
@@ -25,13 +26,14 @@ from app.models.audio_model import AudioDownloadResult
 from app.models.model_config import ModelConfig
 from app.models.notes_model import NoteResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
-from app.services import note_cache
-from app.services import pipeline
-from app.services.constant import SUPPORT_PLATFORM_MAP
+from app.services import note_cache, pipeline
+from app.services.constant import get_downloader as _new_downloader
 from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
-from app.transcriber.transcriber_provider import get_transcriber, _transcribers
-from app.utils.note_helper import replace_content_markers, prepend_source_link
+from app.transcriber.transcriber_provider import _transcribers, get_transcriber
+from app.utils.json_store import write_json_atomic, write_text_atomic
+from app.utils.note_helper import prepend_source_link, replace_content_markers
+from app.utils.path_helper import get_data_dir
 from app.utils.screenshot_marker import extract_screenshot_timestamps
 from app.utils.task_manifest import record_task_paths
 from app.utils.video_helper import generate_screenshot
@@ -40,15 +42,15 @@ from app.utils.video_reader import VideoReader
 # ------------------ 环境变量与全局配置 ------------------
 
 # 从 .env 文件中加载环境变量
-load_dotenv()
-
-# 后端 API 地址与端口（若有需要可以在代码其他部分使用 BACKEND_BASE_URL）
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost")
-BACKEND_PORT = os.getenv("BACKEND_PORT", "8483")
-BACKEND_BASE_URL = f"{API_BASE_URL}:{BACKEND_PORT}"
+# 仅上游独立运行时加载 CWD .env；MCP/CLI 环境下 setup_environment 已设好
+# VIDEONOTE_DATA_DIR，此时 .env 可能覆盖数据目录等关键配置，必须跳过
+if not os.environ.get("VIDEONOTE_DATA_DIR"):
+    load_dotenv()
 
 # 输出目录（用于缓存音频、转写、Markdown 文件，以及存储截图）
-NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", "note_results"))
+# 缺省统一落数据目录（#127 B2）：与 task_manifest.get_note_dir 同源——
+# 否则不经 config 的裸脚本把产物写 CWD/note_results，清理/status 按数据目录找 → 失明
+NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", str(Path(get_data_dir()) / "note_results")))
 NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # 截图目录：优先 IMAGE_OUTPUT_DIR（config.setup_environment 设置），
 # 兼容上游残留的 OUT_DIR；都没有则落到数据目录，绝不写 CWD。
@@ -62,7 +64,58 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-from app.exceptions.task import TaskCancelledError, check_cancel as _check_cancel
+def _extract_audio_from_video(
+    video_path: str,
+    out_dir: Union[str, Path],
+    cancel_event: Optional[threading.Event] = None,
+) -> str:
+    """从本地视频文件提取音频轨（mp3），供「视频已下载」场景复用（docs/05 #33）。
+
+    截图/视频理解模式已经下载了完整视频，转写不再第二次网络下载音频，
+    直接从视频提取。失败抛 RuntimeError（调用方回退常规音频下载）。
+    取消时 terminate 子进程而非等 600s 超时（docs/05 第 16 轮 B1）。
+    """
+    import subprocess
+    import time as _time
+
+    src = Path(video_path)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{src.stem}_audio.mp3"
+    cmd = [
+        "ffmpeg", "-y", "-i", str(src), "-vn",
+        "-acodec", "libmp3lame", "-q:a", "4", str(out),
+        "-hide_banner", "-loglevel", "error",
+    ]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except OSError as exc:
+        raise RuntimeError(f"启动 ffmpeg 提取音频失败: {src.name}") from exc
+    deadline = _time.monotonic() + 600
+    while proc.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            raise TaskCancelledError("任务已取消")
+        if _time.monotonic() > deadline:
+            proc.kill()
+            proc.wait()
+            raise RuntimeError(f"从视频提取音频超时: {src.name}")
+        _time.sleep(0.2)
+    _, stderr = proc.communicate()
+    if proc.returncode != 0 or not out.exists():
+        raise RuntimeError(
+            f"从视频提取音频失败: {src.name}（{(stderr or '').strip()[:300]}）"
+        )
+    return str(out)
+
+
+from app.exceptions.task import TaskCancelledError
+from app.exceptions.task import check_cancel as _check_cancel
 
 
 def task_dirs(task_id: str):
@@ -85,19 +138,37 @@ def _extract_note_title(markdown: str) -> Optional[str]:
     return None
 
 
-def _note_dir_name(title: Optional[str], task_id: str, base: Path) -> str:
-    """给一篇笔记一个文件夹名：优先 LLM 生成的笔记标题（或视频标题）清洗后；空/冲突时回退 task_id。
+def _reserve_portable_dir(title: Optional[str], task_id: str, base: Path) -> Path:
+    """给便携笔记分配一个目录：优先 LLM/视频标题清洗后命名；同名已被占用时回退加短 task_id 后缀。
 
-    标题清洗：替换路径非法字符 + 截断 60，防路径穿越/超长；目标文件夹已存在（同名冲突）时加 task_id 后缀。
+    标题清洗：替换路径非法字符 + 截断 60，防路径穿越/超长。
+    用 `mkdir(exist_ok=False)` 原子占用——`exists()` 预检是 TOCTOU：两个并发任务
+    （同 notes_dir + 同标题）都看到「不存在」选同一目录，然后互相 rmtree 对方
+    的 Assets/（#123 B7）。`FileExistsError` 命中即换后缀重试。
     """
+
+    def _try(name: str) -> Optional[Path]:
+        try:
+            target = base / name
+            target.mkdir(parents=True, exist_ok=False)
+            return target
+        except FileExistsError:
+            return None
+
     if title:
         safe = re.sub(r'[\\/:*?"<>|]', "_", str(title)).strip(" .")[:60]
         if safe:
-            target = base / safe
-            if not target.exists():
-                return safe
-            return f"{safe}-{task_id[:6]}"  # 同名冲突 → 加短 task_id 后缀
-    return task_id
+            hit = _try(safe)
+            if hit is not None:
+                return hit
+            hit = _try(f"{safe}-{task_id[:6]}")  # 同名冲突 → 加短 task_id 后缀
+            if hit is not None:
+                return hit
+    hit = _try(task_id)
+    if hit is not None:
+        return hit
+    # 极端兜底：标题 + 后缀 + task_id 全被占（同任务重跑/哈希碰撞）→ 再拼随机段
+    return _try(f"{task_id}-{uuid4().hex[:4]}")
 
 
 class NoteGenerator:
@@ -182,6 +253,18 @@ class NoteGenerator:
             self._transcript_engine = None
             self._update_status(task_id, TaskStatus.PARSING)
 
+            # format 声明截图与布尔开关归一化：format 含 "screenshot" 等价于 screenshot=True。
+            # 双向闭合：server 层把布尔并入 format（#120），这里把 format 回并布尔，
+            # 下游 need_full_download / _download_media.need_video 只认布尔也能拿到一致结论
+            if "screenshot" in (_format or []):
+                screenshot = True
+            # 反向自闭合（#129 B5）：screenshot=True 但 _format 未声明时，把 "screenshot"
+            # 并入 format——否则直接调 note.generate(screenshot=True, _format=None) 时
+            # _post_process_markdown 因 `if _format:` 跳过，markdown 里 *Screenshot-[mm:ss]
+            # 标记原样残留（vendored 核心公开的 screenshot 参数半生效）
+            if screenshot and "screenshot" not in (_format or []):
+                _format = [*(_format or []), "screenshot"]
+
             # 获取下载器与 GPT 实例
 
             downloader = self._get_downloader(platform)
@@ -228,6 +311,7 @@ class NoteGenerator:
                         language=data.get("language"),
                         full_text=data["full_text"],
                         segments=segments,
+                        truncated=bool(data.get("truncated", False)),
                     )
                     logger.info(f"已从缓存加载转写结果，共 {len(segments)} 段")
                 except Exception as e:
@@ -240,10 +324,7 @@ class NoteGenerator:
                     transcript = downloader.download_subtitles(video_url)
                     if transcript and transcript.segments:
                         logger.info(f"成功获取平台字幕，共 {len(transcript.segments)} 段")
-                        transcript_cache_file.write_text(
-                            json.dumps(asdict(transcript), ensure_ascii=False, indent=2),
-                            encoding="utf-8",
-                        )
+                        write_json_atomic(transcript_cache_file, asdict(transcript))
                         self._transcript_engine = note_cache.SUBTITLE_KEY
                     else:
                         transcript = None
@@ -253,9 +334,16 @@ class NoteGenerator:
                     transcript = None
 
             # 2. 下载音频/视频
-            # 有字幕时只提取元信息，不下载音视频文件（除非需要截图/视频理解）
+            # 有字幕时只提取元信息，不下载音视频文件（除非需要截图/视频理解）。
+            # format 直接声明 "screenshot" 也视为需要视频：否则 prompt 注入的标记指令
+            # 让 LLM 输出 *Screenshot-[mm:ss]，但 video_path=None 时替换被跳过 → 标记残留
             has_transcript = transcript is not None
-            need_full_download = not has_transcript or screenshot or video_understanding
+            need_full_download = (
+                not has_transcript
+                or screenshot
+                or video_understanding
+                or ("screenshot" in (_format or []))
+            )
             audio_meta = self._download_media(
                 downloader=downloader,
                 video_url=video_url,
@@ -269,6 +357,7 @@ class NoteGenerator:
                 video_interval=video_interval,
                 grid_size=grid_size,
                 skip_download=not need_full_download,
+                cancel_event=cancel_event,
             )
 
             # 3. 如果前面没拿到字幕，走转写流程
@@ -280,6 +369,9 @@ class NoteGenerator:
                     transcript_cache_file=transcript_cache_file,
                     status_phase=TaskStatus.TRANSCRIBING,
                     task_id=task_id,
+                    # 上方 line 287-304 已试过 downloader.download_subtitles；无字幕视频
+                    # 再让 _get_transcript 调一次 pipeline.fetch_subtitles 是重复 API 调用
+                    skip_subtitle=True,
                 )
 
             # 3.4 转写就绪后 promote 进跨任务缓存（按来源分键：subtitle / 引擎；另存音频媒体）。
@@ -355,15 +447,14 @@ class NoteGenerator:
 
             # 4.5 写出 note.md 到 gen/（恒写；用户指定 notes_dir 时额外写便携副本）
             _note_dir.mkdir(parents=True, exist_ok=True)
-            (_note_dir / "note.md").write_text(markdown, encoding="utf-8")
+            write_text_atomic(_note_dir / "note.md", markdown)
             logger.info(f"笔记已写出: {_note_dir / 'note.md'}")
             record_task_paths(task_id, [_note_dir, _note_dir / "note.md"])
             if notes_dir:
                 # 便携模式：额外写一份 <notes_dir>/<标题>/note.md（以标题命名的可读副本）
                 try:
-                    portable_dir = Path(notes_dir) / _note_dir_name(folder_title, task_id, Path(notes_dir))
-                    portable_dir.mkdir(parents=True, exist_ok=True)
-                    (portable_dir / "note.md").write_text(markdown, encoding="utf-8")
+                    portable_dir = _reserve_portable_dir(folder_title, task_id, Path(notes_dir))
+                    write_text_atomic(portable_dir / "note.md", markdown)
                     record_task_paths(task_id, [portable_dir, portable_dir / "note.md"])
                     # 便携副本的截图：把 gen/Assets/ 一并拷贝，保证相对引用 Assets/... 可读
                     assets_src = gen_dir / "Assets"
@@ -391,7 +482,9 @@ class NoteGenerator:
                 title=semantic_title,
                 status="SUCCESS",
                 summary=summary,
-                note_dir=str(task_dir),
+                # note_dir 契约（docs 审计 G2）：note 任务指向 note.md 所在目录 gen/，
+                # 与 get_task_status 的 result.note_dir 一致；material 无 note.md 用 task_dir
+                note_dir=str(_note_dir) if _note_dir is not None else str(task_dir),
             )
 
             # 6. 完成
@@ -412,17 +505,6 @@ class NoteGenerator:
             return None
 
     @staticmethod
-    def delete_note(video_id: str, platform: str) -> int:
-        """
-        删除数据库中对应 video_id 与 platform 的任务记录
-
-        :param video_id: 视频 ID
-        :param platform: 平台标识
-        :return: 删除的记录数
-        """
-        logger.info(f"删除笔记记录 (video_id={video_id}, platform={platform})")
-        return delete_task_by_video(video_id, platform)
-
     # ---------------- 私有方法 ----------------
 
     def _init_transcriber(self) -> Transcriber:
@@ -469,20 +551,18 @@ class NoteGenerator:
         :param platform: 平台标识，需在 SUPPORT_PLATFORM_MAP 中
         :return: 对应的 Downloader 子类实例
         """
-        downloader_cls = SUPPORT_PLATFORM_MAP.get(platform)
         logger.debug(f"实例化下载器 -  {platform}")
-        instance = None
-        if not downloader_cls:
+        try:
+            instance = _new_downloader(platform)
+        except ValueError:
             logger.error(f"不支持的平台：{platform}")
             raise NoteError(code=NoteErrorEnum.PLATFORM_NOT_SUPPORTED.code,
                             message=NoteErrorEnum.PLATFORM_NOT_SUPPORTED.message)
-        try:
-            instance = downloader_cls
         except Exception as e:
             logger.error(f"实例化下载器失败：{e}")
+            raise
 
-
-        logger.info(f"使用下载器：{downloader_cls.__class__}")
+        logger.info(f"使用下载器：{instance.__class__.__name__}")
         return instance
 
     def _update_status(self, task_id: Optional[str], status: Union[str, TaskStatus], message: Optional[str] = None):
@@ -509,8 +589,8 @@ class NoteGenerator:
                 old = json.loads(status_file.read_text(encoding="utf-8"))
                 if old.get("started_at"):
                     data["started_at"] = old["started_at"]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 —— 尽力而为，但失败必须留痕（elapsed 会失真）
+            logger.warning(f"读取旧 status.json 保留 started_at 失败: {exc}")
 
         # 同步全局索引（video_tasks.status）——尽力而为，失败不阻断
         try:
@@ -518,27 +598,35 @@ class NoteGenerator:
 
             update_task_status(task_id, data["status"], message=message or "")
         except Exception as e:
-            logger.debug(f"同步任务状态到全局索引失败: {e}")
+            # debug 会让「任务状态不进全局索引」静默——list_tasks 查不到、cleanup 找不到
+            logger.warning(f"同步任务状态到全局索引失败: {e}")
 
         try:
-            # First create a temporary file
-            temp_file = status_file.with_suffix('.tmp')
+            # tmp 带唯一后缀（docs/05 第 16 轮 B9/B8）：note 侧与 server 侧双写者
+            # 不再共用固定 status.tmp 互相截断；创建即 0600，无权限窗口
+            from app.utils.json_store import _unique_tmp, _write_bytes_with_mode
 
-            # Write to temporary file
-            with temp_file.open('w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            temp_file = _unique_tmp(status_file)
+            _write_bytes_with_mode(
+                temp_file, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), 0o600
+            )
 
             # Atomic rename operation
             temp_file.replace(status_file)
 
-            print(f"状态文件写入成功: {status_file}")
+
         except Exception as e:
             logger.error(f"写入状态文件失败 (task_id={task_id})：{e}")
-            # Try to write error to file directly as fallback
+            # 回退不截断原文件：open('w') 会把上次已落盘的终态（可能是 SUCCESS）
+            # 永久抹掉——进程重启后内存快照失效，任务只能显示损坏（#125 B3）。
+            # 只在无原文可保时才写入错误说明。
             try:
-                with status_file.open('w', encoding='utf-8') as f:
-                    f.write(f"Error writing status: {str(e)}")
-            except:
+                if not status_file.exists() or status_file.stat().st_size == 0:
+                    with status_file.open('w', encoding='utf-8') as f:
+                        f.write(f"Error writing status: {str(e)}")
+                else:
+                    logger.warning("保留上次已落盘的状态文件（写失败原因: %s）", e)
+            except Exception:
                 logger.error(f"写入错误  {e}")
 
     def _handle_exception(self, task_id, exc):
@@ -547,7 +635,7 @@ class NoteGenerator:
         if isinstance(error_message, dict):
             try:
                 error_message = json.dumps(error_message, ensure_ascii=False)
-            except:
+            except Exception:
                 error_message = str(error_message)
         self._update_status(task_id, TaskStatus.FAILED, message=error_message)
 
@@ -565,6 +653,7 @@ class NoteGenerator:
         video_interval: int,
         grid_size: List[int],
         skip_download: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult | None:
         """
         1. 检查音频缓存；若不存在，则根据需要下载音频或视频（若需截图/可视化）。
@@ -598,11 +687,22 @@ class NoteGenerator:
         # 已有缓存，尝试加载
         if audio_cache_file.exists():
             logger.info(f"检测到音频缓存 ({audio_cache_file})，直接读取")
+            cached = None
             try:
                 data = json.loads(audio_cache_file.read_text(encoding="utf-8"))
-                return AudioDownloadResult(**data)
+                cached = AudioDownloadResult(**data)
             except Exception as e:
                 logger.warning(f"读取音频缓存失败，将重新下载：{e}")
+            if cached is not None:
+                # 需要真实音频文件（无字幕/截图/视频理解）时，file_path 缺失或悬空
+                # 视为缓存失效（JSON 在但实体没了不能直接返回；None 曾因 falsy 被吞、
+                # 转写时 Path(None) 抛误导性 TypeError——#119 置空路径后暴露）
+                if not skip_download and (
+                    cached.file_path is None or not Path(cached.file_path).is_file()
+                ):
+                    logger.warning(f"音频缓存无实体文件，将重新下载：{cached.file_path!r}")
+                else:
+                    return cached
 
         # 有字幕且不需要截图/视频理解时，只提取元信息不下载文件
         if skip_download:
@@ -614,16 +714,22 @@ class NoteGenerator:
                     output_dir=dl_dir,
                     need_video=False,
                     skip_download=True,
+                    cancel_event=cancel_event,
                 )
                 # 命中转写缓存时媒体没真下载，audio.file_path 是悬空路径；
                 # 从跨任务缓存复制音频到本任务 raw/，audio_path 才有真实文件
                 cached_media = note_cache.lookup_media(str(video_url), platform, dl_dir)
                 if cached_media:
                     audio.file_path = cached_media
-                audio_cache_file.write_text(
-                    json.dumps(asdict(audio), ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+                else:
+                    # 只有路径真实悬空（下载器拼出但文件不存在）才置 None（#119）；
+                    # skip_download 对本地文件返回真实源路径（LocalDownloader 直接回
+                    # video_url），必须保留——#119 的修复缺存在性检查，把真实路径也
+                    # 吞成 None（二次跑本地文件素材包 audio_path 恒空，#122 B1）
+                    if not audio.file_path or not Path(audio.file_path).is_file():
+                        audio.file_path = None
+                        logger.info("媒体缓存未命中，audio_path 置空（%s）", video_url)
+                write_json_atomic(audio_cache_file, asdict(audio))
                 logger.info(f"元信息提取完成 ({audio_cache_file})")
                 return audio
             except Exception as exc:
@@ -640,7 +746,9 @@ class NoteGenerator:
         if need_video:
             try:
                 logger.info("开始下载视频")
-                video_path_str = downloader.download_video(video_url, output_dir=dl_dir)
+                video_path_str = downloader.download_video(
+                    video_url, output_dir=dl_dir, cancel_event=cancel_event
+                )
                 self.video_path = Path(video_path_str)
                 logger.info(f"视频下载完成：{self.video_path}")
                 record_task_paths(task_id, [self.video_path])
@@ -661,6 +769,28 @@ class NoteGenerator:
                 self._handle_exception(task_id, exc)
                 raise
 
+        # 视频已在本地时（screenshot/视频理解模式）从视频提取音频，不再第二次网络下载
+        # （docs/05 #33：旧实现 download_video + download 各下载一次）。
+        # skip_download=True 只做轻量 extract_info（metadata），拿到 title/duration/cover。
+        if getattr(self, "video_path", None) and self.video_path and self.video_path.exists():
+            try:
+                audio = downloader.download(
+                    video_url=video_url,
+                    quality=quality,
+                    output_dir=dl_dir,
+                    need_video=True,
+                    skip_download=True,
+                    cancel_event=cancel_event,
+                )
+                audio.file_path = _extract_audio_from_video(str(self.video_path), dl_dir, cancel_event)
+                audio.video_path = str(self.video_path)
+                write_json_atomic(audio_cache_file, asdict(audio))
+                logger.info(f"视频下载完成，音频从视频提取（免二次下载）({audio_cache_file})")
+                return audio
+            except Exception as exc:
+                logger.warning(f"从视频提取音频失败，回退常规音频下载：{exc}")
+                # 不 raise：回退到下方常规下载
+
         # 下载音频
         try:
             logger.info("开始下载音频")
@@ -669,8 +799,9 @@ class NoteGenerator:
                 quality=quality,
                 output_dir=dl_dir,
                 need_video=need_video,
+                cancel_event=cancel_event,
             )
-            audio_cache_file.write_text(json.dumps(asdict(audio), ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json_atomic(audio_cache_file, asdict(audio))
             logger.info(f"音频下载并缓存成功 ({audio_cache_file})")
             return audio
         except Exception as exc:
@@ -687,6 +818,7 @@ class NoteGenerator:
         transcript_cache_file: Path,
         status_phase: TaskStatus,
         task_id: Optional[str] = None,
+        skip_subtitle: bool = False,
     ) -> TranscriptResult | None:
         """
         优先获取平台字幕，没有则 fallback 到音频转写
@@ -697,7 +829,9 @@ class NoteGenerator:
         :param transcript_cache_file: 缓存文件路径
         :param status_phase: 状态枚举
         :param task_id: 任务 ID
-        :return: TranscriptResult 对象
+        :param skip_subtitle: True 时跳过平台字幕获取，直接走音频转写——调用方已试过
+            字幕（generate 主路径试过 downloader.download_subtitles）时避免重复调用
+            无字幕视频的字幕 API（#123 B1）。
         """
         self._update_status(task_id, status_phase)
 
@@ -707,33 +841,36 @@ class NoteGenerator:
             try:
                 data = json.loads(transcript_cache_file.read_text(encoding="utf-8"))
                 segments = [TranscriptSegment(**seg) for seg in data.get("segments", [])]
-                return TranscriptResult(language=data.get("language"), full_text=data["full_text"], segments=segments)
+                return TranscriptResult(
+                    language=data.get("language"),
+                    full_text=data["full_text"],
+                    segments=segments,
+                    truncated=bool(data.get("truncated", False)),
+                )
             except Exception as e:
                 logger.warning(f"加载转写缓存失败，将重新获取：{e}")
 
         # 1. 先尝试获取平台字幕（委托 pipeline 步骤层，返回 asdict dict）
-        logger.info("尝试获取平台字幕...")
-        try:
-            data = pipeline.fetch_subtitles(video_url)
-            if data:
-                transcript = TranscriptResult(
-                    language=data.get("language"),
-                    full_text=data["full_text"],
-                    segments=[TranscriptSegment(**seg) for seg in data.get("segments", [])],
-                    raw=data.get("raw"),
-                )
-                logger.info(f"成功获取平台字幕，共 {len(transcript.segments)} 段")
-                # 缓存结果（pipeline 返回的 asdict dict，与 asdict(transcript) 等价）
-                transcript_cache_file.write_text(
-                    json.dumps(data, ensure_ascii=False, indent=2),
-                    encoding="utf-8"
-                )
-                self._transcript_engine = note_cache.SUBTITLE_KEY
-                return transcript
-            else:
-                logger.info("平台无可用字幕，将使用音频转写")
-        except Exception as e:
-            logger.warning(f"获取平台字幕失败: {e}，将使用音频转写")
+        if not skip_subtitle:
+            logger.info("尝试获取平台字幕...")
+            try:
+                data = pipeline.fetch_subtitles(video_url)
+                if data:
+                    transcript = TranscriptResult(
+                        language=data.get("language"),
+                        full_text=data["full_text"],
+                        segments=[TranscriptSegment(**seg) for seg in data.get("segments", [])],
+                        raw=data.get("raw"),
+                    )
+                    logger.info(f"成功获取平台字幕，共 {len(transcript.segments)} 段")
+                    # 缓存结果（pipeline 返回的 asdict dict，与 asdict(transcript) 等价）
+                    write_json_atomic(transcript_cache_file, data)
+                    self._transcript_engine = note_cache.SUBTITLE_KEY
+                    return transcript
+                else:
+                    logger.info("平台无可用字幕，将使用音频转写")
+            except Exception as e:
+                logger.warning(f"获取平台字幕失败: {e}，将使用音频转写")
 
         # 2. Fallback 到音频转写
         return self._transcribe_audio(
@@ -779,14 +916,16 @@ class NoteGenerator:
             logger.info("开始转写音频")
             # 委托 pipeline 步骤层（返回 asdict dict，与 asdict(transcript) 写缓存等价）
             transcript_dict = pipeline.transcribe_audio(audio_file, transcriber=self.transcriber)
-            transcript_cache_file.write_text(json.dumps(transcript_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json_atomic(transcript_cache_file, transcript_dict)
             self._transcript_engine = note_cache.engine_key(self.transcriber_type, self.model_size)
-            # 重建 TranscriptResult，保持返回类型一致（generate 下游仍按对象访问）
+            # 重建 TranscriptResult，保持返回类型一致（generate 下游仍按对象访问）。
+            # truncated 透传（docs/05 第 16 轮 B2）：预处理分块部分失败时笔记/result 不静默降级
             transcript = TranscriptResult(
                 language=transcript_dict.get("language"),
                 full_text=transcript_dict["full_text"],
                 segments=[TranscriptSegment(**seg) for seg in transcript_dict.get("segments", [])],
                 raw=transcript_dict.get("raw"),
+                truncated=bool(transcript_dict.get("truncated", False)),
             )
             logger.info(f"转写并缓存成功 ({transcript_cache_file})")
             return transcript
@@ -794,6 +933,15 @@ class NoteGenerator:
             logger.error(f"音频转写失败：{exc}")
             self._handle_exception(task_id, exc)
             raise
+        finally:
+            # B14（docs/05 第 16 轮）：bcut 是每任务新实例（requests.Session 此前只靠
+            # __del__/GC 关闭）；任务结束确定性 close。whisper/funasr/mlx 的 close 会
+            # 释放模型引用且实例被 transcriber_provider 缓存复用——不在这里动。
+            if self.transcriber is not None and type(self.transcriber).__name__ == "BcutTranscriber":
+                try:
+                    self.transcriber.close()
+                except Exception:  # noqa: BLE001 —— 释放失败不阻断任务收尾
+                    logger.warning("bcut 转写器 close 失败", exc_info=True)
 
     def _summarize_text(
         self,
@@ -853,8 +1001,15 @@ class NoteGenerator:
                 checkpoint_key=task_id,
                 cancel_event=cancel_event,
             )
-            markdown_cache_file.write_text(markdown, encoding="utf-8")
+            write_text_atomic(markdown_cache_file, markdown)
             logger.info(f"GPT 总结并缓存成功 ({markdown_cache_file})")
+            # 转写不完整显式标注（docs/05 第 16 轮 B2）：不再静默基于残缺素材产出
+            if getattr(transcript, "truncated", False):
+                markdown = markdown + (
+                    "\n\n> ⚠️ 转写不完整：预处理分块转写有部分失败，本笔记基于残缺转写素材生成，"
+                    "请核对后使用\n"
+                )
+                write_text_atomic(markdown_cache_file, markdown)
             return markdown
         except Exception as exc:
             logger.error(f"GPT 总结失败：{exc}")
@@ -949,8 +1104,8 @@ class NoteGenerator:
         if "screenshot" in formats and video_path:
             try:
                 markdown = self._insert_screenshots(markdown, video_path, assets_dir)
-            except Exception:
-                logger.warning("截图插入失败，跳过该步骤")
+            except Exception as exc:
+                logger.warning("截图插入失败，跳过该步骤：%s", exc)
 
         if "link" in formats:
             try:
@@ -993,17 +1148,6 @@ class NoteGenerator:
                 continue
         return markdown
 
-    @staticmethod
-    def _extract_screenshot_timestamps(markdown: str) -> List[Tuple[str, int]]:
-        """
-        从 Markdown 文本中提取所有 '*Screenshot-mm:ss' 或 'Screenshot-[mm:ss]' 标记，
-        返回 [(原始标记文本, 时间戳秒数), ...] 列表。
-
-        :param markdown: 原始 Markdown 文本
-        :return: 标记与对应时间戳秒数的列表
-        """
-        return extract_screenshot_timestamps(markdown)
-
     def _save_metadata(
         self,
         video_id: str,
@@ -1035,6 +1179,7 @@ class NoteGenerator:
                 summary=summary,
                 note_dir=note_dir,
             )
-            logger.info(f"已保存任务记录到数据库 (video_id={video_id}, platform={platform}, task_id={task_id}, title={title[:40]!r})")
+            # title 可能是 None（无标题视频）——裸切片 TypeError 被 except 吞、误报「保存失败」（#127 B10）
+            logger.info(f"已保存任务记录到数据库 (video_id={video_id}, platform={platform}, task_id={task_id}, title={(title or '')[:40]!r})")
         except Exception as e:
             logger.error(f"保存任务记录失败：{e}")

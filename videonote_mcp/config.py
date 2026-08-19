@@ -11,8 +11,14 @@ DATABASE_URL / NOTE_OUTPUT_DIR 等环境变量。
     绝不写进 site-packages。
 可用环境变量 VIDEONOTE_DATA_DIR 可显式覆盖。
 """
+import logging
 import os
+import threading
 from pathlib import Path
+
+from videonote_mcp.crypto import decrypt_value, encrypt_value
+
+logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _IS_SOURCE_CHECKOUT = (_REPO_ROOT / "pyproject.toml").exists()
@@ -33,6 +39,8 @@ _USER_CONFIG_MAPPED_ENV = (
     "VIDEONOTE_INCLUDE_COMMENTS",
     "VIDEONOTE_COMMENTS_LIMIT",
     "VIDEONOTE_DEFAULT_EXPORT_FORMATS",
+    "VIDEONOTE_MAX_WORKERS",
+    "VIDEONOTE_STDERR_LOG_MAX_MB",
 )
 
 
@@ -73,12 +81,25 @@ def env_or(name: str) -> "str | None":
     return v
 
 
+_BOOL_TRUE = ("1", "true", "yes", "on")
+_BOOL_FALSE = ("0", "false", "no", "off")
+
+
 def env_bool(name: str, default: bool = False) -> bool:
-    """解析 env 布尔（'1'/'true'/'yes'/'on'，大小写不敏感）；未设置回 default。"""
+    """解析 env 布尔（'1'/'true'/'yes'/'on'，大小写不敏感）；未设置回 default。
+
+    垃圾值（非已知布尔词）也回退 default——与 env_int 的「解析失败回退」同语义；
+    旧实现把垃圾值一律当 False，default=True 的调用点会被手滑值静默翻反（#124 A5）。
+    """
     v = env_or(name)
     if v is None:
         return default
-    return v.strip().lower() in ("1", "true", "yes", "on")
+    v = v.strip().lower()
+    if v in _BOOL_TRUE:
+        return True
+    if v in _BOOL_FALSE:
+        return False
+    return default
 
 
 def env_int(name: str, default: int) -> int:
@@ -90,6 +111,46 @@ def env_int(name: str, default: int) -> int:
         return int(v)
     except ValueError:
         return default
+
+
+def resolve_int_config(key: str, env_name: str, default: int) -> int:
+    """解析 app_config 整数配置：垃圾值 warning 后回退 env/默认（#116）。
+
+    MCP 与 CLI 向导共用入口（#120 前 CLI 各自裸 int()，垃圾值每次进循环就崩）。
+    缺省链是 参数 → app_config → env → 默认（#107 口径）。`get(...) or env_int(...)`
+    的 truthy 短路有两处缺陷：垃圾值（手动编辑 app_config.json 写入 "abc"）让
+    int() 裸 ValueError 遮蔽回退链；0（显式关闭，如 video_interval=0 关视频理解）
+    被当 falsy 吞掉、app_config 优先级倒挂给 env。is not None 判断 + int() 防御
+    两处一起修（与 #107 default_export_formats 同族）。
+    """
+    raw = get_app_config().get(key)
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            logger.warning("app_config.%s 非整数（%r），回退 env/默认", key, raw)
+    return env_int(env_name, default)
+
+
+def resolve_bool_config(key: str, env_name: str, default: bool) -> bool:
+    """解析 app_config 布尔配置：垃圾值 warning 后回退 env/默认（#130 A1）。
+
+    与 resolve_int_config 同族：`bool(get_app_config().get(key, env_bool(...)))` 的
+    truthy-swallow 让手动写入的字符串 "false"/"0"/"no" 被 bool("false")==True 静默
+    翻转开启——视频理解/弹幕评论/截图开关一旦手滑全开。bool 语义用与 env_bool
+    相同的词表（true/false/1/0/yes/no/on/off，大小写不敏感）；真 bool 直通。
+    """
+    raw = get_app_config().get(key)
+    if raw is not None:
+        if isinstance(raw, bool):
+            return raw
+        v = str(raw).strip().lower()
+        if v in _BOOL_TRUE:
+            return True
+        if v in _BOOL_FALSE:
+            return False
+        logger.warning("app_config.%s 非布尔（%r），回退 env/默认", key, raw)
+    return env_bool(env_name, default)
 
 
 def env_json_list(name: str, default):
@@ -104,6 +165,19 @@ def env_json_list(name: str, default):
         return parsed if isinstance(parsed, list) else default
     except Exception:
         return default
+
+
+def resolve_default_export_formats() -> list:
+    """导出格式缺省链：app_config（须为列表）→ env（JSON 列表）→ []。
+
+    非列表垃圾配置会遮蔽 env 回退（truthy 值令 `or` 短路）→ 打 warning 后回退
+    （#107 口径；#124 A4：守卫从 server 抽到此处，CLI export / MCP export_transcript /
+    自动导出三处同源，不再各自实现）。"""
+    cfg = get_app_config().get("default_export_formats")
+    if cfg is not None and not isinstance(cfg, list):
+        logger.warning("app_config.default_export_formats 不是列表（%r），忽略改用环境/默认", cfg)
+        cfg = None
+    return cfg or env_json_list("VIDEONOTE_DEFAULT_EXPORT_FORMATS", [])
 
 
 def setup_environment() -> Path:
@@ -131,11 +205,11 @@ def setup_environment() -> Path:
     os.environ.setdefault("IMAGE_BASE_URL", screenshots.as_uri())
     # 转写引擎默认值（transcriber_config_manager 无配置文件时 fallback）
     os.environ.setdefault("TRANSCRIBER_TYPE", "fast-whisper")
-    os.environ.setdefault("WHISPER_MODEL_SIZE", "tiny")
+    os.environ.setdefault("WHISPER_MODEL_SIZE", "small")
     # whisper/mlx 模型下载的请求超时：网络不可达时让每次下载快速失败，
     # 避免 huggingface_hub 重试 + WhisperTranscriber 自愈重下长时间阻塞任务
     # （真正需要音频转写的任务会以 FAILED + 明确错误结束，而非卡在 INITIALIZING）。
-    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "10")
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "10")
     # 配置目录（transcriber_config / cookie 落到这里，避免依赖 CWD）
     os.environ.setdefault("VIDEONOTE_CONFIG_DIR", str(config_dir))
@@ -143,39 +217,79 @@ def setup_environment() -> Path:
     # 源码 checkout 保持原默认 <仓库>/models（已有下载的模型不迁移）。
     if not _IS_SOURCE_CHECKOUT:
         os.environ.setdefault("VIDEONOTE_MODEL_DIR", str(models_dir))
-    # note.py 引用到的后端地址变量（本仓库不使用，仅保证不报错）
-    os.environ.setdefault("API_BASE_URL", "http://localhost")
-    os.environ.setdefault("BACKEND_PORT", "8483")
 
     return data_dir
 
+_APP_CONFIG_LOCK = threading.Lock()
+
+# app_config 里需要落盘加密的敏感字段（docs/05 #29）
+_SENSITIVE_CONFIG_KEYS = ("hf_token",)
+
 
 def get_app_config() -> dict:
-    """读取持久化应用配置（如默认笔记位置），存于 VIDEONOTE_CONFIG_DIR/app_config.json。"""
+    """读取持久化应用配置（如默认笔记位置），存于 VIDEONOTE_CONFIG_DIR/app_config.json。
+
+    敏感字段（hf_token）返回解密后的明文；解密失败按缺失处理。
+    损坏的 JSON 打 warning + 备份 `.corrupt` 后按空配置处理——否则 `set_app_config`
+    读到 `{}` 再写回会把其余配置（default_model/notes_dir 等）全部抹掉（#125 C1，
+    与 app/utils/json_store.read_json 同口径；config 层先于 app.* import，不跨层依赖）。
+    """
     import json
 
     path = Path(os.environ.get("VIDEONOTE_CONFIG_DIR", "config")) / "app_config.json"
     if path.exists():
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            backup = Path(f"{path}.corrupt")
+            try:
+                if not backup.exists():
+                    path.replace(backup)
+            except OSError:
+                pass
+            logger.warning("app_config.json 损坏（已备份到 %s，按空配置处理，避免后续写入抹掉其余配置）: %s", backup, exc)
             return {}
+        for k in _SENSITIVE_CONFIG_KEYS:
+            if k not in cfg:
+                continue
+            # per-key 容错（#126 C6）：手改 JSON 把敏感字段写成非字符串（如 123）时
+            # 只 drop 该 key，不再整包返回 {}——否则下一次 set_app_config 读 {} 写回
+            # 会把 default_model/notes_dir 等全部抹掉（#125 C1 只兜了 JSON 损坏）
+            try:
+                cfg[k] = decrypt_value(cfg[k])
+            except Exception:
+                logger.warning("app_config.%s 解密失败（值类型异常），按缺失处理", k)
+                cfg.pop(k, None)
+        return cfg
     return {}
 
 
-def set_app_config(key: str, value) -> None:
-    """持久化应用配置。"""
-    import json
+def _write_app_config(cfg: dict) -> None:
+    """原子写 app_config.json（tmp + replace），带 0600 权限；敏感字段加密落盘。"""
+    payload = dict(cfg)
+    for k in _SENSITIVE_CONFIG_KEYS:
+        if payload.get(k):
+            payload[k] = encrypt_value(payload[k])
+    # 复用 json_store 原子写（docs/05 第 16 轮 B8）：tmp 唯一后缀 + 创建即 0600，
+    # 消除固定 <path>.tmp 的跨进程互相截断与「先写后 chmod」的权限窗口。
+    # 惰性 import：config 模块先于 app.* 初始化（顶层禁 app import）
+    from app.utils.json_store import write_json_atomic
 
     path = Path(os.environ.get("VIDEONOTE_CONFIG_DIR", "config")) / "app_config.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    cfg = get_app_config()
-    cfg[key] = value
-    path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    write_json_atomic(path, payload, mode=0o600)
+
+
+def set_app_config(key: str, value) -> None:
+    """持久化应用配置（进程内 threading.Lock + 原子写）。
+
+    #123 A10：锁只保证**单进程内**多线程不互相覆盖读-改-写；双进程并发写仍可能
+    丢更新（各自读旧值再写回）。原子写（tmp+replace）保证文件不损坏，不保证
+    跨进程合并。CLI 与 MCP server 是独立进程，不要在两端同时改同一 app_config。
+    """
+    with _APP_CONFIG_LOCK:
+        cfg = get_app_config()
+        cfg[key] = value
+        _write_app_config(cfg)
 
 
 def remove_app_config(key: str) -> None:
@@ -183,17 +297,9 @@ def remove_app_config(key: str) -> None:
 
     用于「清除默认模型」等场景：必须删 key，而不是写成 null。
     """
-    import json
-
-    path = Path(os.environ.get("VIDEONOTE_CONFIG_DIR", "config")) / "app_config.json"
-    if not path.exists():
-        return
-    cfg = get_app_config()
-    if key not in cfg:
-        return
-    cfg.pop(key)
-    path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    with _APP_CONFIG_LOCK:
+        cfg = get_app_config()
+        if key not in cfg:
+            return
+        cfg.pop(key)
+        _write_app_config(cfg)

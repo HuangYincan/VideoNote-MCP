@@ -10,6 +10,7 @@ from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
 from app.services.pipeline import detect_platform
+from app.utils.url_safety import assert_public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +36,33 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
+    # SSRF 入口守卫（#133 A1）：本地路径已在上面分流；其余平台（bilibili/
+    # kuaishou/douyin 的短链解析、yt-dlp generic 展开）统一校验，防显式
+    # platform 参数绕过 #132 A1（原只覆盖 generic/youtube 下载器内部）
+    if plat != "local":
+        try:
+            assert_public_http_url(raw)
+        except ValueError as exc:
+            return {"ok": False, "platform": plat, "error": str(exc)}
+
     try:
         if plat == "bilibili":
             return _inspect_bilibili(raw)
         if plat == "local":
+            # file:// URI 先规整（#133 B2）：#130 A5 用裸 Path(raw) 漏了 file://——
+            # inspect 曾是全工具面唯一不认 file:// 的本地入口（#105/#107 系列输入
+            # 规整的漏网点），同一文件 generate_note 可用、inspect
+            # 却报「本地文件不存在」。entries[].url 透传规整后的路径。
+            from videonote_mcp.server import _coerce_local_path
+
+            local_path = _coerce_local_path(raw)
+            if not local_path.is_file():
+                return {
+                    "ok": False,
+                    "platform": "local",
+                    "kind": "single",
+                    "error": f"本地文件不存在: {raw}",
+                }
             return {
                 "ok": True,
                 "platform": "local",
@@ -47,7 +71,7 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
                 "video_id": None,
                 "total": 1,
                 "truncated": False,
-                "entries": [{"p": 1, "title": "", "duration": None, "url": raw, "video_id": None}],
+                "entries": [{"p": 1, "title": "", "duration": None, "url": str(local_path), "video_id": None}],
             }
         return _inspect_ytdlp(raw, plat)
     except Exception as exc:  # noqa: BLE001
@@ -135,6 +159,8 @@ def _inspect_bilibili(url: str) -> dict:
 
 def _inspect_ytdlp(url: str, platform: str) -> dict:
     """YouTube / generic：extract_flat 列出播放列表，否则单条。"""
+    # SSRF 防护（docs/05 第 16 轮 A1）：yt-dlp 边界先校验
+    assert_public_http_url(url)
     import yt_dlp
 
     from app.downloaders.youtube_downloader import _apply_proxy
@@ -147,38 +173,24 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
         "noplaylist": False,
     }
     _apply_proxy(ydl_opts)
-    cookiefile = None
+    # cookie 注入（#122 B3）：旧实现写 Netscape 临时文件但把 cookie 塞进
+    # `generic` 字段、域名绑死 .example.com，yt-dlp 永远不会带上（参考
+    # generic_downloader 同款坑）。改 http_headers.Cookie 直接注入，
+    # 对目标站点及其 CDN 分片请求统一生效。
+    cookie = ""
     try:
         from app.services.cookie_manager import CookieConfigManager
 
         cookie = CookieConfigManager().get(platform) or ""
-        if cookie:
-            import os
-            import tempfile
-
-            fd, cookiefile = tempfile.mkstemp(suffix=".txt")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write("# Netscape HTTP Cookie File\n")
-                f.write(f".example.com\tTRUE\t/\tTRUE\t0\tgeneric\t{cookie}\n")
-            try:
-                os.chmod(cookiefile, 0o600)
-            except OSError:
-                pass
-            ydl_opts["cookiefile"] = cookiefile
     except Exception:
-        cookiefile = None
+        cookie = ""
+    if cookie:
+        ydl_opts["http_headers"] = {"Cookie": cookie}
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    finally:
-        if cookiefile:
-            try:
-                import os
+    from app.downloaders.common import ytdlp_retry
 
-                os.unlink(cookiefile)
-            except OSError:
-                pass
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ytdlp_retry(ydl.extract_info, url, download=False)
 
     if not info:
         return {"ok": False, "platform": platform, "error": "yt-dlp 未返回信息"}
@@ -198,6 +210,12 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
             if page_url and not str(page_url).startswith("http"):
                 # extract_flat 有时只给 id
                 page_url = _youtube_watch(vid) if platform == "youtube" and vid else page_url
+            if not page_url or not str(page_url).startswith("http"):
+                # 坏条目以成功形状返回会让 Agent 拿无效 URL 去下载阶段才失败——跳过并留痕
+                logger.warning(
+                    f"播放列表条目 {i}（title={e.get('title')!r}）无可用 http URL，已跳过"
+                )
+                continue
             entries.append(
                 {
                     "p": i,
@@ -207,6 +225,8 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
                     "video_id": vid,
                 }
             )
+        if not entries:
+            return {"ok": False, "platform": platform, "error": "播放列表无可用条目（URL 均无效）"}
         return {
             "ok": True,
             "platform": platform,

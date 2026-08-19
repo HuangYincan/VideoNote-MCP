@@ -12,7 +12,11 @@ import glob
 import os
 from pathlib import Path
 
-_TEST_ROOT = Path("/tmp/videonote_pytest")
+import pytest
+
+# 固定 /tmp/videonote_pytest 会被并行 pytest / 多 checkout 撞库（docs/05 #66）：
+# 按 pid 隔离，同一进程内所有测试共享，跨进程互不干扰
+_TEST_ROOT = Path(f"/tmp/videonote_pytest_{os.getpid()}")
 _TEST_ROOT.mkdir(parents=True, exist_ok=True)
 _TEST_DB = _TEST_ROOT / "video_note.db"
 _NOTE_OUTPUT_DIR = _TEST_ROOT / "note_results"
@@ -29,3 +33,48 @@ for _f in glob.glob(f"{_TEST_DB}*"):
 # 覆盖测试模块里可能残留的旧 DATABASE_URL 写法
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB}"
 os.environ.setdefault("NOTE_OUTPUT_DIR", str(_NOTE_OUTPUT_DIR))
+# 数据目录也隔离：server 模块级会 open(DATA_DIR/logs/mcp_stderr.log) 并 dup2(2)，
+# 不隔离会把测试 stderr 写进仓库 data/ 并污染 git 工作区（docs 审计 P2-6）
+os.environ.setdefault("VIDEONOTE_DATA_DIR", str(_TEST_ROOT / "data"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clean_task_registry_at_exit():
+    """session 结束时清空 MCP 任务注册表。
+
+    若干契约测试 stub 掉 _pool.submit 后不 pop _task_futures/_task_events，
+    进程退出的 atexit 摘要会把这些 mock Future 误报成「进行中/排队任务 N 个」。
+    """
+    yield
+    import videonote_mcp.server as server
+
+    with server._tasks_lock:
+        server._task_futures.clear()
+        server._task_events.clear()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _mock_public_dns():
+    """SSRF 防护（docs/05 第 16 轮 A1）的域名判定依赖真实 DNS。
+
+    测试环境（含沙箱）的 DNS 可能把任意域名解析到保留段（198.18/15、
+    fdfe:dcba:: 等），会让 mock 掉 yt-dlp 的下载器测试被 SSRF 检查误拦。
+    统一把 getaddrinfo 桩成公网地址：字面 IP 逻辑（ipaddress）不受影响，
+    域名判定在测试里确定化；SSRF 防护自身的测试另行显式 patch。
+    """
+    import socket
+    from unittest import mock
+
+    def _public_addrinfo(*_args, **_kwargs):
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("8.8.8.8", 0),
+            )
+        ]
+
+    with mock.patch("socket.getaddrinfo", side_effect=_public_addrinfo):
+        yield

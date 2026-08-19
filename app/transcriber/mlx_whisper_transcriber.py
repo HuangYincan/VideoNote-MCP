@@ -1,16 +1,15 @@
-import mlx_whisper
-from pathlib import Path
 import os
 import platform
 import threading
+from pathlib import Path
+
 from huggingface_hub import snapshot_download
 
 from app.decorators.timeit import timeit
-from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_model_dir
-from events import transcription_finished
 
 logger = get_logger(__name__)
 
@@ -42,14 +41,14 @@ def resolve_mlx_repo_id(model_size: str) -> str:
 class MLXWhisperTranscriber(Transcriber):
     def __init__(
             self,
-            model_size: str = "base"
+            model_size: str = "small"
     ):
         # 检查平台
         if platform.system() != "Darwin":
             raise RuntimeError("MLX Whisper 仅支持 Apple 平台")
 
         # 注意：不做 TRANSCRIBER_TYPE 环境变量检查。引擎切换是写 config JSON
-        #（TranscriberConfigManager / set_transcriber），不写环境变量；此处由
+        #（TranscriberConfigManager / CLI transcriber set），不写环境变量；此处由
         # get_transcriber 按类型路由构造，env 检查只会让配置好的 mlx-whisper 构造即报错。
 
         self.model_size = model_size
@@ -84,6 +83,16 @@ class MLXWhisperTranscriber(Transcriber):
     @timeit
     def transcript(self, file_path: str) -> TranscriptResult:
         with self._lock:
+            # 惰性导入：mlx-whisper 是可选 extras（pyproject `mlx`），未装时给安装提示
+            # 而非 ModuleNotFoundError 天书（与 diarization 的可选依赖模式同款）。
+            # 同时保证 MLX_MODEL_MAP 等元数据在未装时仍可 import（#126 C4 前置校验）。
+            try:
+                import mlx_whisper
+            except ImportError:
+                raise RuntimeError(
+                    "mlx-whisper 未安装：请用 `uvx --with mlx-whisper --from "
+                    "git+https://github.com/HuangYincan/VideoNote-MCP videonote ...` 安装"
+                )
             try:
                 # 使用 MLX Whisper 进行转录
                 # 必须传本地模型目录（__init__ 已 snapshot_download 到 model_path）：
@@ -96,11 +105,9 @@ class MLXWhisperTranscriber(Transcriber):
 
                 # 转换为标准格式
                 segments = []
-                full_text = ""
 
                 for segment in result["segments"]:
                     text = segment["text"].strip()
-                    full_text += text + " "
                     segments.append(TranscriptSegment(
                         start=segment["start"],
                         end=segment["end"],
@@ -109,20 +116,20 @@ class MLXWhisperTranscriber(Transcriber):
 
                 transcript_result = TranscriptResult(
                     language=result.get("language", "unknown"),
-                    full_text=full_text.strip(),
+full_text=" ".join(seg.text for seg in segments).strip(),
                     segments=segments,
                     raw=result
                 )
-
-                # self.on_finish(file_path, transcript_result)
                 return transcript_result
 
             except Exception as e:
                 logger.error(f"MLX Whisper 转写失败：{e}")
                 raise e
 
-    def on_finish(self, video_path: str, result: TranscriptResult) -> None:
-        logger.info("MLX Whisper 转写完成")
-        transcription_finished.send({
-            "file_path": video_path,
-        }) 
+    def close(self) -> None:
+        """释放模型引用（#127 B3）。
+
+        mlx_whisper 每次 transcribe 都重新加载模型、无驻留实例，close 仅对齐
+        transcriber_provider 的防御性释放接口（getattr(old, "close") 不再是 no-op）。
+        """
+        self.model_path = None

@@ -3,13 +3,14 @@
 优先人工字幕，其次自动生成字幕。不依赖 yt_dlp，无需下载任何文件。
 """
 
-from typing import Optional, List
+from typing import List, Optional
 
 from youtube_transcript_api import YouTubeTranscriptApi
 
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.logger import get_logger
+from app.utils.url_safety import sanitize_url
 
 logger = get_logger(__name__)
 
@@ -27,12 +28,32 @@ class YouTubeSubtitleFetcher:
                 session = requests.Session()
                 session.proxies = {"http": proxy, "https": proxy}
                 self._api = YouTubeTranscriptApi(http_client=session)
-                logger.info(f"YouTube 字幕走代理: {proxy}")
+                # 保留引用以便显式 close：Session 不 close 会泄漏连接池条目
+                # 直到 GC，且 youtube-transcript-api 不会替我们释放（#125 B16）
+                self._session = session
+                # 代理 URL 可能含 user:pass@（docs/05 第 16 轮 A4）：日志只留 host
+                logger.info(f"YouTube 字幕走代理: {sanitize_url(proxy)}")
             except Exception as e:
                 logger.warning(f"为 youtube-transcript-api 注入代理失败，回退无代理: {e}")
                 self._api = YouTubeTranscriptApi()
         else:
             self._api = YouTubeTranscriptApi()
+
+    def close(self) -> None:
+        """显式释放代理 Session（连接池/打开 fd）。"""
+        session = getattr(self, "_session", None)
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+            self._session = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def fetch_subtitles(
         self,

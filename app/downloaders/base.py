@@ -1,11 +1,12 @@
-
+import threading
 from abc import ABC, abstractmethod
 from typing import Optional, Union
 
 from app.enmus.note_enums import DownloadQuality
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
-from os import getenv
+from app.utils.path_helper import get_data_dir
+
 QUALITY_MAP = {
     "fast": "32",
     "medium": "64",
@@ -15,27 +16,28 @@ QUALITY_MAP = {
 
 class Downloader(ABC):
     def __init__(self):
-        #TODO 需要修改为可配置
-        self.quality = QUALITY_MAP.get('fast')
-        self.cache_data=getenv('DATA_DIR')
+        # 与各下载器 download() 的 get_data_dir() 兜底同值（vendored 旧 DATA_DIR env 已废弃）
+        self.cache_data = get_data_dir()
 
     @abstractmethod
     def download(self, video_url: str, output_dir: str = None,
                  quality: DownloadQuality = "fast", need_video: Optional[bool] = False,
-                 skip_download: bool = False) -> AudioDownloadResult:
+                 skip_download: bool = False,
+                 cancel_event: Optional[threading.Event] = None) -> AudioDownloadResult:
         '''
 
         :param need_video:
         :param video_url: 资源链接
         :param output_dir: 输出路径 默认根目录data
-        :param quality: 音频质量 fast | medium | slow
+        :param quality: 音频质量 fast | medium | slow（bitrate 见 QUALITY_MAP）
+        :param cancel_event: 可选取消事件（docs/05 第 16 轮 B1）：已 set 时下载中断
         :return:返回一个 AudioDownloadResult 类
         '''
         pass
 
-    @staticmethod
     def download_video(self, video_url: str,
-                       output_dir: Union[str, None] = None) -> str:
+                       output_dir: Union[str, None] = None,
+                       cancel_event: Optional[threading.Event] = None) -> str:
         pass
 
     def download_subtitles(self, video_url: str, output_dir: str = None,

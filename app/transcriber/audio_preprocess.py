@@ -58,7 +58,10 @@ def probe_duration(wav_path: str) -> float:
             capture_output=True, text=True, timeout=60,
         )
         return float(r.stdout.strip())
-    except Exception:
+    except Exception as exc:
+        # ffprobe 失败静默返回 0 会让 chunk_if_long 把未知时长当「不长」——超长音频
+        # 整块喂给云端引擎（可能超限），且无任何留痕（#118）
+        logger.warning(f"ffprobe 探测时长失败: {exc}")
         return 0.0
 
 
@@ -113,23 +116,6 @@ def denoise(wav_path: str) -> str:
     except Exception as exc:  # noqa: BLE001 —— 降噪失败不阻断
         logger.warning(f"降噪失败，返回原文件: {exc}")
         return wav_path
-
-
-def preprocess_pipeline(
-    input_path: Union[str, Path],
-    max_seconds: int = 1800,
-    enable_denoise: bool = False,
-    work_dir: Optional[Union[str, Path]] = None,
-) -> List[str]:
-    """一次性预处理：归一 → （可选降噪）→ 超长分块。
-
-    返回可直接喂给转写引擎的音频文件路径列表（≤ max_seconds 时单元素）。
-    归一后文件落在 work_dir（缺省输入同目录）；分块在归一文件旁。
-    """
-    wav = normalize_to_wav(input_path, out_dir=work_dir)
-    if enable_denoise:
-        wav = denoise(wav)
-    return chunk_if_long(wav, max_seconds=max_seconds, out_dir=work_dir)
 
 
 def cleanup_preprocess_files(wav_path: str) -> None:

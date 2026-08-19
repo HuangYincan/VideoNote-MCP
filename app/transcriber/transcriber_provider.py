@@ -3,10 +3,10 @@ import platform
 import threading
 from enum import Enum
 
-from app.transcriber.groq import GroqTranscriber
-from app.transcriber.whisper import WhisperTranscriber
 from app.transcriber.bcut import BcutTranscriber
+from app.transcriber.groq import GroqTranscriber
 from app.transcriber.kuaishou import KuaishouTranscriber
+from app.transcriber.whisper import WhisperTranscriber
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -47,7 +47,7 @@ _cache_lock = threading.Lock()
 # 公共实例初始化函数
 def _init_transcriber(key: TranscriberType, cls, *args, **kwargs):
     # 已存在实例且模型尺寸不同 → 重建（否则切模型尺寸后拿到的仍是首次构造的实例，
-    # set_transcriber 配置的 large-v3 永远不会生效）。模型在构造时即加载完毕。
+    # CLI transcriber set 配置的 large-v3 永远不会生效）。模型在构造时即加载完毕。
     want_size = kwargs.get("model_size")
     existing = _transcribers[key]
     need_build = existing is None or (
@@ -63,6 +63,23 @@ def _init_transcriber(key: TranscriberType, cls, *args, **kwargs):
             if need_build:
                 logger.info(f'创建 {cls.__name__} 实例: {key} (model_size={want_size})')
                 try:
+                    # 替换旧实例前防御性释放（whisper 大模型约 3GB，双驻留会撑爆内存）
+                    old = _transcribers.get(key)
+                    if old is not None:
+                        close = getattr(old, "close", None)
+                        if callable(close):
+                            try:
+                                # 持旧实例转写锁再 close：whisper close() 置 self.model=None，
+                                # 若另一线程正持旧实例转写（with self._lock 内 transcribe），
+                                # 无锁置空会让进行中调用读空模型异常退出（#129 B7，窄窗口）
+                                lock = getattr(old, "_lock", None)
+                                if lock is not None:
+                                    with lock:
+                                        close()
+                                else:
+                                    close()
+                            except Exception as exc:
+                                logger.warning(f'释放旧 {cls.__name__} 实例失败: {exc}')
                     _transcribers[key] = cls(*args, **kwargs)
                     logger.info(f'{cls.__name__} 创建成功')
                 except Exception as e:
@@ -74,7 +91,7 @@ def _init_transcriber(key: TranscriberType, cls, *args, **kwargs):
 def get_groq_transcriber():
     return _init_transcriber(TranscriberType.GROQ, GroqTranscriber)
 
-def get_whisper_transcriber(model_size="base", device="cuda"):
+def get_whisper_transcriber(model_size="small", device="cuda"):
     return _init_transcriber(TranscriberType.FAST_WHISPER, WhisperTranscriber, model_size=model_size, device=device)
 
 def get_bcut_transcriber():
@@ -85,7 +102,7 @@ def get_kuaishou_transcriber():
     # 快手转写器内部有请求级状态，同样不能共享单例
     return KuaishouTranscriber()
 
-def get_mlx_whisper_transcriber(model_size="base"):
+def get_mlx_whisper_transcriber(model_size="small"):
     if not MLX_WHISPER_AVAILABLE:
         logger.warning("MLX Whisper 不可用，请确保在 Apple 平台且已安装 mlx_whisper")
         raise ImportError("MLX Whisper 不可用")
@@ -103,7 +120,7 @@ def get_transcriber(transcriber_type="fast-whisper", model_size=None, device="cu
     参数:
         transcriber_type: 支持 "fast-whisper", "mlx-whisper", "bcut", "kuaishou", "groq"
         model_size: 模型大小，适用于 whisper 类；显式传入优先于环境变量
-            （WHISPER_MODEL_SIZE 仅作兜底，避免 setup/set_transcriber 配置的
+            （WHISPER_MODEL_SIZE 仅作兜底，避免 setup/CLI 配置的
             模型尺寸被环境变量覆盖——那是此前模型切换不生效的根因）
         device: 设备类型（如 cuda / cpu），仅 whisper 使用
 
@@ -118,7 +135,7 @@ def get_transcriber(transcriber_type="fast-whisper", model_size=None, device="cu
         logger.warning(f'未知转录器类型 "{transcriber_type}"，默认使用 fast-whisper')
         transcriber_enum = TranscriberType.FAST_WHISPER
 
-    whisper_model_size = model_size or os.environ.get("WHISPER_MODEL_SIZE") or "base"
+    whisper_model_size = model_size or os.environ.get("WHISPER_MODEL_SIZE") or "small"
 
     if transcriber_enum == TranscriberType.FAST_WHISPER:
         return get_whisper_transcriber(whisper_model_size, device=device)

@@ -1,22 +1,20 @@
+import shutil
+import threading
+from pathlib import Path
+
 from faster_whisper import WhisperModel
 
 from app.decorators.timeit import timeit
-from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.transcriber.whisper_models import (
-    resolve_whisper_model,
-    is_local_target,
     hf_cache_dirname,
+    is_local_target,
+    resolve_whisper_model,
 )
 from app.utils.env_checker import is_cuda_available, is_torch_installed
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_model_dir
-
-from events import transcription_finished
-from pathlib import Path
-import shutil
-import threading
-
 
 '''
  Size of the model to use (tiny, tiny.en, base, base.en, small, small.en, distil-small.en, medium, medium.en, distil-medium.en, large-v1, large-v2, large-v3, large, distil-large-v2, distil-large-v3, large-v3-turbo, or turbo
@@ -35,7 +33,7 @@ logger=get_logger(__name__)
 class WhisperTranscriber(Transcriber):
     def __init__(
             self,
-            model_size: str = "base",
+            model_size: str = "small",
             device: str = 'cpu',
             compute_type: str = None,
             cpu_threads: int = 1,
@@ -45,7 +43,7 @@ class WhisperTranscriber(Transcriber):
         else:
             self.device = "cuda" if self.is_cuda() else "cpu"
             if device == 'cuda' and self.device == 'cpu':
-                print('没有 cuda 使用 cpu进行计算')
+                logger.info('没有 cuda 使用 cpu进行计算')
 
         self.compute_type = compute_type or ("float16" if self.device == "cuda" else "int8")
         self.model_size = model_size
@@ -57,9 +55,14 @@ class WhisperTranscriber(Transcriber):
         try:
             self.model = self._build_model(model_size, model_dir)
         except Exception as e:
-            # 自愈：损坏 / 截断 / 半成品 cache → 删掉对应 HF cache 重下一次
-            logger.warning(f"加载 whisper-{model_size} 失败：{e}；清理 cache 后重新下载")
-            self._purge_cache(model_dir, model_size)
+            if self._is_cache_error(e):
+                # 自愈：损坏 / 截断 / 半成品 cache → 删掉对应 HF cache 重下一次
+                logger.warning(f"加载 whisper-{model_size} 失败（cache 损坏）：{e}；清理 cache 后重新下载")
+                self._purge_cache(model_dir, model_size)
+            else:
+                # 网络瞬时故障/404/参数错误不 purge：删掉只会丢失可断点续传的
+                # 半截下载，等再次加载时自然重试（#124 B18）
+                logger.warning(f"加载 whisper-{model_size} 失败（非 cache 损坏，不清理）: {e}")
             self.model = self._build_model(model_size, model_dir)
 
     def _build_model(self, model_size: str, model_dir: str) -> WhisperModel:
@@ -73,6 +76,31 @@ class WhisperTranscriber(Transcriber):
             compute_type=self.compute_type,
             download_root=model_dir,
         )
+
+    @staticmethod
+    def _is_cache_error(exc: Exception) -> bool:
+        """加载失败是否属 cache 损坏类（才值得删了重下，#124 B18）。
+
+        - LocalEntryNotFoundError：HF cache 目录存在但快照不完整/校验失败——删掉重下；
+        - 其余 OSError：本地文件系统错误（截断/权限/磁盘），几乎都关联 cache 状态。
+        网络层错误不 purge——删了只会丢掉可断点续传的半截下载。注意内建
+        ConnectionError/TimeoutError（含 socket 超时）也是 OSError 子类，必须显式排除。
+        404（EntryNotFoundError）、参数错误同样不 purge。
+        本地路径模型的 FileNotFoundError 也是 OSError 子类，会误判为 cache
+        错误——但 _purge_cache 对 is_local_target 直接返回不删，无数据风险。
+        """
+        try:
+            from huggingface_hub.utils import LocalEntryNotFoundError
+        except ImportError:  # huggingface_hub 版本差异：退化为仅本地文件错误
+            LocalEntryNotFoundError = ()
+        if isinstance(exc, LocalEntryNotFoundError):
+            return True
+        if not isinstance(exc, OSError):
+            return False
+        # OSError 中的网络类（socket 超时 / 连接重置 / 对端断开）属瞬时故障
+        if isinstance(exc, (ConnectionError, TimeoutError, BrokenPipeError)):
+            return False
+        return True
 
     @staticmethod
     def _purge_cache(model_dir: str, model_size: str) -> None:
@@ -110,13 +138,13 @@ class WhisperTranscriber(Transcriber):
     def is_cuda() -> bool:
         try:
             if is_cuda_available():
-                print(" CUDA 可用，使用 GPU")
+                logger.info(" CUDA 可用，使用 GPU")
                 return True
             elif is_torch_installed():
-                print(" 只装了 torch，但没有 CUDA，用 CPU")
+                logger.info(" 只装了 torch，但没有 CUDA，用 CPU")
                 return False
             else:
-                print(" 还没有安装 torch，请先安装")
+                logger.warning(" 还没有安装 torch，请先安装")
                 return False
 
         except ImportError:
@@ -132,11 +160,9 @@ class WhisperTranscriber(Transcriber):
                 segments_raw, info = self.model.transcribe(file_path)
 
                 segments = []
-                full_text = ""
 
                 for seg in segments_raw:
                     text = seg.text.strip()
-                    full_text += text + " "
                     segments.append(TranscriptSegment(
                         start=seg.start,
                         end=seg.end,
@@ -145,11 +171,10 @@ class WhisperTranscriber(Transcriber):
 
                 result = TranscriptResult(
                     language=info.language,
-                    full_text=full_text.strip(),
+full_text=" ".join(seg.text for seg in segments).strip(),
                     segments=segments,
                     raw=info
                 )
-                # self.on_finish(file_path, result)
                 return result
             except Exception as e:
                 # 抛给调用方（note._transcribe_audio 捕获并写入 FAILED 状态）；不要返回 None，
@@ -158,9 +183,8 @@ class WhisperTranscriber(Transcriber):
                 raise
 
 
-    def on_finish(self,video_path:str,result: TranscriptResult)->None:
-        print("转写完成")
-        transcription_finished.send({
-            "file_path": video_path,
-        })
+    def close(self) -> None:
+        """释放底层模型引用（#127 B3）：切换模型尺寸时 transcriber_provider 调
+        close 让旧 large-v3（~3GB）尽快 GC，不再双驻留撑内存。"""
+        self.model = None
 

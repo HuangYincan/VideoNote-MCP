@@ -8,6 +8,7 @@
 运行时环境（数据目录、DB、输出目录）在 import app.* 之前由 config.setup_environment()
 初始化，详见 videonote_mcp/config.py。
 """
+import atexit
 import json
 import logging
 import os
@@ -20,10 +21,18 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from videonote_mcp.config import env_bool, env_int, env_or, get_app_config, remove_app_config, setup_environment
 from videonote_mcp import __version__ as _SERVER_VERSION
+from videonote_mcp.config import (
+    env_int,
+    env_or,
+    get_app_config,
+    resolve_bool_config,
+    resolve_default_export_formats,
+    resolve_int_config,
+    setup_environment,
+)
 
 DATA_DIR = setup_environment()
 
@@ -44,74 +53,247 @@ _builtins.print = _print_to_stderr
 
 # stdio MCP：把 stderr 重定向到日志文件，避免后台任务的大量输出把 stderr 管道塞满、
 # 阻塞事件循环（logging 持锁跨线程阻塞 → 「第二个工具调用挂起」）。协议只用 stdin/stdout。
+
+def _open_stderr_log(max_mb: int = 50):
+    """打开 mcp_stderr.log（超限先轮转，防止长跑后日志体积失控，docs/05 #44）。
+
+    返回文件对象；失败返回 None 并尽量把原因打印到原始 stderr（此时 dup2 尚未发生）。
+    """
+    path = DATA_DIR / "logs" / "mcp_stderr.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            limit = max(1, int(os.getenv("VIDEONOTE_STDERR_LOG_MAX_MB", str(max_mb)))) * 1024 * 1024
+        except (TypeError, ValueError):
+            # env 非法值回退默认，不把整个日志重定向弄挂（docs 审计 H 组）
+            limit = max_mb * 1024 * 1024
+        if path.exists() and path.stat().st_size > limit:
+            path.replace(path.with_suffix(".log.1"))
+        return open(path, "a", encoding="utf-8", buffering=1)
+    except Exception as exc:
+        print(f"[videonote] 打开 stderr 日志失败({exc}),继续直接输出", file=sys.stderr)
+        return None
+
+
 try:
-    _stderr_log = open(DATA_DIR / "logs" / "mcp_stderr.log", "a", encoding="utf-8", buffering=1)
-    os.dup2(_stderr_log.fileno(), 2)   # OS 层：子进程（yt-dlp/ffmpeg）的 stderr 也进文件
-    sys.stderr = _stderr_log            # Python 层：logging / vendored print 进文件
+    _stderr_log = _open_stderr_log()
+    if _stderr_log is not None:
+        os.dup2(_stderr_log.fileno(), 2)   # OS 层：子进程（yt-dlp/ffmpeg）的 stderr 也进文件
+        sys.stderr = _stderr_log            # Python 层：logging / vendored print 进文件
 except Exception:
-    pass  # 重定向失败不致命，保持原样
+    pass  # 重定向失败不致命，_open_stderr_log 已把原因打到原始 stderr
 
 # app.* 相关导入必须在 setup_environment() 之后 —— 否则 VIDEONOTE_DATA_DIR/CONFIG_DIR 未设置，
 # logger/配置会用 CWD 相对路径建 config/logs（在笔记目录里出现多余文件夹）。
-from app.exceptions.task import TaskCancelledError, check_cancel as _check_cancel
-from videonote_mcp.provider_probe import probe_models
+from mcp.server.fastmcp import FastMCP
 
 # vendored 核心流水线
 from app.db.engine import get_engine
 from app.db.init_db import init_db
-from app.db.model_dao import get_models_by_provider, insert_model, delete_model as _dao_delete_model
+from app.db.model_dao import (
+    get_models_by_provider,
+)
 from app.db.provider_dao import seed_default_providers
 from app.enmus.note_enums import DownloadQuality
 from app.enmus.task_status_enums import TaskStatus
+from app.exceptions.task import TaskCancelledError
+from app.exceptions.task import check_cancel as _check_cancel
 from app.services import pipeline
+from app.services.cookie_manager import CookieConfigManager
 from app.services.note import NOTE_OUTPUT_DIR, NoteGenerator
 from app.services.provider import ProviderService
 from app.services.transcriber_config_manager import TranscriberConfigManager
 from app.transcriber import model_download_state as dl_state
 from app.utils.logger import get_logger
 from app.utils.model_status import check_whisper_model_exists
-from app.utils.path_helper import get_model_dir
-from app.utils.task_manifest import cleanup_all_files, cleanup_task_files, list_task_files, record_task_paths
-
-from mcp.server.fastmcp import FastMCP
+from app.utils.task_manifest import (
+    cleanup_all_files,
+    cleanup_task_files,
+    get_task_paths,
+    list_task_files,
+    record_task_paths,
+)
+from app.utils.url_safety import assert_public_http_url
+from videonote_mcp.provider_probe import probe_models
 
 logger = get_logger(__name__)
+
+# 枚举白名单：schema 以 Literal 呈现（Agent 可见合法值），非法值显式报错而非静默降级
+# （get_style_format / get_format_function 对未知值返回空串——静默无风格笔记）。
+Style = Literal[
+    "minimal", "detailed", "academic", "tutorial", "xiaohongshu",
+    "life_journal", "task_oriented", "business", "meeting_minutes",
+]
+NoteFormat = Literal["toc", "link", "screenshot", "summary"]
+
+_STYLE_VALUES = (
+    "minimal", "detailed", "academic", "tutorial", "xiaohongshu",
+    "life_journal", "task_oriented", "business", "meeting_minutes",
+)
+_FORMAT_VALUES = ("toc", "link", "screenshot", "summary")
+
+
+def _check_style_and_format(style, formats) -> None:
+    """显式传入的 style/format 必须命中白名单。
+
+    schema enum 只约束客户端生成参数（MCP 服务端不做运行时校验），
+    直接调用函数/老客户端仍可能传非法值——静默降级成「无风格笔记」太隐蔽，入口显式报错。
+    默认值路径（setup 配置）不在校验范围：配置是用户自持的，坏值走原有行为。
+
+    formats 非列表（如字符串 "toc"）曾穿透到 `set(formats)` 被拆成字符集——
+    报「收到: ['c','o','t']」把合法格式说成非法；int/str 混排还让 sorted() 裸
+    TypeError。入口显式要求字符串列表（与 export_transcript 的 #104 口径一致）。
+    """
+    if style is not None and style not in _STYLE_VALUES:
+        raise ValueError(f"style 必须是 {' / '.join(_STYLE_VALUES)} 之一，收到: {style!r}")
+    if formats:
+        if not isinstance(formats, (list, tuple)):
+            raise ValueError(
+                f"format 必须是字符串列表（支持 {' / '.join(_FORMAT_VALUES)}），收到: {formats!r}"
+            )
+        unknown = sorted({str(f) for f in formats if f not in _FORMAT_VALUES})
+        if unknown:
+            raise ValueError(f"format 只支持 {' / '.join(_FORMAT_VALUES)}，收到: {unknown}")
+
+
+def _check_grid_size(grid_size) -> None:
+    """grid_size 必须是两个正整数（如 [3,3]），否则入口显式报错。
+
+    非法值（[0,0] / [1] / [1,2,3]）会在流水线深处的 VideoReader 才炸成
+    「视频处理失败」泛化错误；与 style/format 同口径，入口尽早报清楚。
+    None/空走默认（调用方兜底 [2,2]/[3,3]），不拦。
+    """
+    if not grid_size:
+        return
+    if not (len(grid_size) == 2 and all(isinstance(n, int) and n >= 1 for n in grid_size)):
+        raise ValueError(f"grid_size 必须是两个正整数（如 [3,3]），收到: {grid_size!r}")
+
+
+def _resolve_int_config(key: str, env_name: str, default: int) -> int:
+    """app_config 整数配置解析（共享实现见 config.resolve_int_config，#120）。"""
+    return resolve_int_config(key, env_name, default)
+
+
+def _resolve_bool_config(key: str, env_name: str, default: bool) -> bool:
+    """app_config 布尔配置解析（共享实现见 config.resolve_bool_config，#130 A1）。
+
+    `bool(get_app_config().get(...))` 的 truthy-swallow：手动写入 "false"/"0"/"no"
+    会被当成 True——视频理解/弹幕/截图开关静默翻转开启。bool 词表解析见 config。
+    """
+    return resolve_bool_config(key, env_name, default)
+
+
+def _coerce_int(value, default: int, clamp_min: Optional[int] = None) -> int:
+    """显式数值参数安全转换：垃圾值打 warning 回退 default（#125 C5）。
+
+    垃圾值统一打 warning 回退默认——裸 int("abc") 报 "invalid literal for int()"
+    天书错误，Agent 无法得知合法形状。
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        logger.warning(f"数值参数 {value!r} 无法解析，回退默认 {default}")
+        n = default
+    # default 可为 None（可空参数如 diarization_speakers=自动检测）：
+    # 解析失败回退 None 时不再 clamp（#126 C5）
+    if clamp_min is not None and n is not None:
+        n = max(clamp_min, n)
+    return n
 
 # 确保数据库表存在（幂等，init_db 使用 create_all）；空库时预置内置供应商
 # （openai/deepseek/qwen/groq/ollama…，固定 id + 正确 base_url + 空 key，用 update_provider 填 key）
 init_db()
 seed_default_providers()
 
-WHISPER_MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]
-
 mcp = FastMCP("videonote")
 
 # ---------- 后台任务 ----------
 
-_MAX_WORKERS = int(os.environ.get("VIDEONOTE_MAX_WORKERS", "3"))
+_MAX_WORKERS = max(1, env_int("VIDEONOTE_MAX_WORKERS", 3))
 _pool = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
-# 模型下载独立线程池：不占笔记任务 worker 槽位，也不被并发门禁计入进行中任务
-_dl_pool = ThreadPoolExecutor(max_workers=1)
 
 # 任务注册表：task_id -> (Future, cancel_event)，供 cancel_note 使用（thread-safe）
 _tasks_lock = threading.Lock()
 _task_futures: Dict[str, Future] = {}
 _task_events: Dict[str, threading.Event] = {}
+_batch_ctx = threading.local()  # batch_generate_notes 内部批量提交的旁路标志（#121 C1）
+# 最近一次 _write_status 的写盘快照（写盘失败/文件损坏时 get_task_status 回退，
+# 避免把运行中/已完成任务误报成 PENDING，见 #118）
+_status_memory: Dict[str, dict] = {}
+# 内存快照上限（#123 A9）：持续写盘故障时快照只增不删会无界积累——超限按最旧淘汰
+_STATUS_MEMORY_MAX = 512
+
+
+def _exit_summary() -> None:
+    """正常退出（sys.exit）时记录进行中任务数，便于排查孤儿 ffmpeg/whisper 子进程。
+
+    写 sys.__stderr__（原始 fd 2，dup2 后仍指向 mcp_stderr.log）而非 logging：
+    atexit 时 logging handler 可能已关闭，logger 调用会触发
+    「Logging error: I/O operation on closed file」（docs 审计 P2-6）。
+    已知限制（docs/05 #44）：线程池 worker 是 daemon 线程，SIGKILL 或客户端强杀时
+    钩子不执行，转写/下载子进程会残留跑完；这是 Python 子进程管理的固有边界。
+
+    额外（docs 审计 G5）：退出时 set 所有进行中/排队任务的 cancel_event——
+    解释器退出前会 join 非 daemon 线程池线程，任务在阶段边界检查取消后尽快收敛，
+    缩短 ffmpeg/whisper 子进程残留窗口。纯增益、零风险（任务已能处理取消）。
+    """
+    try:
+        with _tasks_lock:
+            active = len(_task_futures)
+            events = list(_task_events.values())
+        for ev in events:
+            try:
+                ev.set()
+            except Exception:
+                pass
+        sys.__stderr__.write(f"[videonote] 退出;进行中/排队任务 {active} 个(已发送取消)\n")
+    except Exception:
+        pass
+
+
+atexit.register(_exit_summary)
 
 
 def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
     """写入 {task_dir}/status.json（与上游 NoteGenerator._update_status 兼容）。"""
+    task_dir = NOTE_OUTPUT_DIR / str(task_id)
+    f = task_dir / "status.json"
+    # 保留旧 started_at（elapsed_secs 从首次提交起算）——每次重打会让成功任务的
+    # 终态 elapsed≈0（PENDING→INITIALIZING→…→SUCCESS 全由本函数写，见 #118）
+    try:
+        old = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+        started = old.get("started_at")
+    except Exception:
+        started = None
     data = {"status": status.value if isinstance(status, TaskStatus) else str(status)}
     if message:
         data["message"] = message
-    # 首次提交时打时间戳（get_task_status 的 elapsed_secs 用）；后续 _update_status 会保留它
-    data.setdefault("started_at", time.time())
-    task_dir = NOTE_OUTPUT_DIR / str(task_id)
-    task_dir.mkdir(parents=True, exist_ok=True)
-    f = task_dir / "status.json"
-    tmp = f.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(f)
+    data["started_at"] = started if started is not None else time.time()
+    # 写盘前更新内存快照：磁盘满/权限故障时 get_task_status 可回退（见 #118）
+    with _tasks_lock:
+        _status_memory[task_id] = data
+        # 上限防无界（#123 A9）：dict 保插入序，超限淘汰最旧快照
+        if len(_status_memory) > _STATUS_MEMORY_MAX:
+            _status_memory.pop(next(iter(_status_memory)), None)
+    try:
+        task_dir.mkdir(parents=True, exist_ok=True)
+        # tmp 唯一后缀（docs/05 第 16 轮 B9）：与 note 侧 _update_status 双写者
+        # 不再共用固定 status.tmp；创建即 0600
+        from app.utils.json_store import _unique_tmp, _write_bytes_with_mode
+
+        tmp = _unique_tmp(f)
+        _write_bytes_with_mode(
+            tmp, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), 0o600
+        )
+        tmp.replace(f)
+        # 终态已落盘且不再变化：弹内存快照，防长生命周期 server 无界增长
+        # （写盘失败时保留——快照是读盘损坏时的唯一回退，#121 C9）
+        if data["status"] in {"SUCCESS", "FAILED", "CANCELLED"}:
+            with _tasks_lock:
+                _status_memory.pop(task_id, None)
+    except Exception as exc:  # noqa: BLE001 —— 环境故障（磁盘满/只读）：不裸抛
+        # （裸抛会进后台线程被吞，且 FAILED 重写循环同样失败），内存快照已可查
+        logger.error(f"写状态文件失败 task_id={task_id}: {exc}")
     # 同步全局索引（尽力而为）
     try:
         from app.db.video_task_dao import update_task_status
@@ -121,19 +303,91 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
         pass
 
 
-def _absolutize_images(markdown: Optional[str]) -> str:
-    """把 Markdown 里相对 /static/screenshots/... 的图片路径改写为 file:// 绝对路径。"""
+def _atomic_write_json(path: Path, payload) -> None:
+    """原子写 JSON（tmp + replace）：避免轮询读到半截文件（docs/05 #54）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _status_is_terminal(task_id: str) -> bool:
+    """status.json 是否已到终态（SUCCESS/FAILED/CANCELLED）。"""
+    try:
+        data = json.loads(
+            (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
+        )
+        return data.get("status") in ("SUCCESS", "FAILED", "CANCELLED")
+    except Exception:
+        return False
+
+
+def _read_task_status(task_id: str) -> str:
+    """读任务 status.json 的 status 字段；文件缺失/损坏时返回 UNKNOWN（#123 A8 抽取）。
+
+    get_task_transcript 的两处「读真实状态」共用——此前 segment_range 非法时硬编码
+    `status:"UNKNOWN"`，SUCCESS 任务被误判成未知。
+    """
+    try:
+        st = json.loads(
+            (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
+        )
+        return st.get("status", "UNKNOWN")
+    except Exception:
+        return "UNKNOWN"
+
+
+def _transcript_unavailable_reason(task_id: str) -> str:
+    """「任务没有可读转写」的准确原因：读 status.json 区分不存在/运行中/未成功/成功无转写。
+
+    get_task_transcript / MCP Resource / export_transcript 共用——运行中的任务此前被
+    笼统报「尚未成功或已清理」，Agent 可能误向用户报告「任务失败了」（#114）。
+    """
+    status = _read_task_status(task_id)
+    if status == "UNKNOWN":
+        return "任务状态不可读（可能已清理）"
+    if status == "SUCCESS":
+        return "任务成功但没有转写"
+    if status in ("FAILED", "CANCELLED"):
+        return f"任务未成功（{status}）"
+    return f"任务仍在运行（{status}）：先 get_task_status 等终态"
+
+
+def _absolutize_images(markdown: Optional[str], base_dir: Optional[str] = None) -> str:
+    """把 Markdown 里的相对图片路径改写为 file:// 绝对路径。
+
+    两类来源（note.py _insert_screenshots）：
+    1. 旧全局模式：`/static/screenshots/...` → DATA_DIR/static/screenshots；
+    2. 便携笔记模式：`Assets/xxx.jpg`（相对 note_dir=gen/，见 G2）→ base_dir/Assets/...。
+    两者都做 resolve + 目录内校验（防路径穿越），逃逸路径原样保留。
+    """
     if not markdown:
         return markdown
     base = DATA_DIR / "static" / "screenshots"
 
     def _repl(m):
         try:
-            return f"]({(base / m.group(2)).as_uri()})"
+            rel = m.group(1)
+            target = (base / rel).resolve()
+            target.relative_to(base.resolve())  # 防路径穿越（docs 审计 H 组）
+            return f"]({target.as_uri()})"
         except Exception:
             return m.group(0)
 
-    return re.sub(r"\]\(/?(static/screenshots/[^)]+)\)", _repl, markdown)
+    out = re.sub(r"\]\(/?(static/screenshots/[^)]+)\)", _repl, markdown)
+    if base_dir:
+        root = Path(base_dir).resolve()
+
+        def _repl_assets(m):
+            try:
+                target = (root / m.group(1)).resolve()
+                target.relative_to(root)
+                return f"]({target.as_uri()})"
+            except Exception:
+                return m.group(0)
+
+        out = re.sub(r"\]\((Assets/[^)]+)\)", _repl_assets, out)
+    return out
 
 
 def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None, **params) -> None:
@@ -173,13 +427,25 @@ def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None,
                 or (material.get("title") if material else None)
                 or ""
             )
-        # note_dir 统一指向 task_dir（note.md 恒在 gen/note.md，见 note.py）
-        payload["note_dir"] = str(task_dir)
-        # result.json 写进任务文件夹（替代扁平 {task_id}.json）
-        (task_dir / "result.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
+        # note_dir 契约（docs 审计 G2）：note.md 恒在 {task_id}/gen/note.md；
+        # 指定 notes_dir 时便携副本路径从 manifest 取（记录在 extra_paths）
+        gen_dir = task_dir / "gen"
+        payload["note_dir"] = str(gen_dir) if (gen_dir / "note.md").is_file() else str(task_dir)
+        try:
+            _portable = [
+                p for p in get_task_paths(task_id)
+                if str(p).endswith("note.md") and not str(p).startswith(str(task_dir))
+            ]
+            if _portable:
+                payload["portable_note_dir"] = str(Path(_portable[0]).parent)
+        except Exception:  # noqa: BLE001 —— manifest 读取失败不影响主结果
+            pass
+        # result.json 写进任务文件夹（替代扁平 {task_id}.json）—— 原子写：
+        # generate() 内部先写 SUCCESS，若轮询在 result 落盘前读到会看到半截 JSON
+        _atomic_write_json(task_dir / "result.json", payload)
+        # result.json 落盘完成后再补写一次 SUCCESS，把「SUCCESS 可见但结果未就绪」
+        # 的窗口压缩到毫秒级（generate() 的 SUCCESS 在 result 写盘之前，见 #54）
+        _write_status(task_id, TaskStatus.SUCCESS, message="完成")
         # 记录结果/状态/任务夹到 manifest（尽力而为，失败不阻断）
         record_task_paths(task_id, [
             task_dir,
@@ -208,10 +474,9 @@ def _auto_export_transcript(task_id: str, transcript) -> None:
     不涉及 LLM/网络；导出文件自动记入 manifest（供 cleanup_note 清理）。
     """
     try:
-        from videonote_mcp.config import env_json_list, get_app_config
         from videonote_mcp.export import export_transcript
 
-        default_formats = get_app_config().get("default_export_formats") or env_json_list("VIDEONOTE_DEFAULT_EXPORT_FORMATS", [])
+        default_formats = resolve_default_export_formats()
         if not default_formats or not transcript:
             return
         export_transcript(
@@ -225,65 +490,32 @@ def _auto_export_transcript(task_id: str, transcript) -> None:
 
 
 def _guard_concurrency() -> None:
-    """并发门禁：进行中任务数达到 VIDEONOTE_MAX_WORKERS（默认 3）时拒绝新提交。
+    """并发门禁：**正在执行**的任务数达到 VIDEONOTE_MAX_WORKERS（默认 3）时拒绝新提交。
 
-    与 generate_note / prepare_note_material 内嵌的同一逻辑，供独立流水线步骤
-    （transcribe_media / extract_frames / summarize_note）复用，避免无界排队。
+    只统计 `future.running()`（已开始执行），排队的 future 不占名额 ——
+    batch_generate_notes 的「超出 worker 数则排队等待」语义依赖此判定
+    （docs 审计 F7；此前 `not f.done()` 把刚提交还在排队的任务也计入，
+    批量 >3 条时第 4 条起全部被拒）。
     """
+    if getattr(_batch_ctx, "bypass_guard", False):
+        # batch_generate_notes 内部批量提交（#121 C1）：worker 毫秒级把任务置
+        # running，第 4 条起逐条被拒——批量调用不适用「运行中上限」语义；
+        # 队列由线程池承担（batch 已 max_entries ≤ 50 封顶），直接放行
+        return
     with _tasks_lock:
-        active = [tid for tid, f in _task_futures.items() if not f.done()]
+        active = [tid for tid, f in _task_futures.items() if f.running()]
     if len(active) >= _MAX_WORKERS:
         raise ValueError(
-            f"已有 {len(active)} 个进行中任务（上限 {_MAX_WORKERS}）：请先等其中一些完成"
+            f"已有 {len(active)} 个任务在同时执行（上限 {_MAX_WORKERS}）：请先等其中一些完成"
             f"（或 cancel_note 取消）再提交。"
         )
 
 
-def _run_step_task(
-    task_id: str,
-    cancel_event: Optional[threading.Event],
-    step_fn: Callable,
-    **kwargs,
-) -> None:
-    """通用后台步骤执行器：为独立流水线步骤（转写/抽帧/LLM 总结）提供统一生命周期。
-
-    与 _run_note_task 同一套语义：排队期间被取消 → 直接 CANCELLED，不写 INITIALIZING；
-    否则写 INITIALIZING → 执行 step_fn(task_id, cancel_event, **kwargs) 得到 dict payload →
-    原子落盘 {task_id}/result.json + 记入 manifest → 成功。异常 → FAILED，取消 → CANCELLED，
-    finally 从 _task_futures/_task_events 弹出（释放并发槽位）。
-    """
-    try:
-        _check_cancel(cancel_event)  # 排队期间被取消 → 直接 CANCELLED，不写 INITIALIZING
-        _write_status(task_id, "INITIALIZING", message="正在准备…")
-        payload = step_fn(task_id, cancel_event, **kwargs)
-        task_dir = NOTE_OUTPUT_DIR / str(task_id)
-        task_dir.mkdir(parents=True, exist_ok=True)
-        (task_dir / "result.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
-        # 记录结果/状态 JSON 到 manifest（尽力而为，失败不阻断）
-        record_task_paths(task_id, [
-            task_dir,
-            task_dir / "result.json",
-            task_dir / "status.json",
-        ])
-        _write_status(task_id, TaskStatus.SUCCESS, message="完成")
-        logger.info(f"步骤任务成功 task_id={task_id}")
-    except TaskCancelledError:
-        logger.info(f"任务已取消 task_id={task_id}")
-        _write_status(task_id, TaskStatus.CANCELLED, message="任务已取消")
-    except Exception as e:
-        logger.error(f"步骤任务异常 task_id={task_id}: {e}", exc_info=True)
-        _write_status(task_id, TaskStatus.FAILED, message=str(e))
-    finally:
-        with _tasks_lock:
-            _task_futures.pop(task_id, None)
-            _task_events.pop(task_id, None)
-
-
 def _index_step_task(task_id: str, kind: str, title: str = "") -> None:
-    """步骤任务写入全局索引，让 list_tasks 能看见。"""
+    """任务写入全局索引（generate_note / prepare_note_material / 步骤任务共用），让 list_tasks 能看见。
+
+    名字保留「step」历史（曾是步骤任务专用）：#127 A1 后 note/material 提交时也先入索引。
+    """
     try:
         from app.db.video_task_dao import insert_video_task
 
@@ -295,73 +527,8 @@ def _index_step_task(task_id: str, kind: str, title: str = "") -> None:
             status="PENDING",
             note_dir=str(NOTE_OUTPUT_DIR / task_id),
         )
-    except Exception:
-        pass
-
-
-def _submit_step_task(kind: str, step_fn: Callable, title: str = "", **params) -> str:
-    """并发门禁 + 写 PENDING + 入索引 + 提交线程池。"""
-    _guard_concurrency()
-    task_id = uuid.uuid4().hex
-    _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
-    _index_step_task(task_id, kind, title=title)
-    cancel_event = threading.Event()
-    future = _pool.submit(_run_step_task, task_id, cancel_event, step_fn=step_fn, **params)
-    with _tasks_lock:
-        _task_futures[task_id] = future
-        _task_events[task_id] = cancel_event
-    return task_id
-
-
-def _step_transcribe(task_id: str, cancel_event: Optional[threading.Event], file_path: str) -> dict:
-    """transcribe_media 的后台步骤：转写 → payload {kind: transcript, transcript: {...}}。"""
-    _check_cancel(cancel_event)
-    transcript = pipeline.transcribe_audio(file_path)
-    return {"kind": "transcript", "transcript": transcript}
-
-
-def _step_extract_frames(
-    task_id: str,
-    cancel_event: Optional[threading.Event],
-    video_path: str,
-    video_interval: int,
-    grid_size: Optional[List[int]],
-    save_dir: str,
-) -> dict:
-    """extract_frames 的后台步骤：抽帧 → payload {kind: frames, frames: [file://...]}。"""
-    _check_cancel(cancel_event)
-    frames = pipeline.extract_frames(
-        video_path,
-        video_interval=video_interval,
-        grid_size=grid_size,
-        save_dir=save_dir,
-    )
-    return {"kind": "frames", "frames": frames}
-
-
-def _step_summarize(
-    task_id: str,
-    cancel_event: Optional[threading.Event],
-    material: dict,
-    provider_id: str,
-    model_name: Optional[str],
-    style: Optional[str],
-    extras: Optional[str],
-    formats: Optional[List[str]],
-) -> dict:
-    """summarize_note 的后台步骤：LLM 总结 → payload {kind: note, markdown, title}。"""
-    _check_cancel(cancel_event)
-    gpt = pipeline.get_gpt(provider_id, model_name)
-    markdown = pipeline.summarize_material(
-        material,
-        gpt,
-        style=style,
-        extras=extras,
-        formats=formats,
-        checkpoint_key=task_id,
-        cancel_event=cancel_event,
-    )
-    return {"kind": "note", "markdown": markdown, "title": material.get("title")}
+    except Exception as exc:  # noqa: BLE001 —— 索引失败不阻断提交，但留痕（list_tasks 会缺任务）
+        logger.warning(f"任务入索引失败 task_id={task_id}: {exc}")
 
 
 def _coerce_local_path(p: str) -> Path:
@@ -384,8 +551,24 @@ def _coerce_local_path(p: str) -> Path:
 
 
 def _local_video_exists(video_url: str) -> bool:
-    """本地路径 / file:// 是否存在（generate_note / prepare_note_material 共用）。"""
-    return _coerce_local_path(video_url).exists()
+    """本地路径 / file:// 是否是存在的文件（generate_note / prepare_note_material 共用）。
+
+    只认文件不认目录：空串会 coerce 成当前目录（Path("") == Path(".")），
+    目录路径也应报「不是视频文件」而非「存在」（docs 审计 H 组）。
+    """
+    return _coerce_local_path(video_url).is_file()
+
+
+def _guard_remote_url(url: str, platform: str) -> None:
+    """非本地平台入口统一 SSRF 校验（#133 A1）。
+
+    #132 A1 只在 generic/youtube 下载器内部校验——显式传 platform=bilibili/
+    kuaishou/douyin 时，下载器/短链解析直接对 URL 发出站请求（yt-dlp
+    extract_info / requests.head），恶意/被注入的 agent 可打内网/云元数据
+    （169.254.169.254）。本地路径已在上游分流（local 分支），不在此校验。
+    """
+    if platform != "local":
+        assert_public_http_url(url)
 
 
 def _resolve_default_provider_id() -> Optional[str]:
@@ -403,9 +586,12 @@ def _resolve_default_provider_id() -> Optional[str]:
         pid = row.get("id")
         if not pid:
             continue
-        if cfg.get(f"default_model:{pid}"):
-            return pid
         key = (row.get("api_key") or "").strip()
+        if cfg.get(f"default_model:{pid}"):
+            # 默认模型分支也必须校验 key：key 被清空/过期时不选中（否则跑到总结才 401）
+            if key and "*" not in key:
+                return pid
+            continue
         if key and "*" not in key:
             keyed.append(pid)
     if len(keyed) == 1:
@@ -418,16 +604,6 @@ _SENSITIVE_VIA_MCP = (
     "请在本会话终端执行：`! videonote providers set <id> --api-key '...'` "
     "或 `! videonote login bilibili` / `! videonote setup`。"
 )
-
-
-def _coerce_transcript(transcript) -> dict:
-    """把 transcript 参数规整成 dict（兼容 dict / JSON 字符串 / None）。"""
-    if isinstance(transcript, str):
-        try:
-            return json.loads(transcript) or {}
-        except Exception:
-            return {}
-    return transcript or {}
 
 
 def _detect_platform(url: str) -> str:
@@ -457,20 +633,6 @@ def _validate_task_id(task_id: str) -> str:
     return tid
 
 
-def _fetch_live_models(provider: Dict) -> Optional[List[str]]:
-    """尝试实时请求供应商的 /v1/models 列表。失败返回 None。"""
-    r = probe_models(
-        provider.get("api_key"),
-        provider.get("base_url"),
-        name=provider.get("name", ""),
-        timeout=15.0,
-    )
-    if not r["ok"]:
-        logger.warning(f"实时拉取模型列表失败（回退到本地数据库）: {r['error']}")
-        return None
-    return r["models"]
-
-
 # ---------- MCP 工具 ----------
 
 
@@ -481,8 +643,8 @@ def generate_note(
     quality: str = "medium",
     provider_id: Optional[str] = None,
     model_name: Optional[str] = None,
-    format: Optional[List[str]] = None,
-    style: Optional[str] = None,
+    format: Optional[List[NoteFormat]] = None,
+    style: Optional[Style] = None,
     screenshot: Optional[bool] = None,
     link: bool = False,
     video_understanding: Optional[bool] = None,
@@ -506,20 +668,15 @@ def generate_note(
     - include_comments / comments_limit: 是否抓取 B 站弹幕+热门评论作为参考注入 prompt（仅 B 站视频生效）；不传时用 setup 默认（默认关 / 20 条）；显式传入始终覆盖；
     - video_understanding / video_interval / grid_size: 视频理解（需多模态模型）；不传时用 setup ③ 配置的默认（默认关 / 6s）；显式传入始终覆盖；
     - screenshot + format 含 "screenshot": 插入图片，产出便携笔记 note.md + Assets/（相对引用）；不传时用 setup ③ 配置的默认（默认关）；显式传入始终覆盖；
-    - notes_dir: 便携笔记的输出目录（可选；缺省 VIDEONOTE_NOTES_DIR 环境变量，再缺省 note_results/{task_id}/）。
+    - notes_dir: 便携笔记的输出目录（可选；缺省 VIDEONOTE_NOTES_DIR 环境变量，再缺省 note_results/{task_id}/；支持 file:// URI）。
 
-    返回 {task_id, status, platform}。之后用 get_task_status 轮询（不要用 wait_for_note，
-    会卡住 MCP 事件循环）。SUCCESS 时 result.note_dir 指向便携笔记目录。
+    返回 {task_id, status, platform}。之后用 get_task_status 轮询。SUCCESS 时 result.note_dir 指向 note.md 所在目录（{task_id}/gen/，
+    指定 notes_dir 时另有 result.portable_note_dir 指向便携副本）。
 
     只需素材（转写/帧/评论，不调 LLM 总结）供自行写笔记时，用 prepare_note_material。
     """
-    if not provider_id:
-        provider_id = _resolve_default_provider_id()
-    if not provider_id:
-        raise ValueError(
-            "需要 provider_id：先 list_providers 查看，或跑 `/videonote-setup` / "
-            "`! videonote providers set <id> --api-key '...'` 配好默认供应商"
-        )
+    # 先做平台检测/handoff/本地校验——handoff 和「本地文件不存在」不需要 provider
+    # （docs 审计 H 组：此前 provider 解析在前，unsupported 链接也会先撞 provider 报错）
     if platform is None:
         platform = _detect_platform(video_url)
     if platform == "unsupported":
@@ -529,11 +686,42 @@ def generate_note(
         if not _local_video_exists(video_url):
             raise ValueError(f"本地文件不存在: {video_url}")
         video_url = str(_coerce_local_path(video_url))
-
+    # SSRF 入口校验（#133 A1）：显式 platform=bilibili/kuaishou/douyin 曾绕过
+    # 下载器内部的 #132 A1 检查（url_parser 短链解析另已内置守卫）
+    _guard_remote_url(video_url, platform)
+    _check_style_and_format(style, format or [])
+    _check_grid_size(grid_size)
     try:
         q = DownloadQuality(quality)
     except ValueError:
         raise ValueError(f"quality 必须为 fast / medium / slow，收到: {quality}")
+    # 默认解析分支（#52）只返回已填 key 的供应商，无须重复校验；
+    # 显式 provider_id 则校验 key 已填（#133 B1）——否则空 key 的内置行
+    # （openai/groq seed）显式传入会在下载+转写全跑完后才在 SUMMARIZING 报
+    # 「API Key 未配置」，浪费整轮流水线。与 _preflight_provider 的 key 口径
+    # 一致（provider 存在 + key 非空 + 不含 `*`）；模型检查不在这里做——
+    # model_name 可显式传入（preflight 工具无此参数，才连带检查模型）。
+    _explicit_provider = bool(provider_id)
+    if not provider_id:
+        provider_id = _resolve_default_provider_id()
+    if not provider_id:
+        raise ValueError(
+            "需要 provider_id：用 `! videonote providers list` 查看，或跑 `/videonote-setup` / "
+            "`! videonote providers set <id> --api-key '...'` 配好默认供应商"
+        )
+    if _explicit_provider:
+        try:
+            _prow = ProviderService.get_provider_by_id(provider_id)
+        except Exception:
+            _prow = None
+        if not _prow:
+            raise ValueError(f"供应商不存在: {provider_id}")
+        _pkey = (_prow.get("api_key") or "").strip()
+        if not _pkey or "*" in _pkey:
+            raise ValueError(
+                f"供应商 {provider_id} 的 key 为空：请用 `! videonote providers set {provider_id} --api-key '...'`"
+                "（不要经 MCP 传 key）"
+            )
 
     if not model_name:
         model_name = get_app_config().get(f"default_model:{provider_id}") or ""
@@ -549,27 +737,47 @@ def generate_note(
     # 视频理解默认：参数没传（None）时用 setup ③ 配置的默认（默认关 / 0→6s）；
     # 显式传 False/0/具体秒数仍是显式值，覆盖默认
     if video_understanding is None:
-        video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
+        video_understanding = _resolve_bool_config("video_understanding", "VIDEONOTE_VIDEO_UNDERSTANDING", False)
     if video_interval is None:
-        video_interval = int(get_app_config().get("video_interval") or env_int("VIDEONOTE_VIDEO_INTERVAL", 0))
+        video_interval = _resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 0)
+    video_interval = _coerce_int(video_interval or 0, 0, clamp_min=0)  # 下限钳制，避免 0/负值进流水线
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
-        include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
+        include_comments = _resolve_bool_config("include_comments", "VIDEONOTE_INCLUDE_COMMENTS", False)
     if comments_limit is None:
-        comments_limit = int(get_app_config().get("comments_limit") or env_int("VIDEONOTE_COMMENTS_LIMIT", 20))
+        comments_limit = _resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
+    # 显式 comments_limit=0（配 include_comments=True 想限 0 条）不能被 `or 20` 吞掉（#130 A2）
+    comments_limit = _coerce_int(comments_limit if comments_limit is not None else 20, 20, clamp_min=1)  # 下限钳制
 
     # 风格/截图默认：参数没传（None）时用 setup ③ 配置的默认（默认 detailed / 关）
     if style is None:
         style = get_app_config().get("default_style") or env_or("VIDEONOTE_DEFAULT_STYLE") or "detailed"
     if screenshot is None:
-        screenshot = bool(get_app_config().get("default_screenshot", env_bool("VIDEONOTE_DEFAULT_SCREENSHOT", False)))
+        screenshot = _resolve_bool_config("default_screenshot", "VIDEONOTE_DEFAULT_SCREENSHOT", False)
 
     # 并发上限：最多 VIDEONOTE_MAX_WORKERS 个进行中任务（默认 3）
     _guard_concurrency()
 
     task_id = uuid.uuid4().hex
+    # 提交时先入全局索引（#127 A1）：note 任务运行期/失败后 list_tasks 可见，
+    # 不再每次 _write_status 刷「不在全局索引」warning；SUCCESS 时 _save_metadata 再更新 title
+    _index_step_task(task_id, platform or "generic")
     _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
+    notes_dir_out = notes_dir or get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or None
+    # 输出目录与输入文件同口径：file:// URI 先规整，否则 Path("file:///…") 会在 CWD 下建字面 `file:` 目录
+    if notes_dir_out is not None:
+        notes_dir_out = str(_coerce_local_path(notes_dir_out))
+    # 便携笔记可写数据目录外（用户显式意图），只提示不拦截（与 export/merge 同口径，docs/05 #45）
+    if notes_dir_out and not Path(notes_dir_out).resolve().is_relative_to(DATA_DIR.resolve()):
+        logger.warning("generate_note 便携笔记输出到数据目录外: %s", notes_dir_out)
+    # 布尔开关并入 format 列表：screenshot/link=True 时自动追加对应 format 项
+    # （否则 prompt 不注入标记指令 → LLM 不输出标记 → 视频白下载但笔记无图，#120）
+    _format = list(format or [])
+    if screenshot and "screenshot" not in _format:
+        _format.append("screenshot")
+    if link and "link" not in _format:
+        _format.append("link")
     params = dict(
         video_url=video_url,
         platform=platform,
@@ -578,7 +786,7 @@ def generate_note(
         provider_id=provider_id,
         link=link,
         screenshot=screenshot,
-        _format=format or [],
+        _format=_format,
         style=style,
         extras=extras,
         include_comments=include_comments,
@@ -586,7 +794,7 @@ def generate_note(
         video_understanding=video_understanding,
         video_interval=video_interval,
         grid_size=grid_size or [],
-        notes_dir=notes_dir or get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or None,
+        notes_dir=notes_dir_out,
     )
     cancel_event = threading.Event()
     future = _pool.submit(_run_note_task, task_id, cancel_event, **params)
@@ -620,7 +828,7 @@ def prepare_note_material(
     - include_comments / comments_limit: 是否抓取 B 站弹幕+热门评论（仅 B 站视频生效；默认关 / 20 条）。
 
     不需要配置 LLM 供应商/模型。返回 {task_id, status: PENDING, kind: material}。
-    之后用 get_task_status 轮询（不要 wait_for_note）；SUCCESS 时 result 含
+    之后用 get_task_status 轮询；SUCCESS 时 result 含
     {kind: material, title, transcript, frames, comments_danmaku, video_path, audio_path}。
     需要 AI 生成结构化 Markdown 笔记请用 generate_note。
     """
@@ -633,24 +841,32 @@ def prepare_note_material(
         if not _local_video_exists(video_url):
             raise ValueError(f"本地文件不存在: {video_url}")
         video_url = str(_coerce_local_path(video_url))
+    # SSRF 入口校验（#133 A1，与 generate_note 同口径）
+    _guard_remote_url(video_url, platform)
 
     # 视频理解（抽帧）默认：参数没传（None）时用 setup ③ 配置的默认（默认关 / 0→6s）；
     # 显式传 False/0/具体秒数仍是显式值，覆盖默认
     if video_understanding is None:
-        video_understanding = bool(get_app_config().get("video_understanding", env_bool("VIDEONOTE_VIDEO_UNDERSTANDING", False)))
+        video_understanding = _resolve_bool_config("video_understanding", "VIDEONOTE_VIDEO_UNDERSTANDING", False)
     if video_interval is None:
-        video_interval = int(get_app_config().get("video_interval") or env_int("VIDEONOTE_VIDEO_INTERVAL", 0))
+        video_interval = _resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 0)
+    video_interval = _coerce_int(video_interval or 0, 0, clamp_min=0)  # 下限钳制，避免 0/负值进流水线
 
     # 弹幕/评论默认：参数没传（None）时用 setup 配置的默认（默认关 / 20 条）
     if include_comments is None:
-        include_comments = bool(get_app_config().get("include_comments", env_bool("VIDEONOTE_INCLUDE_COMMENTS", False)))
+        include_comments = _resolve_bool_config("include_comments", "VIDEONOTE_INCLUDE_COMMENTS", False)
     if comments_limit is None:
-        comments_limit = int(get_app_config().get("comments_limit") or env_int("VIDEONOTE_COMMENTS_LIMIT", 20))
+        comments_limit = _resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
+    # 显式 comments_limit=0 不能被 `or 20` 吞掉（#130 A2）
+    comments_limit = _coerce_int(comments_limit if comments_limit is not None else 20, 20, clamp_min=1)  # 下限钳制
 
     # 并发上限：与 generate_note 一致
+    _check_grid_size(grid_size)
     _guard_concurrency()
 
     task_id = uuid.uuid4().hex
+    # 提交时先入全局索引（#127 A1）：material 任务运行期/失败后 list_tasks 可见
+    _index_step_task(task_id, platform or "generic")
     _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
     params = dict(
         video_url=video_url,
@@ -674,9 +890,11 @@ def prepare_note_material(
     )
 
 
-@mcp.tool()
 def _stage_label(status: str) -> str:
-    """状态枚举 → 人类可读阶段（Agent 轮询汇报用，如「转写中，已 3 分钟」）。"""
+    """状态枚举 → 人类可读阶段（Agent 轮询汇报用，如「转写中，已 3 分钟」）。
+
+    未知状态原样返回（不抛错）；配合 get_task_status 的 stage 字段使用。
+    """
     return {
         "PENDING": "排队中",
         "INITIALIZING": "准备中",
@@ -692,6 +910,7 @@ def _stage_label(status: str) -> str:
     }.get(status, status)
 
 
+@mcp.tool()
 def get_task_status(task_id: str, include_transcript: bool = False) -> str:
     """查询笔记生成任务进度（轻量快照）。SUCCESS 时 result 含 markdown / note_dir / title。
 
@@ -701,78 +920,94 @@ def get_task_status(task_id: str, include_transcript: bool = False) -> str:
     task_id = _validate_task_id(task_id)
     task_dir = NOTE_OUTPUT_DIR / str(task_id)
     status_file = task_dir / "status.json"
-    if not status_file.exists():
-        return json.dumps(
-            {
-                "status": "NOT_FOUND",
-                "stage": "不存在",
-                "elapsed_secs": None,
-                "message": "任务不存在（id 拼错或已被 cleanup）。用 list_tasks 查看。",
-                "task_id": task_id,
-                "result": None,
-            },
-            ensure_ascii=False,
-        )
-    try:
-        data = json.loads(status_file.read_text(encoding="utf-8"))
-    except Exception:
-        data = {"status": "PENDING", "message": "状态文件读取失败"}
+    data = None
+    if status_file.exists():
+        try:
+            data = json.loads(status_file.read_text(encoding="utf-8"))
+        except Exception:
+            # 读盘损坏（写一半/磁盘故障）时回退最近一次写盘快照——「状态文件读取失败」
+            # 曾把运行中/已完成任务误报成 PENDING（#118）；快照也没有才是真未知
+            with _tasks_lock:
+                data = _status_memory.get(task_id) or {"status": "PENDING", "message": "状态文件读取失败"}
+    else:
+        # 缺失文件也先查快照（#127 A5）：_write_status 先写内存快照再写盘，若提交时
+        # 首写就失败（磁盘满/只读）任务在跑但 status.json 不存在——直接报 NOT_FOUND
+        # 会与 list_tasks 显示的 PENDING 矛盾。快照命中 → 任务在跑，返回快照内容。
+        with _tasks_lock:
+            snap = _status_memory.get(task_id)
+        if snap is None:
+            return json.dumps(
+                {
+                    "status": "NOT_FOUND",
+                    "stage": "不存在",
+                    "elapsed_secs": None,
+                    "message": "任务不存在（id 拼错或已被 cleanup）。用 list_tasks 查看。",
+                    "task_id": task_id,
+                    "result": None,
+                },
+                ensure_ascii=False,
+            )
+        data = snap
 
     status = data.get("status", "PENDING")
     started = data.get("started_at")
-    elapsed = round(time.time() - float(started), 1) if started else None
+    try:
+        elapsed = round(time.time() - float(started), 1) if started else None
+    except (TypeError, ValueError):
+        # started_at 损坏（旧版本/手工编辑）不影响状态查询（docs 审计 H 组）
+        elapsed = None
     result = None
+    result_error = None
+    result_pending = False
     result_file = task_dir / "result.json"
     if status == "SUCCESS" and result_file.exists():
         try:
             result = json.loads(result_file.read_text(encoding="utf-8"))
             if result and not include_transcript:
                 # 轻量结果：默认剥掉完整转写/评论，避免一次工具调用灌入数十万 token
-                result.pop("transcript", None)
-                result.pop("comments_danmaku", None)
-            elif result:
-                # 即便要全量转写，也剥掉 raw（原始 API 响应可能很大）
-                tr = result.get("transcript")
-                if isinstance(tr, dict):
-                    tr.pop("raw", None)
+                # （prepare_note_material 的转写就是主产物，剥掉后 get_task_status 对它只剩空壳）
+                kind = result.get("kind")
+                if kind not in ("transcript", "material"):
+                    result.pop("transcript", None)
+                    result.pop("comments_danmaku", None)
+            # raw（whisper 原始 API 响应）恒剥——不管转写保不保留，raw 都可能是数 MB
+            tr = result.get("transcript")
+            if isinstance(tr, dict):
+                tr.pop("raw", None)
             if result and result.get("markdown"):
-                result["markdown"] = _absolutize_images(result["markdown"])
+                # 便携笔记模式 markdown 里是 Assets/ 相对引用（相对 note_dir=gen/，见 G2）；
+                # base_dir=note_dir 让 Agent 拿到的 markdown 图片可被直接 Read
+                result["markdown"] = _absolutize_images(result["markdown"], base_dir=result.get("note_dir"))
             if result and "title" not in result:
                 # 补语义标题（旧任务 result 可能无 title；从 audio_meta 兜底）
                 am = result.get("audio_meta") or {}
                 result["title"] = am.get("title") or ""
         except Exception as e:
+            # result.json 损坏（写盘中断/磁盘故障）：status 是 SUCCESS 但内容不可读。
+            # 与 status.json 的 #118 快照回退不同，result 无法重建——显式标 result_error，
+            # 让 Agent 能区分「成功但内容不可读」与「任务不存在」（#124 A10）
             logger.error(f"读取结果文件失败 task_id={task_id}: {e}")
+            result_error = f"结果文件读取失败（可能写盘中断）: {e}"
+    elif status == "SUCCESS":
+        # SUCCESS 但 result.json 不存在（结果尚未落盘/被手动删/旧版本任务）：
+        # 不静默 result:null——Agent 无法区分「无结果」与「任务失败」（#125 C3）
+        result_pending = True
 
-    return json.dumps(
-        {
-            "status": status,
-            "stage": _stage_label(status),
-            "elapsed_secs": elapsed,
-            "message": data.get("message", ""),
-            "task_id": task_id,
-            "result": result,
-        },
-        ensure_ascii=False,
-    )
+    payload = {
+        "status": status,
+        "stage": _stage_label(status),
+        "elapsed_secs": elapsed,
+        "message": data.get("message", ""),
+        "task_id": task_id,
+        "result": result,
+    }
+    if result_error:
+        payload["result_error"] = result_error
+    if result_pending:
+        payload["result_pending"] = True
+    return json.dumps(payload, ensure_ascii=False)
 
 
-@mcp.tool()
-def wait_for_note(task_id: str, timeout: int = 120, poll_interval: int = 3, include_transcript: bool = False) -> str:
-    """**已废弃**：会卡住整个 MCP 事件循环。请用 `get_task_status` 轮询。
-
-    本工具不再 sleep。终态（SUCCESS/FAILED/CANCELLED/NOT_FOUND）立刻返回快照；
-    进行中任务也立刻返回当前快照，并带 deprecated 提示。timeout / poll_interval 已忽略。
-    """
-    task_id = _validate_task_id(task_id)
-    resp = json.loads(get_task_status(task_id, include_transcript=include_transcript))
-    if resp["status"] not in ("SUCCESS", "FAILED", "CANCELLED", "NOT_FOUND"):
-        resp["deprecated"] = True
-        resp["message"] = (
-            (resp.get("message") or "")
-            + " wait_for_note 已废弃（会阻塞事件循环），请改用 get_task_status 轮询。"
-        ).strip()
-    return json.dumps(resp, ensure_ascii=False)
 
 
 def _parse_segment_range(spec: str, total: int) -> tuple:
@@ -788,7 +1023,9 @@ def _parse_segment_range(spec: str, total: int) -> tuple:
         return (0, min(_TRANSCRIPT_DEFAULT_SEGMENTS, total))
     m = re.fullmatch(r"(\d*)\s*-\s*(\d*)|(\d+)", spec)
     if not m:
-        return (0, total)
+        raise ValueError(
+            f"segment_range 非法: {spec!r}（支持 'a-b' / 'a-' / '-b' / 'a' / 'all' / 空=前 {_TRANSCRIPT_DEFAULT_SEGMENTS} 段）"
+        )
     if m.group(3) is not None:  # 单段
         a = int(m.group(3))
         a = max(0, min(a, total))
@@ -801,6 +1038,71 @@ def _parse_segment_range(spec: str, total: int) -> tuple:
     return (a, b)
 
 
+def _load_task_transcript(task_id: str) -> Optional[dict]:
+    """读任务的转写 dict（{language, full_text, segments}）；无转写/未成功返回 None。
+
+    规范来源：gen/transcript.json（note.py 每次成功都会写）；缺失则退 result.json。
+    供 get_task_transcript 工具与 videonote://task/{id}/transcript Resource 共用（docs/05 #16）。
+    只对 SUCCESS 任务返回（#122 A3）：运行中任务转写缓存可能已写（转写完成、
+    LLM 总结前），FAILED 任务转写也常留档——docstring 承诺「未成功返回 None」，
+    否则 Agent 把失败任务读到的转写当成功产出去向用户汇报。
+    """
+    task_dir = NOTE_OUTPUT_DIR / str(task_id)
+    try:
+        status = json.loads((task_dir / "status.json").read_text(encoding="utf-8")).get("status", "")
+    except Exception:
+        status = ""
+    if status != "SUCCESS":
+        return None
+    cache = task_dir / "gen" / "transcript.json"
+    if cache.exists():
+        try:
+            return json.loads(cache.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"读取转写缓存失败 task_id={task_id}: {e}")
+    result_file = task_dir / "result.json"
+    if result_file.exists():
+        try:
+            return json.loads(result_file.read_text(encoding="utf-8")).get("transcript")
+        except Exception:
+            return None
+    return None
+
+
+@mcp.resource(
+    "videonote://task/{task_id}/transcript",
+    title="任务转写文本",
+    description="读取任务转写（带时间轴的纯文本，agent 可直接读）。任务未成功/无转写时返回错误说明。",
+    mime_type="text/plain",
+)
+def transcript_resource(task_id: str) -> str:
+    """MCP Resource：按任务读转写全文（带时间轴文本，非 JSON）。
+
+    工具面收敛（docs/05 #16）：Agent 读转写走 Resource（文本直读），
+    get_task_transcript 工具保留用于分段切片/结构化场景。
+    """
+    try:
+        task_id = _validate_task_id(task_id)
+    except Exception as e:
+        return f"task_id 无效: {e}"
+    transcript = _load_task_transcript(task_id)
+    if not transcript:
+        return f"该任务没有可读转写（{_transcript_unavailable_reason(task_id)}）"
+    segments = transcript.get("segments") or []
+    if not segments:
+        return transcript.get("full_text") or ""
+    lines = []
+    for seg in segments:
+        start = seg.get("start") or 0
+        mm, ss = int(start // 60), int(start % 60)
+        hh, mm = divmod(mm, 60)
+        stamp = f"{hh:02d}:{mm:02d}:{ss:02d}" if hh else f"{mm:02d}:{ss:02d}"
+        speaker = seg.get("speaker")
+        prefix = f"[{speaker}] " if speaker else ""
+        lines.append(f"{stamp} - {prefix}{seg.get('text', '').strip()}")
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def get_task_transcript(task_id: str, segment_range: str = "") -> str:
     """读取已完成任务的转写文本（不耗 LLM，从磁盘按需取，避免撑爆 context）。
@@ -811,37 +1113,17 @@ def get_task_transcript(task_id: str, segment_range: str = "") -> str:
     returned_segments, total_chars, returned_chars, truncated}}`。任务未成功/无转写时
     `ok:false`。"""
     task_id = _validate_task_id(task_id)
-    task_dir = NOTE_OUTPUT_DIR / str(task_id)
 
     # 规范来源：gen/transcript.json（note.py 每次成功都会写）；缺失则退 result.json
-    transcript = None
-    cache = task_dir / "gen" / "transcript.json"
-    if cache.exists():
-        try:
-            transcript = json.loads(cache.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning(f"读取转写缓存失败 task_id={task_id}: {e}")
-    if transcript is None:
-        result_file = task_dir / "result.json"
-        if result_file.exists():
-            try:
-                result = json.loads(result_file.read_text(encoding="utf-8"))
-                transcript = result.get("transcript")
-            except Exception:
-                transcript = None
+    transcript = _load_task_transcript(task_id)
     if not transcript:
-        status = "UNKNOWN"
-        try:
-            st = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
-            status = st.get("status", "UNKNOWN")
-        except Exception:
-            pass
+        status = _read_task_status(task_id)
         return json.dumps(
             {
                 "task_id": task_id,
                 "ok": False,
                 "status": status,
-                "message": "该任务没有可读转写（尚未成功或已清理）",
+                "message": f"该任务没有可读转写（{_transcript_unavailable_reason(task_id)}）",
             },
             ensure_ascii=False,
         )
@@ -851,13 +1133,21 @@ def get_task_transcript(task_id: str, segment_range: str = "") -> str:
     full_text = transcript.get("full_text") or ""
     total = len(segments)
 
-    lo, hi = _parse_segment_range(segment_range, total)
+    try:
+        lo, hi = _parse_segment_range(segment_range, total)
+    except ValueError as e:
+        return json.dumps(
+            {"task_id": task_id, "ok": False, "status": _read_task_status(task_id), "message": str(e)},
+            ensure_ascii=False,
+        )
     if (lo, hi) == (0, total):
         out_segments = segments
         out_text = full_text
     else:
         out_segments = segments[lo:hi]
-        out_text = "\n".join(seg.get("text", "") for seg in out_segments)
+        # 与全量 full_text（缓存，空格分隔）同一分隔符（#127 A8）：切片不再 \n 重拼，
+        # Agent 对比「all」与「0-N」的字节数/分词时不失真
+        out_text = " ".join(seg.get("text", "") for seg in out_segments)
 
     return json.dumps(
         {
@@ -898,558 +1188,220 @@ def cancel_note(task_id: str) -> str:
     if future is not None and not future.done():
         cancelled = future.cancel()
     event.set()
-    _write_status(task_id, TaskStatus.CANCELLED, message="任务已取消")
+    if _status_is_terminal(task_id):
+        # 任务恰好在取消时到达终态：终态已写，覆盖会变成「已取消且无结果」。
+        # 措辞按终态区分（#122 A8）：FAILED 报「任务已失败」——此前一律
+        # 「任务已完成」，Agent 收到误以为成功产出了笔记
+        try:
+            st = json.loads(
+                (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
+            ).get("status", "")
+        except Exception:
+            st = ""
+        if st == "FAILED":
+            return json.dumps(
+                {"ok": True, "task_id": task_id, "status": "DONE",
+                 "message": "任务已失败，无需取消"},
+                ensure_ascii=False,
+            )
+        if st == "CANCELLED":
+            return json.dumps(
+                {"ok": True, "task_id": task_id, "status": "DONE",
+                 "message": "任务已取消"},
+                ensure_ascii=False,
+            )
+        logger.info(f"任务已进入终态，取消不生效 task_id={task_id}")
+        return json.dumps(
+            {"ok": True, "task_id": task_id, "status": "DONE",
+             "message": "任务已完成，取消不生效"},
+            ensure_ascii=False,
+        )
     if cancelled:
-        # 排队中（未启动）任务：_run_note_task/_run_step_task 不会执行，
-        # finally 里的 pop 不跑 → 手动弹注册表，避免条目泄漏
+        # 排队中（未启动）任务：worker 不会执行，状态由本函数收尾写（无并发写方）
+        _write_status(task_id, TaskStatus.CANCELLED, message="任务已取消")
         with _tasks_lock:
             _task_futures.pop(task_id, None)
             _task_events.pop(task_id, None)
-    logger.info(f"已取消任务 task_id={task_id}")
-    return json.dumps({"ok": True, "task_id": task_id, "status": "CANCELLED"}, ensure_ascii=False)
+        logger.info(f"已取消排队任务 task_id={task_id}")
+        return json.dumps({"ok": True, "task_id": task_id, "status": "CANCELLED"}, ensure_ascii=False)
+    # 运行中任务：只发协作式取消信号，终态由 worker 在阶段边界收尾写（TaskCancelledError
+    # → CANCELLED）。此前 cancel 直接写盘 CANCELLED——检查与写入之间 worker 完成时
+    # 把刚写的 SUCCESS 覆盖成「已取消」，而 result.json 已有完整笔记（#121 C5）
+    logger.info(f"已发送取消信号 task_id={task_id}")
+    return json.dumps(
+        {"ok": True, "task_id": task_id, "status": "CANCELLING",
+         "message": "取消请求已发送，任务将在下一阶段边界停止"},
+        ensure_ascii=False,
+    )
 
 
 @mcp.tool()
-def list_tasks() -> str:
-    """列出全部任务（全局索引 video_tasks 表），按创建时间倒序。
+def list_tasks(limit: Optional[int] = None, offset: int = 0) -> str:
+    """列出任务（全局索引 video_tasks 表），按创建时间倒序。
 
+    - limit: 可选，最多返回条数（缺省全部）；offset: 可选，跳过条数（配合 limit 分页）。
     返回 [{task_id, title, status, summary, platform, created_at, note_dir}]——
     Agent 据此枚举任务、按语义标题识别，无需预先知道 task_id。
     """
     from app.db.video_task_dao import list_tasks as _list
 
-    return json.dumps(_list(), ensure_ascii=False)
+    offset = _coerce_int(offset or 0, 0, clamp_min=0)
+    # limit==0 显式「取 0 条」→ 空列表（不再被钳成 1、误导「没有任务」的判断，#127 A6）
+    if limit == 0:
+        return json.dumps([], ensure_ascii=False)
+    limit = _coerce_int(limit, 1, clamp_min=1) if limit is not None else None
+    tasks = _list(limit=limit, offset=offset)
+    return json.dumps(tasks, ensure_ascii=False)
 
 
 @mcp.tool()
-def get_task_files(task_id: str) -> str:
-    """列出某任务在磁盘上生成的相关文件/目录（manifest 记录 + 任务文件夹扫描）。
-
-    返回 {task_id, manifest_paths, existing}，existing 是真实存在的文件/目录列表。
-    清理前先用它查看该任务占了哪些存储。
-    """
-    task_id = _validate_task_id(task_id)
-    return json.dumps(list_task_files(task_id), ensure_ascii=False)
-
-
-@mcp.tool()
-def cleanup_note(task_id: str, include_note: bool = False) -> str:
+def cleanup_note(task_id: str, include_note: bool = False, dry_run: bool = False) -> str:
     """清理某个任务生成的中间产物（下载的视频/音频、转写、截图、临时文件、dl 目录等）。
 
     - include_note=False（默认）：保留最终笔记（note.md / note_dir / 便携笔记目录）；
-    - include_note=True：连最终笔记一起删（含 manifest）。
+    - include_note=True：连最终笔记一起删（含 manifest），并同步删除全局索引
+      video_tasks 里该任务的记录（否则 list_tasks 出现 note_dir 悬空的任务）。
+    - dry_run=True：**只列出**该任务占用的文件（{ok, task_id, manifest_paths, existing,
+      meta, dry_run: true}），不删任何东西——清理前先 dry_run 查看（原 get_task_files
+      工具，#136 合并进本工具）。
 
     只删除 manifest 记录 / note_results/{task_id}* / dl_{task_id} 前缀的文件，
-    且 resolve 校验在数据目录内（防路径穿越）。返回 {deleted, missing, errors, note_kept}。
+    且 resolve 校验在数据目录内（防路径穿越）。返回 {deleted, missing, errors, note_kept,
+    notes_kept_outside}——数据目录**外**的便携笔记副本（用户指定 notes_dir 时常见）不删除
+    （沙箱红线），路径经 notes_kept_outside 列出，不会成为无人知晓的孤儿。
+
+    **任务仍在运行（或排队中）时拒绝**（返回 {ok: false, error}）——直接清理会删掉
+    下载器/转写器正在写的目录，任务会中途失败或产生残留状态。先 cancel_note 或等终态。
     """
     task_id = _validate_task_id(task_id)
-    return json.dumps(cleanup_task_files(task_id, include_note=include_note), ensure_ascii=False)
+    if dry_run:
+        data = list_task_files(task_id)
+        if isinstance(data, dict) and "ok" not in data:
+            data["ok"] = True
+        data["dry_run"] = True
+        return json.dumps(data, ensure_ascii=False)
+    with _tasks_lock:
+        future = _task_futures.get(task_id)
+        if future is not None and not future.done():
+            return json.dumps(
+                {
+                    "ok": False,
+                    "task_id": task_id,
+                    "error": "任务仍在运行（或排队中）：先 cancel_note，或等待终态后再清理",
+                },
+                ensure_ascii=False,
+            )
+    result = cleanup_task_files(task_id, include_note=include_note)
+    result["ok"] = True  # 与拒绝路径 {ok:false} 对称（#125 A11）
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp.tool()
-def cleanup_all(include_config: bool = False, include_models: bool = False) -> str:
-    """全局清理（类似恢复出厂）：清空 note_results / static/screenshots / logs 的所有任务产物。
+def cleanup_all(include_config: bool = False, include_models: bool = False, dry_run: bool = False) -> str:
+    """全局清理（类似恢复出厂）：清空 note_results / static/screenshots / note_cache 的任务产物。
 
     - include_config=False（默认）：保留 config/（LLM key / cookie / 转写设置）；
       include_config=True 时连 config/ 一起清；
     - include_models=False（默认）：保留 models/（已下载模型可复用，重下成本高）；
       include_models=True 时连 models/ 一起清。
-    数据库记录（video_note.db）不动。返回各目录清理统计 + 保留项。
+    - dry_run=True：**只预览**将清理/保留的目录与运行中任务，不删任何东西
+      （#137 行为安全：破坏性最强的工具，执行前先预览）。返回 {ok, dry_run: true,
+      running, running_task_ids, would_clean: [...], would_keep: [...], note}。
+      dry_run 不拒绝运行中任务（预览无副作用），但 running 非空时执行会被拒——
+      Agent 据此先 cancel_note 或等终态。
+    - **logs/ 不清**（#121 C3）：MCP 进程持有 mcp_stderr.log 打开 fd，unlink 后日志进
+      已删除 inode——文件消失、磁盘不回收；日志也不属任务产物。
+    同步清空全局任务索引 video_tasks（任务目录删了，索引记录一并清——否则
+    list_tasks 出现 note_dir 悬空的任务，见 task_manifest.cleanup_all_files）。
+    返回各目录清理统计 + 保留项。
+
+    **有进行中/排队任务时拒绝**（返回 {ok: false, running, running_task_ids, error}）——
+    全局清空会把运行中任务的目录一并删掉。先 cancel_note 或等全部终态，再清理。
+
+    **include_models=True 且仍有模型在后台下载时拒绝**（返回 {ok: false, downloading_models,
+    error}）——删 models/ 会打断下载线程（#123 A1）。
     """
-    return json.dumps(cleanup_all_files(include_config=include_config, include_models=include_models), ensure_ascii=False)
-
-
-@mcp.tool()
-def fetch_comments(video_url: str, limit: int = 20) -> str:
-    """抓取 B 站视频的热门评论（供生成笔记前预览/参考，不生成笔记）。
-
-    返回 {ok, source, bvid, aid, comments: [{user, content, likes, ctime}], error}。
-    可用 fetch_danmaku 看弹幕汇总；generate_note 的 include_comments 可把二者注入笔记 prompt。
-    """
-    try:
-        from app.downloaders.bilibili_comment import BilibiliCommentFetcher
-
-        result = BilibiliCommentFetcher().fetch_comments(video_url, limit=limit)
-    except Exception as exc:
-        logger.warning(f"fetch_comments 失败: {exc}")
-        result = {"ok": False, "source": "bilibili", "error": str(exc)}
-    return json.dumps(result, ensure_ascii=False)
-
-
-@mcp.tool()
-def fetch_danmaku(video_url: str) -> str:
-    """抓取 B 站视频的弹幕汇总（供生成笔记前预览/参考，不生成笔记）。
-
-    返回 {ok, source, bvid, cid, danmaku_summary, error}。
-    可用 fetch_comments 看热门评论；generate_note 的 include_comments 可把二者注入笔记 prompt。
-    """
-    try:
-        from app.downloaders.bilibili_comment import BilibiliCommentFetcher
-
-        result = BilibiliCommentFetcher().fetch_danmaku(video_url)
-    except Exception as exc:
-        logger.warning(f"fetch_danmaku 失败: {exc}")
-        result = {"ok": False, "source": "bilibili", "error": str(exc)}
-    return json.dumps(result, ensure_ascii=False)
-
-
-# ---------- 独立流水线步骤（复用 app/services/pipeline.py 的解耦步骤） ----------
-
-
-@mcp.tool()
-def fetch_subtitles(video_url: str, platform: Optional[str] = None) -> str:
-    """只取平台字幕（人工/自动字幕），不下载音视频、不转写、不调 LLM。
-
-    - video_url: 必填，B 站/YouTube/抖音/快手链接或本地文件路径；
-    - platform: 可省略，自动识别。
-
-    同步、快，适合快速预览字幕。成功返回
-    {language, full_text, segments}（segments 每项含 start/end/text）；
-    无字幕或获取失败返回 {ok: False, error}，不会抛异常。
-    需要语音转写（ASR，把音频变成字幕）用 transcribe_media；
-    需要完整 AI 笔记用 generate_note。
-    """
-    try:
-        transcript = pipeline.fetch_subtitles(video_url, platform)
-        if transcript is None:
+    with _tasks_lock:
+        running = [tid for tid, f in _task_futures.items() if not f.done()]
+    if dry_run:
+        would_clean = [
+            "note_results/", "static/screenshots/", "static/cover/", "covers/",
+            "note_cache/", "video_tasks 全局索引",
+        ]
+        if include_config:
+            would_clean.append("config/（LLM key / cookie / 转写设置）")
+        if include_models:
+            would_clean.append("models/（已下载模型）")
+        would_keep = ["logs/（运行日志，刻意不清）"]
+        if not include_config:
+            would_keep.append("config/")
+        if not include_models:
+            would_keep.append("models/")
+        return json.dumps(
+            {
+                "ok": True,
+                "dry_run": True,
+                "running": len(running),
+                "running_task_ids": running,
+                "would_clean": would_clean,
+                "would_keep": would_keep,
+                "note": "dry_run 未删除任何文件；确认后去掉 dry_run 执行",
+            },
+            ensure_ascii=False,
+        )
+    if running:
+        return json.dumps(
+            {
+                "ok": False,
+                "running": len(running),
+                "running_task_ids": running,
+                "error": f"有 {len(running)} 个进行中/排队任务：先 cancel_note 或等终态，再进行全局清理",
+            },
+            ensure_ascii=False,
+        )
+    if include_models:
+        dl_keys = dl_state.downloading_keys()
+        if dl_keys:
             return json.dumps(
-                {"ok": False, "error": "该视频没有可用平台字幕（人工/自动字幕）或获取失败"},
+                {
+                    "ok": False,
+                    "downloading_models": dl_keys,
+                    "error": f"仍有 {len(dl_keys)} 个模型正在后台下载（{', '.join(dl_keys)}）："
+                    "先等下载完成再清 models/，或等下载失败/结束后重试",
+                },
                 ensure_ascii=False,
             )
-        return json.dumps(transcript, ensure_ascii=False)
-    except Exception as exc:
-        logger.warning(f"fetch_subtitles 失败: {exc}")
-        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    result = cleanup_all_files(include_config=include_config, include_models=include_models)
+    result["ok"] = True  # 与拒绝路径 {ok:false} 对称（#125 A11 同口径，C2）
+    return json.dumps(result, ensure_ascii=False)
 
 
-@mcp.tool()
-def transcribe_media(file_path: str) -> str:
-    """对本地音频/视频文件做语音识别（ASR），异步返回转写全文 + 分段。
+def _installed_plugin_version() -> Optional[str]:
+    """读本机已装 videonote 插件的 version（marketplace 按 git commit 缓存目录）。
 
-    - file_path: 必填，本地文件路径（mp3/mp4/webm/wav/flac 等，需 ffmpeg 可解析）。
-
-    不下载、不抓字幕、不调 LLM。后台执行（长音频可能较慢），立即返回
-    {task_id, status: PENDING, kind: transcript}；用 get_task_status 轮询，
-    SUCCESS 时 result 含 {kind: transcript, transcript: {language, full_text, segments}}。
-    转写引擎由 get_transcriber_config / set_transcriber 配置（本地 fast-whisper 或云端 groq/bcut 等）。
-    只要平台自带字幕（不转写）用 fetch_subtitles。
+    多个缓存版本时取最近安装的（mtime 最大）；读不到返回 None（非插件方式安装）。
     """
-    p = _coerce_local_path(file_path)
-    if not p.exists():
-        raise ValueError(f"本地文件不存在: {file_path}")
-    task_id = _submit_step_task("transcript", _step_transcribe, title=p.name, file_path=str(p))
-    logger.info(f"已提交转写任务 task_id={task_id}")
-    return json.dumps(
-        {"task_id": task_id, "status": "PENDING", "kind": "transcript"}, ensure_ascii=False
+    import glob
+
+    pattern = os.path.expanduser(
+        "~/.claude/plugins/cache/videonote/videonote/*/.claude-plugin/plugin.json"
     )
-
-
-@mcp.tool()
-def extract_frames(
-    video_path: str,
-    video_interval: int = 6,
-    grid_size: Optional[List[int]] = None,
-) -> str:
-    """对本地视频按间隔抽关键帧（画面理解素材），异步返回持久化的帧图片 file:// 路径。
-
-    - video_path: 必填，本地视频文件路径（mp4/mov/webm 等，需 ffmpeg 可解析）；
-    - video_interval: 截帧间隔（秒），默认 6；
-    - grid_size: 拼图网格尺寸（如 [3,3]），默认 [3,3]，会把截帧拼成网格图 + 单帧图。
-
-    后台执行（较慢），立即返回 {task_id, status: PENDING, kind: frames}；
-    用 get_task_status 轮询，SUCCESS 时 result 含
-    {kind: frames, frames: [file://...]}；帧图片可被多模态模型 Read，或直接传给
-    summarize_note 的 frames 参数参与笔记总结。
-    """
-    p = _coerce_local_path(video_path)
-    if not p.exists():
-        raise ValueError(f"本地视频文件不存在: {video_path}")
-    if grid_size is None:
-        grid_size = [3, 3]
-    _guard_concurrency()
-    task_id = uuid.uuid4().hex
-    _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
-    _index_step_task(task_id, "frames", title=p.name)
-    params = dict(
-        video_path=str(p),
-        video_interval=int(video_interval) or 6,
-        grid_size=grid_size,
-        save_dir=str(NOTE_OUTPUT_DIR / task_id / "gen" / "frames"),
-    )
-    cancel_event = threading.Event()
-    future = _pool.submit(_run_step_task, task_id, cancel_event, step_fn=_step_extract_frames, **params)
-    with _tasks_lock:
-        _task_futures[task_id] = future
-        _task_events[task_id] = cancel_event
-    logger.info(f"已提交抽帧任务 task_id={task_id}")
-    return json.dumps(
-        {"task_id": task_id, "status": "PENDING", "kind": "frames"}, ensure_ascii=False
-    )
-
-
-@mcp.tool()
-def summarize_note(
-    transcript: dict,
-    frames: Optional[List[str]] = None,
-    comments_danmaku: Optional[str] = None,
-    title: Optional[str] = None,
-    style: Optional[str] = None,
-    extras: Optional[str] = None,
-    format: Optional[List[str]] = None,
-    provider_id: Optional[str] = None,
-    model_name: Optional[str] = None,
-) -> str:
-    """用 LLM 把已有素材总结成 AI Markdown 笔记（不下载、不转写、不抽帧）。
-
-    - transcript: 必填，转写结果 dict {language, full_text, segments}（transcribe_media /
-      fetch_subtitles 的返回，或 prepare_note_material 的 result.transcript）；
-    - frames: 可选，帧图片 file:// 路径列表（extract_frames 的返回），传了且模型多模态时参与总结；
-    - comments_danmaku: 可选，B 站弹幕+评论参考文本（`fetch_comments` / `fetch_danmaku` 的返回）；
-    - title: 可选，视频标题（默认空）；
-    - style: 输出风格（minimal 精简/detailed 详细/academic 学术/tutorial 教程/xiaohongshu 小红书/
-      life_journal 生活向/task_oriented 任务导向/business 商业风格/meeting_minutes 会议纪要）；
-      不传时用 setup ③ 配置的默认（默认 detailed），显式传入始终覆盖；
-    - extras: 附加到 prompt 末尾的自定义指令（自定义风格用 extras）；
-    - format: 附加内容，如 ["toc","link","screenshot","summary"]；
-    - provider_id: LLM 供应商 id；省略时取 setup 已配默认，或唯一一个已填 key 的供应商；
-    - model_name: 省略时取已配置的默认模型（setup 向导设置），否则取该供应商第一个可用模型。
-
-    后台执行（LLM 总结较慢），立即返回 {task_id, status: PENDING, kind: note}；
-    用 get_task_status 轮询，SUCCESS 时 result 含
-    {kind: note, markdown, title}。
-    只想要素材（转写/帧/评论）自行写笔记时用 prepare_note_material；一步到位用 generate_note。
-    """
-    if not provider_id:
-        provider_id = _resolve_default_provider_id()
-    if not provider_id:
-        raise ValueError(
-            "需要 provider_id：先 list_providers 查看，或跑 `/videonote-setup` / "
-            "`! videonote providers set <id> --api-key '...'` 配好默认供应商"
+    try:
+        hits = sorted(
+            glob.glob(pattern),
+            key=lambda f: Path(f).stat().st_mtime,
+            reverse=True,
         )
-    if not model_name:
-        model_name = get_app_config().get(f"default_model:{provider_id}") or ""
-    if not model_name:
-        models = get_models_by_provider(provider_id)
-        if models:
-            model_name = models[0]["model_name"]
-    if not model_name:
-        raise ValueError(
-            f"供应商 {provider_id} 还没有可用模型：请先 list_models 查看，或 add_model 添加模型名"
-        )
-    if style is None:
-        style = get_app_config().get("default_style") or env_or("VIDEONOTE_DEFAULT_STYLE") or "detailed"
-    material = {
-        "title": title,
-        "transcript": _coerce_transcript(transcript),
-        "frames": frames or [],
-        "comments_danmaku": comments_danmaku,
-        "video_path": None,
-        "audio_path": None,
-    }
-    task_id = _submit_step_task(
-        "note",
-        _step_summarize,
-        title=title or "note",
-        material=material,
-        provider_id=provider_id,
-        model_name=model_name,
-        style=style,
-        extras=extras,
-        formats=format or [],
-    )
-    logger.info(f"已提交总结任务 task_id={task_id} provider={provider_id} model={model_name}")
-    return json.dumps(
-        {"task_id": task_id, "status": "PENDING", "kind": "note"}, ensure_ascii=False
-    )
-
-
-@mcp.tool()
-def list_providers() -> str:
-    """列出已配置的 LLM 供应商（id、名称、类型、启用状态、api_key 掩码）。"""
-    rows = ProviderService.get_all_providers_safe()
-    return json.dumps(rows, ensure_ascii=False)
-
-
-@mcp.tool()
-def add_provider(name: str, api_key: str = "", base_url: str = "", type: str = "custom") -> str:
-    """登记一个 LLM 供应商（**不要把 api_key 经本工具传入**，会进对话上游）。
-
-    填 key 请在本会话终端执行：
-    `! videonote providers add --name NAME --base-url URL --type custom`
-    或对已有供应商 `! videonote providers set <id> --api-key '...'`。
-
-    本工具只接受 name / base_url / type，api_key 必须留空；传了非空 key 会直接拒绝。
-    """
-    if api_key:
-        raise ValueError(_SENSITIVE_VIA_MCP)
-    if not name or not base_url:
-        raise ValueError("name / base_url 必填；api_key 请走 CLI，不要经本工具传入")
-    provider_id = ProviderService.add_provider(
-        name=name, api_key="", base_url=base_url, logo="custom", type_=type
-    )
-    return json.dumps({"id": provider_id, "name": name}, ensure_ascii=False)
-
-
-@mcp.tool()
-def update_provider(
-    provider_id: str,
-    api_key: Optional[str] = None,
-    name: Optional[str] = None,
-    base_url: Optional[str] = None,
-    enabled: Optional[int] = None,
-) -> str:
-    """更新 LLM 供应商配置（base_url / name / enabled 等非敏感字段）。
-
-    **不要经本工具传 api_key**（会进对话上游）。填 key：
-    `! videonote providers set <provider_id> --api-key '...'`。
-    """
-    if api_key is not None:
-        raise ValueError(_SENSITIVE_VIA_MCP)
-    data = {}
-    if name is not None:
-        data["name"] = name
-    if base_url is not None:
-        data["base_url"] = base_url
-    if enabled is not None:
-        data["enabled"] = enabled
-    if not data:
-        raise ValueError("至少提供 name / base_url / enabled 之一；api_key 请走 CLI")
-    updated = ProviderService.update_provider(provider_id, data)
-    if not updated:
-        raise ValueError(f"更新失败：供应商 {provider_id} 不存在")
-    return json.dumps({"updated": provider_id, "enabled": updated.get("enabled")}, ensure_ascii=False)
-
-
-@mcp.tool()
-def list_models(provider_id: str) -> str:
-    """列出某 LLM 供应商可用的模型。
-
-    优先实时请求供应商的 /v1/models 接口；接口不可用时回退到本地数据库已添加的模型。
-    统一形状：{ok, source, models:[{id, name}, ...]}。
-    """
-    provider = ProviderService.get_provider_by_id(provider_id)
-    if not provider:
-        raise ValueError(f"供应商不存在: {provider_id}（先 add_provider 新增）")
-    live = _fetch_live_models(provider)
-    if live:
-        models = [{"id": m, "name": m} for m in sorted(live)]
-        return json.dumps({"ok": True, "source": "provider_api", "models": models}, ensure_ascii=False)
-    db_models = get_models_by_provider(provider_id) or []
-    models = []
-    for row in db_models:
-        if isinstance(row, dict):
-            mid = row.get("model_name") or row.get("id") or row.get("name") or ""
-        else:
-            mid = str(row)
-        if mid:
-            models.append({"id": mid, "name": mid})
-    return json.dumps({"ok": True, "source": "database", "models": models}, ensure_ascii=False)
-
-
-@mcp.tool()
-def add_model(provider_id: str, model_name: str) -> str:
-    """手动把一个模型名添加为某供应商的可用模型（供应商 /v1/models 接口不可用时用）。"""
-    if not model_name:
-        raise ValueError("model_name 必填")
-    insert_model(provider_id=provider_id, model_name=model_name)
-    return json.dumps(
-        {"added": True, "provider_id": provider_id, "model_name": model_name}, ensure_ascii=False
-    )
-
-
-@mcp.tool()
-def delete_provider(provider_id: str) -> str:
-    """删除一个 LLM 供应商配置（同时清掉它的 default_model 默认设置）。
-
-    仅删除配置；不影响已生成的任务。删除前确认没有进行中的任务依赖它。
-    """
-    provider = ProviderService.get_provider_by_id(provider_id)
-    if not provider:
-        raise ValueError(f"供应商不存在: {provider_id}")
-    ProviderService.delete_provider(provider_id)
-    remove_app_config(f"default_model:{provider_id}")
-    return json.dumps({"deleted": True, "id": provider_id, "name": provider.get("name")}, ensure_ascii=False)
-
-
-@mcp.tool()
-def delete_model(provider_id: str, model_name: str) -> str:
-    """删除某供应商手动添加的模型名（list_models 里 database 来源的模型）。"""
-    if not model_name:
-        raise ValueError("model_name 必填")
-    rows = get_models_by_provider(provider_id) or []
-    target = next((r for r in rows if r.get("model_name") == model_name), None)
-    if target is None:
-        raise ValueError(f"模型不存在: {provider_id}/{model_name}（可 list_models 查看）")
-    _dao_delete_model(target["id"])
-    remove_app_config(f"default_model:{provider_id}")
-    return json.dumps({"deleted": True, "provider_id": provider_id, "model_name": model_name}, ensure_ascii=False)
-
-
-@mcp.tool()
-def test_provider(provider_id: str) -> str:
-    """测试供应商连接并列出可用模型。
-
-    用已保存的 key 探测 /v1/models（**不接受 key 参数**，填 key 走 CLI）。
-    """
-    provider = ProviderService.get_provider_by_id(provider_id)
-    if not provider:
-        raise ValueError(f"供应商不存在: {provider_id}（先 add_provider 或 CLI providers add）")
-    r = probe_models(
-        provider.get("api_key"),
-        provider.get("base_url"),
-        name=provider.get("name", ""),
-    )
-    if not r["ok"]:
-        return json.dumps(
-            {"ok": False, "provider_id": provider_id, "error": r.get("error", "连接失败")},
-            ensure_ascii=False,
-        )
-    return json.dumps(
-        {
-            "ok": True,
-            "provider_id": provider_id,
-            "count": len(r["models"]),
-            "models": sorted(set(r["models"]))[:50],
-        },
-        ensure_ascii=False,
-    )
-
-
-@mcp.tool()
-def read_app_config() -> str:
-    """读取 setup 持久化的应用配置默认值（非敏感）。
-
-    Agent 在生成前可据此推断默认：默认供应商/模型（default_provider_id +
-    default_model:{id}）、视频理解/弹幕开关、风格、导出格式、notes_dir 等。
-    敏感项（hf_token / cookie / api_key 等）一律不返回。
-    """
-    raw = get_app_config()
-    _blocked = ("token", "cookie", "api_key", "secret", "password")
-    safe = {
-        k: v for k, v in raw.items() if not any(s in k.lower() for s in _blocked)
-    }
-    default_provider = _resolve_default_provider_id()
-    if default_provider:
-        safe["default_provider_id"] = default_provider
-    return json.dumps(safe, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
-def get_transcriber_config() -> str:
-    """查看当前转写引擎配置（fast-whisper 本地 / groq / bcut / kuaishou / mlx-whisper 云端）与模型就绪状态。"""
-    mgr = TranscriberConfigManager()
-    cfg = mgr.get_config()
-    ready = mgr.is_model_ready()
-    return json.dumps(
-        {
-            **cfg,
-            "ready": ready["ready"],
-            "downloading": ready["downloading"],
-            "reason": ready["reason"],
-        },
-        ensure_ascii=False,
-    )
-
-
-@mcp.tool()
-def set_transcriber(
-    transcriber_type: str,
-    whisper_model_size: Optional[str] = None,
-    enable_preprocess: Optional[bool] = None,
-    diarization: Optional[bool] = None,
-    diarization_speakers: Optional[int] = None,
-) -> str:
-    """切换转写引擎 / 音频增强配置。
-
-    transcriber_type: fast-whisper（本地，需下载模型）/ groq（云端）/ bcut / kuaishou / mlx-whisper / funasr。
-    - whisper_model_size: 切到 fast-whisper 时的模型尺寸；
-    - enable_preprocess: 音频预处理开关（16kHz 归一 + 超长分块，默认关）；
-    - diarization: 说话人分离开关（pyannote 可选，默认关）；
-    - diarization_speakers: 说话人数提示（可选，自动检测时省略）。
-    """
-    mgr = TranscriberConfigManager()
-    cfg = mgr.update_config(
-        transcriber_type,
-        whisper_model_size,
-        enable_preprocess=enable_preprocess,
-        diarization=diarization,
-        diarization_speakers=diarization_speakers,
-    )
-    return json.dumps(cfg, ensure_ascii=False)
-
-
-@mcp.tool()
-def list_transcriber_models() -> str:
-    """列出本地 whisper 模型（fast-whisper）的下载状态。"""
-    rows = []
-    for size in WHISPER_MODEL_SIZES:
-        downloaded = check_whisper_model_exists(size, "whisper")
-        state = dl_state.get_status(size) or ("done" if downloaded else "none")
-        rows.append({"size": size, "downloaded": downloaded, "state": state})
-    return json.dumps({"whisper_models": rows}, ensure_ascii=False)
-
-
-@mcp.tool()
-def download_transcriber_model(model_size: str, transcriber_type: str = "fast-whisper") -> str:
-    """在后台下载 whisper 模型（仅本地引擎需要）。下载中/完成后用 list_transcriber_models 查询。"""
-    size = model_size.strip().lower()
-    if transcriber_type == "fast-whisper":
-        key = size
-
-        def _dl():
-            try:
-                dl_state.mark_downloading(key)
-                from app.transcriber.whisper_models import resolve_whisper_model
-                from faster_whisper import WhisperModel
-
-                target = resolve_whisper_model(size)
-                WhisperModel(
-                    model_size_or_path=target,
-                    device="cpu",
-                    compute_type="int8",
-                    download_root=get_model_dir("whisper"),
-                )
-                dl_state.mark_done(key)
-                logger.info(f"whisper 模型 {size} 下载完成")
-            except Exception as e:
-                dl_state.mark_failed(key, str(e))
-                logger.error(f"whisper 模型 {size} 下载失败: {e}", exc_info=True)
-
-        _dl_pool.submit(_dl)
-        return json.dumps(
-            {"started": True, "model_size": size, "transcriber_type": "fast-whisper"},
-            ensure_ascii=False,
-        )
-
-    if transcriber_type == "mlx-whisper":
-        if not (sys.platform == "darwin"):
-            raise ValueError("mlx-whisper 仅在 macOS 可用，请改用 fast-whisper")
-
-        def _dl_mlx():
-            try:
-                dl_state.mark_downloading(f"mlx-{size}")
-                from app.transcriber.mlx_whisper_transcriber import MLX_MODEL_MAP
-                from huggingface_hub import snapshot_download
-
-                repo_id = MLX_MODEL_MAP.get(size)
-                if not repo_id:
-                    raise ValueError(f"未找到 mlx 模型映射: {size}")
-                snapshot_download(
-                    repo_id=repo_id,
-                    local_dir=os.path.join(get_model_dir("mlx-whisper"), repo_id),
-                )
-                dl_state.mark_done(f"mlx-{size}")
-            except Exception as e:
-                dl_state.mark_failed(f"mlx-{size}", str(e))
-                logger.error(f"mlx 模型 {size} 下载失败: {e}", exc_info=True)
-
-        _dl_pool.submit(_dl_mlx)
-        return json.dumps(
-            {"started": True, "model_size": size, "transcriber_type": "mlx-whisper"},
-            ensure_ascii=False,
-        )
-
-    raise ValueError(f"仅支持本地模型下载：fast-whisper / mlx-whisper，收到: {transcriber_type}")
+    except OSError:
+        return None
+    for p in hits:
+        try:
+            data = json.loads(Path(p).read_text(encoding="utf-8"))
+            if data.get("version"):
+                return str(data["version"])
+        except Exception:
+            continue
+    return None
 
 
 @mcp.tool()
@@ -1465,10 +1417,32 @@ def health_check() -> str:
 
     cfg = TranscriberConfigManager().get_config()
     ready = TranscriberConfigManager().is_model_ready()
+    # 模型列表与 list_transcriber_models 同源（#128 A6）：遍历 registry 的可见模型
+    # 而非硬编码 6 档——否则自定义注册模型在 list 显示已下载、health 永远缺席，
+    # 两工具给 Agent 互相矛盾的就绪信号
+    from app.transcriber.whisper_models import get_registry
+
+    # 每个模型行区分 downloaded / downloading / failed(+error) / missing：
+    # 首次下载大模型被超时/断网打断时，failed 原因不再被吞（docs/05 #34）。
+    # 保持历史字段名 size/downloaded，新增 downloading/failed/error（向后兼容）。
     models = [
-        {"size": s, "downloaded": check_whisper_model_exists(s, "whisper")}
-        for s in WHISPER_MODEL_SIZES
+        {
+            **dl_state.status_row(s, check_whisper_model_exists(s, "whisper"), key=s),
+            "size": s,
+        }
+        for s in get_registry().visible_model_names()
     ]
+    # 引擎建议：fast-whisper 配 tiny/base 对中文/长视频质量不足（docs/05 #34/#39）。
+    # 不做语言自动切换（见 docs/05 #39 评估结论），改为显式提示。
+    engine_advice = ""
+    if cfg.get("transcriber_type") == "fast-whisper" and cfg.get(
+        "whisper_model_size"
+    ) in ("tiny", "base"):
+        engine_advice = (
+            "当前 fast-whisper 模型为 tiny/base，中文内容质量一般。"
+            "建议 `! videonote transcriber set --size small`，"
+            "或中文优先场景 `! videonote transcriber set --engine funasr`（需安装 funasr 依赖）。"
+        )
     # 音频增强可选依赖就绪状态
     import importlib.util
 
@@ -1489,6 +1463,7 @@ def health_check() -> str:
     return json.dumps(
         {
             "server_version": _SERVER_VERSION,
+            "plugin_version": _installed_plugin_version(),
             "ffmpeg": "ok" if ffmpeg_ok else "missing",
             "db": "ok" if db_ok else f"error: {db_err}",
             "transcriber": {
@@ -1498,6 +1473,7 @@ def health_check() -> str:
                 "reason": ready["reason"],
             },
             "whisper_models": models,
+            "engine_advice": engine_advice,
             "audio_enhance": {
                 "enable_preprocess": bool(cfg.get("enable_preprocess")),
                 "diarization": bool(cfg.get("diarization")),
@@ -1510,42 +1486,25 @@ def health_check() -> str:
             "queue_length": queue_len,
             "max_workers": _MAX_WORKERS,
             "data_dir": str(DATA_DIR),
-            "skill_refresh": (
-                "MCP（uvx）跟 git HEAD；Skill/插件不自动更新。"
-                "工作流对不上时：`claude plugin disable videonote@videonote` "
-                "然后 `claude plugin install videonote@videonote`，再开新会话。"
-            ),
+            "skill_refresh": _skill_refresh_advice(),
         },
         ensure_ascii=False,
     )
 
 
-@mcp.tool()
-def validate_url(url: str) -> str:
-    """判断视频链接属于哪个平台，以及是否受支持。
-
-    内置平台：bilibili（含 b23.tv）、youtube（含 youtu.be）、douyin、tiktok、kuaishou、本地文件路径。
-    其他 URL 返回 platform: "generic"（会尝试 yt-dlp 通用提取，覆盖 1800+ 站点）。
-    仅显式传 platform="unsupported" 时返回 {supported: False, handoff: True, ...}。
-    """
-    try:
-        platform = _detect_platform(url)
-        if platform == "unsupported":
-            return json.dumps(
-                {"supported": False, **pipeline.handoff_result(url)},
-                ensure_ascii=False,
-            )
-        reason = (
-            "识别为 generic：将尝试 yt-dlp 通用提取（可能需登录/代理）"
-            if platform == "generic"
-            else f"识别为 {platform}"
+def _skill_refresh_advice() -> str:
+    """插件/Skill 刷新提示（docs/05 #24）：server 与插件版本不一致时点名提示。"""
+    base = (
+        "MCP（uvx）跟 git HEAD；Skill/插件不自动更新。"
+        "工作流对不上时：`claude plugin disable videonote@videonote` "
+        "然后 `claude plugin install videonote@videonote`，再开新会话。"
+    )
+    plugin_version = _installed_plugin_version()
+    if plugin_version and plugin_version != _SERVER_VERSION:
+        return (
+            f"检测到插件版本 {plugin_version} 落后于 server {_SERVER_VERSION}：{base}"
         )
-        return json.dumps(
-            {"supported": True, "platform": platform, "reason": reason},
-            ensure_ascii=False,
-        )
-    except ValueError as e:
-        return json.dumps({"supported": False, "reason": str(e)}, ensure_ascii=False)
+    return base
 
 
 _PREFLIGHT_MIN_DISK_GB = 1.0
@@ -1590,6 +1549,7 @@ def preflight(
     url: str = "",
     platform: Optional[str] = None,
     provider_id: Optional[str] = None,
+    need_provider: bool = True,
 ) -> str:
     """提交任务前的轻量体检（建议 generate_note / prepare_note_material 前调用）。
 
@@ -1597,6 +1557,10 @@ def preflight(
     模型、任务队列；url 非空时顺带预解析视频时长（仅参考，不拦截）。
     返回 {ok, checks:[{name, ok, detail}], duration_secs?}。ok=false 时先解决
     detail 里的问题再提交，避免长任务跑到半路才因模型未下载 / 磁盘满失败。
+
+    - need_provider: 默认为 True（generate_note 需要 LLM 供应商）。
+      只做素材包（prepare_note_material 不调 LLM）时传 False，跳过供应商检查——
+      否则会得到「无已填 key 的供应商」的误导结论（#124 A12）。
     """
     checks: List[Dict[str, Any]] = []
 
@@ -1635,12 +1599,25 @@ def preflight(
         }
     )
 
-    p_ok, p_detail = _preflight_provider(provider_id)
-    checks.append({"name": "provider", "ok": p_ok, "detail": p_detail})
+    if need_provider:
+        p_ok, p_detail = _preflight_provider(provider_id)
+        checks.append({"name": "provider", "ok": p_ok, "detail": p_detail})
 
     with _tasks_lock:
-        queue_len = len(_task_futures)
-    checks.append({"name": "queue", "ok": True, "detail": f"{queue_len}/{_MAX_WORKERS} 进行中"})
+        running_list = [tid for tid, f in _task_futures.items() if f.running()]
+        queued = len(_task_futures) - len(running_list)
+    # 与 _guard_concurrency 同源（只算 running()）：排队任务不占名额（batch 语义），
+    # 此前用 len(_task_futures) 会把「3 个排队」误报成已满（#115）
+    queue_ok = len(running_list) < _MAX_WORKERS
+    queue_detail = f"{len(running_list)}/{_MAX_WORKERS} 运行中"
+    if queued:
+        queue_detail += f"（另 {queued} 排队）"
+    checks.append({
+        "name": "queue",
+        "ok": queue_ok,
+        "detail": queue_detail
+        + ("" if queue_ok else "（已满，请等任务完成或 cancel_note 后再提交）"),
+    })
 
     duration_secs: Optional[float] = None
     if url:
@@ -1657,7 +1634,7 @@ def preflight(
                         {
                             "name": "duration",
                             "ok": True,
-                            "detail": f"多集共 {info.get('total', len(entries))} 条（建议逐条生成，分 P 用 entries[].url）",
+                            "detail": f"多集共 {info.get('total', len(entries))} 条（多集全出建议一条 batch_generate_notes 服务端逐个排队；只一集用对应 entries[].url）",
                         }
                     )
                 else:
@@ -1690,11 +1667,18 @@ def preflight(
 
 @mcp.tool()
 def inspect_video(url: str, platform: Optional[str] = None) -> str:
-    """解析视频链接，列出可独立生成笔记的条目（B 站分 P / YouTube 播放列表 / 单集）。
+    """解析视频链接：识别平台 + 检查链接有效性 + 列出可独立生成笔记的条目。
 
-    **只解析、不下载、不提交任务。** 多集时 entries[].url 可直接喂给
-    `generate_note` / `prepare_note_material`；Agent 按单视频流程处理（多集用
-    subagent，不要在同一消息里并行塞多个 generate_note）。
+    **只解析、不下载、不提交任务。** 提交前先用它确认链接（原 validate_url 的
+    角色，#136 合并）：空 url / 本地文件不存在 / 内网 SSRF / 平台解析失败 →
+    {ok: false, platform?, error}——generate_note 内部也会校验，这里提前给原因。
+    generic（未知站点）会走 yt-dlp 展开确认（较慢，几秒）。
+
+    单视频 {ok, platform, kind: single, title, video_id, total, entries}；
+    多集（B 站分 P / YouTube 播放列表）kind: multi，entries[].url 可直接喂给
+    `generate_note` / `prepare_note_material`；一个链接内的多集（分 P/播放列表）
+    用一条 `batch_generate_notes` 全出笔记（#125 C4，与 #110 batch 口径一致）；
+    互相独立的链接才各自开 subagent。
 
     返回 {ok, platform, kind: single|multi, title, video_id, current_p?,
     total, truncated, entries:[{p, title, duration, url, video_id}]}。
@@ -1706,18 +1690,210 @@ def inspect_video(url: str, platform: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def set_downloader_cookie(platform: str, cookie: str = "") -> str:
-    """**不要经本工具传 Cookie**（SESSDATA 会进对话上游）。
+def get_config(provider_id: str = "") -> str:
+    """读取当前配置（只读，不做任何修改；敏感项一律不返回）。
 
-    请在本会话终端执行：
-    `! videonote login bilibili`（扫码）或 `! videonote setup`。
-    传入非空 cookie 会直接拒绝。本工具仅保留签名兼容，不再写入。
+    汇总返回：
+    - app_config: setup 持久化的默认值（默认供应商/模型、风格、视频理解/弹幕开关、
+      导出格式等，已过滤敏感键）；
+    - providers: 已配置供应商（api_key 掩码）与默认供应商 id；
+    - transcriber: 转写引擎配置与模型就绪状态；
+    - cookie_configured: 已配置 Cookie 的平台名列表（只给布尔状态，不给值）。
+
+    传 provider_id 时额外对该供应商做连通性探测（用已保存的 key 请求
+    /v1/models，15s 超时；**不接受 key 参数**），返回 {probe: {ok, models, error}}。
+
+    配置修改一律走 CLI（MCP 面不提供写配置工具，凭证红线最干净）：
+    `! videonote providers set <id> --api-key '...'` / `! videonote login bilibili` /
+    `! videonote transcriber set ...` / `! videonote transcriber download ...`
     """
-    if cookie:
-        raise ValueError(_SENSITIVE_VIA_MCP)
-    raise ValueError(
-        "请用 CLI 配置 Cookie：`! videonote login bilibili` 或 `! videonote setup`。"
-        "不要把 SESSDATA / Cookie 经 MCP 工具传入。"
+    raw = get_app_config()
+    _blocked = ("token", "cookie", "api_key", "secret", "password")
+    safe = {k: v for k, v in raw.items() if not any(s in k.lower() for s in _blocked)}
+    default_provider = _resolve_default_provider_id()
+    if default_provider:
+        safe["default_provider_id"] = default_provider
+    mgr = TranscriberConfigManager()
+    cfg = mgr.get_config()
+    ready = mgr.is_model_ready()
+    cookie_platforms = sorted(CookieConfigManager().list_all().keys())
+    result = {
+        "app_config": safe,
+        "providers": ProviderService.get_all_providers_safe(),
+        "transcriber": {
+            **cfg,
+            "ready": ready["ready"],
+            "downloading": ready["downloading"],
+            "reason": ready["reason"],
+        },
+        "cookie_configured": cookie_platforms,
+    }
+    if provider_id:
+        provider = ProviderService.get_provider_by_id(provider_id)
+        if not provider:
+            raise ValueError(
+                f"供应商不存在: {provider_id}（用 CLI `! videonote providers list` 查看）"
+            )
+        r = probe_models(
+            provider.get("api_key"),
+            provider.get("base_url"),
+            name=provider.get("name", ""),
+        )
+        result["probe"] = {"ok": r["ok"], "provider_id": provider_id}
+        if r["ok"]:
+            result["probe"]["models"] = sorted(set(r["models"]))[:50]
+        else:
+            result["probe"]["error"] = r.get("error", "连接失败")
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def batch_generate_notes(
+    video_url: str,
+    max_entries: int = 10,
+    platform: Optional[str] = None,
+    quality: str = "medium",
+    provider_id: Optional[str] = None,
+    model_name: Optional[str] = None,
+    format: Optional[List[NoteFormat]] = None,
+    style: Optional[Style] = None,
+    screenshot: Optional[bool] = None,
+    extras: Optional[str] = None,
+    link: bool = False,
+    video_understanding: Optional[bool] = None,
+    video_interval: Optional[int] = None,
+    grid_size: Optional[List[int]] = None,
+    include_comments: Optional[bool] = None,
+    comments_limit: Optional[int] = None,
+    notes_dir: Optional[str] = None,
+) -> str:
+    """对播放列表/合集/分 P 链接批量提交笔记任务（服务端逐个排队，遵守并发门禁）。
+
+    参数策略：除 video_url 外全部可选——不传即套 setup ③ 配置的默认
+    （与 generate_note 同款；仅需覆盖时显式传）。
+
+    - video_url: 必填，B 站分 P / YouTube 播放列表等可展开为多集的链接；
+    - max_entries: 最多提交条数（默认 10，防 200 集播放列表一次全排；超出截断并标记 truncated）；
+    - 其余参数与 generate_note 一致（quality/provider_id/model_name/style/format/screenshot/
+      extras/link/video_understanding/video_interval/grid_size/include_comments/
+      comments_limit/notes_dir），批量共享同一套风格与格式设置；单集链接退化为单个
+      generate_note 任务。
+
+    内部先 inspect_video 展开条目再逐条提交（同一并发门禁，超出 worker 数的排队等待；
+    与 SKILL「多集用 subagent 逐个提交」纪律不同——本工具把展开+排队收敛到服务端）。
+    返回 {ok, total, submitted, truncated?, errors:[{p, title, url, error}],
+    tasks:[{p, title, duration, url, task_id, status}]}。
+    单条失败不阻断其余；全部失败时 ok=false。之后逐个 get_task_status 轮询。
+    """
+    from app.services.inspect import inspect_video as _inspect
+
+    # 上界钳制：防止一条 MCP 调用内做上千次串行解析/排队（docs 审计 F7）。
+    # #133 B8：max_entries=0 曾被 `or 10` 吞成提交 10 条——显式 0 与 list_tasks
+    # 同口径（提交 0 条，仅展开）；负数钳到 0。
+    max_entries = _coerce_int(max_entries if max_entries is not None else 10, 10, clamp_min=0)
+    max_entries = min(max_entries, 50)  # 上界钳制
+    parsed = _inspect(video_url, platform=platform)
+    if not parsed.get("ok"):
+        # inspect 失败归一为批量形状（#121 C6）：此前直接透传 inspect 的
+        # {ok:false, platform, kind, error}——Agent 拿不到 total/submitted/tasks
+        # 无法统一判读；工具文档只声明一种形状
+        return json.dumps(
+            {
+                "ok": False,
+                "total": 0,
+                "submitted": 0,
+                "errors": [{"p": None, "title": None, "url": video_url, "error": parsed.get("error") or "解析视频失败"}],
+                "tasks": [],
+                "platform": parsed.get("platform"),
+                "kind": parsed.get("kind"),
+            },
+            ensure_ascii=False,
+        )
+    entries = list(parsed.get("entries") or [])
+    plat = platform or parsed.get("platform")
+
+    def _submit(entry: dict) -> dict:
+        raw = generate_note(
+            entry["url"],
+            platform=plat,
+            quality=quality,
+            provider_id=provider_id,
+            model_name=model_name,
+            format=format,
+            style=style,
+            screenshot=screenshot,
+            extras=extras,
+            link=link,
+            video_understanding=video_understanding,
+            video_interval=video_interval,
+            grid_size=grid_size,
+            include_comments=include_comments,
+            comments_limit=comments_limit,
+            notes_dir=notes_dir,
+        )
+        r = json.loads(raw)
+        return {**entry, "task_id": r.get("task_id"), "status": r.get("status")}
+
+    if parsed.get("kind") == "single" or not entries:
+        # 单集链接：退化为单任务，不引入条目语义；失败与多条目同形状（#109：
+        # 此前 raise 裸传，Agent 拿不到结构化 errors）
+        try:
+            _batch_ctx.bypass_guard = True  # 批量语义：排队由线程池承担（#121 C1）
+            try:
+                task = _submit({"p": 1, "title": parsed.get("title"), "url": video_url, "duration": None})
+            finally:
+                _batch_ctx.bypass_guard = False
+        except Exception as exc:  # noqa: BLE001 —— 与多条目收集口径一致
+            return json.dumps(
+                {
+                    "ok": False,
+                    "total": 1,
+                    "submitted": 0,
+                    # 形状与多条目分支完全一致（truncated/remaining/platform/kind 齐），
+                    # Agent 按一种形状解析，不再因单集分支缺键 KeyError（#124 A11）
+                    "truncated": False,
+                    "remaining": 0,
+                    "platform": parsed.get("platform"),
+                    "kind": parsed.get("kind"),
+                    "errors": [{"p": 1, "title": parsed.get("title"), "url": video_url, "error": str(exc)}],
+                    "tasks": [],
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {"ok": True, "total": 1, "submitted": 1, "truncated": False, "remaining": 0,
+             "platform": parsed.get("platform"), "kind": parsed.get("kind"),
+             "errors": [], "tasks": [task]},
+            ensure_ascii=False,
+        )
+
+    truncated = len(entries) > max_entries
+    total = int(parsed.get("total") or len(entries))
+    entries = entries[:max_entries]
+    submitted, errors, tasks = 0, [], []
+    _batch_ctx.bypass_guard = True  # 批量语义：超出 worker 数排队等待而非拒绝（#121 C1）
+    try:
+        for e in entries:
+            try:
+                tasks.append(_submit(e))
+                submitted += 1
+            except Exception as exc:  # noqa: BLE001 —— 单条失败收集继续
+                errors.append(
+                    {"p": e.get("p"), "title": e.get("title"), "url": e.get("url"), "error": str(exc)}
+                )
+    finally:
+        _batch_ctx.bypass_guard = False
+    return json.dumps(
+        {
+            "ok": submitted > 0,
+            "total": total,          # 解析出的真实总集数（截断前），配合 truncated/remaining 判断是否续跑
+            "submitted": submitted,
+            "truncated": truncated,
+            "remaining": max(0, total - len(entries)),
+            "errors": errors,
+            "tasks": tasks,
+        },
+        ensure_ascii=False,
     )
 
 
@@ -1731,50 +1907,91 @@ def export_transcript(
 
     - task_id: 必填，已完成任务的 task_id（generate_note / prepare_note_material 返回）；
     - formats: 可选，要导出的格式列表（srt/vtt/json），缺省取 setup 配置的「导出格式默认」；
-    - out_dir: 可选，输出目录（缺省为 note_results/{task_id}/）。
+    - out_dir: 可选，输出目录（缺省为 note_results/{task_id}/gen/；支持 file:// URI）。
 
     只做确定性机械渲染（时间轴换算），不调用 LLM。返回
     {task_id, formats: {fmt: "file://绝对路径"}, errors: {}}，供 Agent 直接 Read。
     """
+    from videonote_mcp.export import FORMATS
     from videonote_mcp.export import export_transcript as _export
 
     task_id = _validate_task_id(task_id)
+
+    if formats is None:
+        formats = resolve_default_export_formats()
+        if not formats:
+            formats = ["srt"]
+    if formats == []:
+        # 显式空列表：零导出还报 ok:true 与 #122 A1「任何格式没导出必须 ok:false」矛盾
+        # （CLI 版对 not written 显式退出报错）——入口显式报错，省略参数才走默认（#124 A8）
+        raise ValueError("formats 为空列表，未导出任何格式（省略该参数以用默认格式）")
+    if not isinstance(formats, list):
+        raise ValueError(f"formats 必须是字符串列表（支持 {' / '.join(FORMATS)}），收到: {formats!r}")
+    unknown = sorted({str(f) for f in formats if str(f) not in FORMATS})
+    if unknown:
+        # 未知格式曾只写 stderr 警告后静默丢弃——Agent 以为导出成功实际缺文件
+        raise ValueError(f"formats 只支持 {' / '.join(FORMATS)}，收到未知格式: {unknown!r}")
+
     task_dir = NOTE_OUTPUT_DIR / str(task_id)
-    result_json = task_dir / "result.json"
+    if out_dir is not None:
+        # 输出目录同输入文件：file:// URI 先规整，否则 Path("file:///…") 建字面 `file:` 目录（#107）
+        out_dir = str(_coerce_local_path(out_dir))
+    out = out_dir or str(task_dir / "gen")
+    # 数据目录外输出只提示不拦截：显式导出到别处是用户意图（docs/05 #45）
+    if out_dir and not Path(out).resolve().is_relative_to(DATA_DIR.resolve()):
+        logger.warning("export_transcript 输出到数据目录外: %s", out)
+
+    # SUCCESS 门禁（#126 C1）：转写在 SUMMARIZING 前已落盘缓存，运行中/FAILED 任务
+    # 也能读出转写——不设门禁会与 get_task_transcript（#122 A3）同任务给 Agent 相反
+    # 结论（export ok:true vs get ok:false）。与 #122 A3 同口径，非 SUCCESS 一律拒绝。
+    # 位置：参数校验之后（可修复的参数错误优先报，见 #124 A8 契约）；读转写之前。
+    # UNKNOWN（任务不存在/状态不可读）不在此拦截——转写读不到时由下方
+    # 「找不到转写」路径带准确原因（"任务状态不可读"）报错，而不是误报「任务未成功」。
+    status = _read_task_status(task_id)
+    if status not in ("SUCCESS", "UNKNOWN"):
+        return json.dumps(
+            {
+                "ok": False,
+                "task_id": task_id,
+                "error": f"任务未成功（当前状态 {status}）：只有 SUCCESS 任务能导出转写"
+                f"（{_transcript_unavailable_reason(task_id)}）",
+            },
+            ensure_ascii=False,
+        )
+    # gen/transcript.json 是转写规范来源（#122 A2），result.json 兜底——
+    # 与 _load_task_transcript / CLI export 同口径（#127 A3，此前 server 出口反了）
+    cache = task_dir / "gen" / "transcript.json"
     transcript = None
-    if result_json.exists():
+    if cache.exists():
         try:
-            transcript = json.loads(result_json.read_text(encoding="utf-8")).get("transcript")
+            transcript = json.loads(cache.read_text(encoding="utf-8"))
         except Exception:
             transcript = None
     if transcript is None:
-        # fallback：{task_dir}/gen/transcript.json 缓存
-        cache = task_dir / "gen" / "transcript.json"
-        if cache.exists():
+        result_json = task_dir / "result.json"
+        if result_json.exists():
             try:
-                transcript = json.loads(cache.read_text(encoding="utf-8"))
+                transcript = json.loads(result_json.read_text(encoding="utf-8")).get("transcript")
             except Exception:
                 transcript = None
     if transcript is None:
         return json.dumps(
-            {"task_id": task_id, "error": f"找不到任务 {task_id} 的转写结果（任务可能未成功）"},
+            {
+                "ok": False,  # 与成功路径形状对齐（此前缺 ok，Agent 判读 KeyError，#121 C4）
+                "task_id": task_id,
+                "error": f"找不到任务 {task_id} 的转写结果（{_transcript_unavailable_reason(task_id)}）",
+            },
             ensure_ascii=False,
         )
-
-    if formats is None:
-        from videonote_mcp.config import env_json_list, get_app_config
-
-        formats = get_app_config().get("default_export_formats") or env_json_list(
-            "VIDEONOTE_DEFAULT_EXPORT_FORMATS", []
-        )
-        if not formats:
-            formats = ["srt"]
-
-    out = out_dir or str(task_dir / "gen")
     written = _export(transcript, formats=formats, out_dir=out, task_id=task_id)
     errors = written.pop("_errors", {}) if isinstance(written, dict) else {}
+    # 任一格式落盘失败 → ok:False（此前全部失败仍 ok:True + formats:{}，
+    # Agent 以为导出成功实际零文件，与 CLI 版对 not written 显式退出的行为不一致，#122 A1）
+    ok = not errors
+    if errors:
+        logger.warning(f"导出部分失败: {errors}")
     return json.dumps(
-        {"ok": True, "task_id": task_id, "formats": written, "errors": errors},
+        {"ok": ok, "task_id": task_id, "formats": written, "errors": errors},
         ensure_ascii=False,
     )
 
@@ -1784,7 +2001,7 @@ def merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
     """把多个音频/视频文件合并为一个 16kHz mono wav（FFmpeg concat）。
 
     - files: 必填，至少 2 个本地文件路径（mp3/wav/m4a/mp4 等，编码可不同——自动统一转 16kHz mono）；
-    - out_dir: 可选，输出目录（缺省数据目录 note_results/merged/），输出为 merged.wav。
+    - out_dir: 可选，输出目录（缺省数据目录 note_results/merged/；支持 file:// URI），输出为 merged.wav。
 
     用途：多段录音/会议分段/多个本地视频拼成一段再转写。返回
     {ok, path: "file://绝对路径"} 或 {ok: false, error}。
@@ -1792,8 +2009,24 @@ def merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
     from app.services.merge import merge_audio as _merge
 
     try:
+        if out_dir is not None:
+            # 输出目录同输入文件：file:// URI 先规整，否则 Path("file:///…") 建字面 `file:` 目录（#107）
+            out_dir = str(_coerce_local_path(out_dir))
         out = out_dir or str(NOTE_OUTPUT_DIR / "merged")
-        merged = _merge(files, out_dir=out)
+        if out_dir and not Path(out_dir).resolve().is_relative_to(DATA_DIR.resolve()):
+            logger.warning("merge_audio 输出到数据目录外: %s", out_dir)
+        # 与 transcribe_media/extract_frames 同口径：file:// URI 先规整（app 层只认普通路径，
+        # 直接传 file:// 会误报「文件不存在」）
+        paths = [_coerce_local_path(f) for f in files]
+        # 目录输入穿透（merge.py 用 os.path.exists 对目录为 True）会到 ffmpeg 深处才炸
+        # 「转换失败」泛化错误——与 diarize_media 同口径入口 is_file（#109）
+        not_files = [str(p) for p in paths if not p.is_file()]
+        if not_files:
+            return json.dumps(
+                {"ok": False, "error": f"文件不存在或不是文件: {', '.join(not_files)}"},
+                ensure_ascii=False,
+            )
+        merged = _merge([str(p) for p in paths], out_dir=out)
         return json.dumps({"ok": True, "path": Path(merged).as_uri()}, ensure_ascii=False)
     except Exception as exc:
         logger.warning(f"merge_audio 失败: {exc}")
@@ -1819,13 +2052,21 @@ def diarize_media(
         raise ValueError(_SENSITIVE_VIA_MCP)
     try:
         from app.services.diarization import diarize_audio
-        from app.transcriber.audio_preprocess import normalize_to_wav
+        from app.transcriber.audio_preprocess import (
+            cleanup_preprocess_files,
+            normalize_to_wav,
+        )
 
         p = _coerce_local_path(audio_file)
-        if not p.exists():
+        if not p.is_file():
             raise FileNotFoundError(f"本地文件不存在: {audio_file}")
         wav = normalize_to_wav(str(p))
-        turns = diarize_audio(wav, hf_token=None, num_speakers=num_speakers)
+        try:
+            turns = diarize_audio(wav, hf_token=None, num_speakers=num_speakers)
+        finally:
+            # 归一化产物写在源文件旁（audio_preprocess 缺省路径），用完即清——
+            # 否则每次调用在用户目录永久残留 <原名>_16k.wav（小时级视频数百 MB，#121 C2）
+            cleanup_preprocess_files(wav)
         return json.dumps(
             {"ok": True, "turns": turns, "num_speakers": len({t["speaker"] for t in turns})},
             ensure_ascii=False,
@@ -1842,13 +2083,6 @@ def main() -> None:
     """MCP server 入口。CLI（providers）由 videonote_mcp.cli:main 分发，本函数只跑 MCP stdio。"""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
     init_db()
-    try:
-        import events
-
-        events.register_handler()
-        logger.info("已注册转写完成清理事件")
-    except Exception as e:
-        logger.warning(f"注册事件监听器失败: {e}")
     logger.info(f"VideoNote-Mcp 启动 | 数据目录: {DATA_DIR}")
     mcp.run(transport="stdio")
 

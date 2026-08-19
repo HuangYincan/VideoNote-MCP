@@ -14,7 +14,10 @@
     "logo": "DeepSeek",
     "api_key": "",
     "base_url": "https://api.deepseek.com",
-    "models": ["deepseek-chat", "deepseek-reasoner"]
+    "models": [
+      "deepseek-chat",
+      "deepseek-reasoner"
+    ]
   },
   {
     "id": "qwen",
@@ -23,15 +26,20 @@
     "logo": "Qwen",
     "api_key": "",
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "models": ["qwen-plus", "qwen-turbo", "qwen-max", "qwen-long"]
+    "models": [
+      "qwen-plus",
+      "qwen-turbo",
+      "qwen-max",
+      "qwen-long"
+    ]
   },
-    {
+  {
     "id": "Claude",
     "name": "Claude",
     "type": "built-in",
     "logo": "Claude",
     "api_key": "",
-    "base_url": "https://"
+    "base_url": "https://api.anthropic.com/v1/"
   },
   {
     "id": "gemini",
@@ -41,7 +49,7 @@
     "api_key": "",
     "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"
   },
-    {
+  {
     "id": "groq",
     "name": "Groq",
     "type": "built-in",
@@ -49,7 +57,7 @@
     "api_key": "",
     "base_url": "https://api.groq.com/openai/v1"
   },
-      {
+  {
     "id": "ollama",
     "name": "ollama",
     "type": "built-in",

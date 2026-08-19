@@ -6,12 +6,36 @@ import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import ffmpeg
 from PIL import Image, ImageDraw, ImageFont
 
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def effective_frame_interval(duration: float, video_interval: int, grid_cells: int, max_groups: int = 24) -> int:
+    """把网格图组数封顶：超限时自适应拉大截帧间隔（docs/05 #33）。
+
+    1 小时视频 6s 间隔 = 600 帧 ≈ 67 组 3×3 网格图，全组进 LLM 上下文太贵。
+    目标 ≤ max_groups 组：间隔 = ceil(duration / (max_groups * grid_cells))。
+    duration 未知/异常时原样返回，不干预。
+    """
+    interval = video_interval or 6
+    try:
+        if duration <= 0 or grid_cells <= 0:
+            return interval
+    except TypeError:
+        return interval
+    max_frames = max_groups * grid_cells
+    if duration / interval <= max_frames:
+        return interval
+    import math
+
+    return max(1, math.ceil(duration / max_frames))
+
+
 class VideoReader:
     def __init__(self,
                  video_path: str,
@@ -68,7 +92,9 @@ class VideoReader:
         try:
             subprocess.run(cmd, check=True, timeout=120)
             return output_path
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            # TimeoutExpired 未捕获会从 future.result() 冒出，外层兜底把整个抽帧任务
+            # 打成「视频处理失败」——已抽出的几百帧全丢（#124 B12）：单帧失败本就该跳过
             return None
 
     def extract_frames(self, max_frames=1000) -> list[str]:
@@ -76,9 +102,17 @@ class VideoReader:
         try:
             os.makedirs(self.frame_dir, exist_ok=True)
             duration = float(ffmpeg.probe(self.video_path)["format"]["duration"])
+            # 帧组数封顶：超限时自适应拉大间隔，而不是截断视频尾部（docs/05 #33）
+            cells = self.grid_size[0] * self.grid_size[1]
+            self.frame_interval = effective_frame_interval(duration, self.frame_interval, cells)
             timestamps = [i for i in range(0, int(duration), self.frame_interval)][:max_frames]
+            # duration < 1s 时 int() 截断为 0，range 空 → 静默零帧（#125 B13）：
+            # 至少取 t=0 首帧（提取失败会被跳过，但不再无产出静默通过）
+            if not timestamps:
+                logger.warning("视频时长 %.3fs 过短，回退提取 t=0 单帧", duration)
+                timestamps = [0]
 
-            # 并行提取帧；len(timestamps)==0（极短/损坏视频）时也要 ≥1，否则 ThreadPoolExecutor(0) 崩溃
+            # 并行提取帧；len(timestamps) 恒 ≥1（上面兜底），ThreadPoolExecutor(0) 不会出现
             max_workers = max(1, min(os.cpu_count() or 4, 8, len(timestamps)))
             frame_results: dict[int, str | None] = {}
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -169,8 +203,16 @@ class VideoReader:
             groups = self.group_images()
             for idx, group in enumerate(groups, start=1):
                 if len(group) < self.grid_size[0] * self.grid_size[1]:
-                    logger.warning(f"⚠️ 跳过第 {idx} 组，图片不足 {self.grid_size[0] * self.grid_size[1]} 张")
-                    continue
+                    # 短视频（帧数不足一组）曾被整批跳过 → 静默产出 0 张网格图，
+                    # 上层拿到空 frames 当成功。只有这一组时照常拼接（白格兜底），
+                    # 已有完整组时才跳过末尾残组（避免稀疏网格图）
+                    if image_paths:
+                        logger.warning(f"⚠️ 跳过第 {idx} 组，图片不足 {self.grid_size[0] * self.grid_size[1]} 张")
+                        continue
+                    logger.warning(
+                        f"⚠️ 帧数不足一组（{len(group)}/{self.grid_size[0] * self.grid_size[1]}），"
+                        "按单组拼接兜底，避免短视频零帧"
+                    )
                 out_path = self.concat_images(group, f"grid_{idx}")
                 image_paths.append(out_path)
 

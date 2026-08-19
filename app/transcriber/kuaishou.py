@@ -1,11 +1,11 @@
-import requests
 import os
 
+import requests
+
 from app.decorators.timeit import timeit
-from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
-from events import transcription_finished
 
 logger = get_logger(__name__)
 
@@ -17,30 +17,26 @@ class KuaishouTranscriber(Transcriber):
     def __init__(self):
         pass
 
-    def _load_file(self, file_path: str) -> bytes:
-        """读取文件内容"""
-        with open(file_path, 'rb') as f:
-            return f.read()
-
     def _submit(self, file_path: str) -> dict:
         """提交识别请求"""
         try:
-            file_binary = self._load_file(file_path)
-            
+            # 流式上传文件对象（#127 B4）：不再 _load_file 整文件 read() 进内存
+            #（长音频峰值 ~2× 文件大小），requests 内部按块读取 multipart
             payload = {
                 "typeId": "1"
             }
-            
+
             # 使用文件名作为上传文件名
             file_name = os.path.basename(file_path)
-            files = [('file', (file_name, file_binary, 'audio/mpeg'))]
-            
+
             logger.info(f"开始向快手API提交请求，文件: {file_name}")
-            response = requests.post(self.API_URL, data=payload, files=files, timeout=300)
+            with open(file_path, 'rb') as f:
+                files = [('file', (file_name, f, 'audio/mpeg'))]
+                response = requests.post(self.API_URL, data=payload, files=files, timeout=300)
             response.raise_for_status()  # 检查HTTP错误
-            
+
             result = response.json()
-            print('result',result)
+
             # 检查快手API返回是否包含错误
             if "data" not in result or result.get("code", 0) != 0:
                 error_msg = f"快手API返回错误: {result.get('message', '未知错误')}"
@@ -72,16 +68,15 @@ class KuaishouTranscriber(Transcriber):
             
             # 提取分段数据
             segments = []
-            full_text = ""
-            
-            # 解析快手API返回的文本段
-            texts = result_data.get('data', {}).get('text', [])
+
+            # API 可能返回 `data: null`（键存在、值 null）——.get('data', {}) 只在键缺失
+            # 时兜底，null 时 None.get 裸崩（#129 B6；#126 B5 已防段内 null）
+            texts = (result_data.get('data') or {}).get('text', [])
             for u in texts:
-                text = u.get('text', '').strip()
+                text = (u.get('text') or '').strip()  # API 返回 null 不裸崩（#126 B5）
                 start_time = float(u.get('start_time', 0))
                 end_time = float(u.get('end_time', 0))
                 
-                full_text += text + " "
                 segments.append(TranscriptSegment(
                     start=start_time,
                     end=end_time,
@@ -91,23 +86,13 @@ class KuaishouTranscriber(Transcriber):
             # 创建结果对象
             result = TranscriptResult(
                 language="zh",  # 快手API可能不返回语言信息，默认为中文
-                full_text=full_text.strip(),
+full_text=" ".join(seg.text for seg in segments).strip(),
                 segments=segments,
                 raw=result_data
             )
-            
-            # 触发完成事件
-            # self.on_finish(file_path, result)
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"快手ASR处理失败: {str(e)}")
             raise
-
-    def on_finish(self, video_path: str, result: TranscriptResult) -> None:
-        """转录完成的回调"""
-        logger.info(f"快手ASR转写完成: {video_path}")
-        transcription_finished.send({
-            "file_path": video_path,
-        })

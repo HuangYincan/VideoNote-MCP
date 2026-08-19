@@ -1,3 +1,4 @@
+import os
 import re
 
 import requests
@@ -5,9 +6,11 @@ from dotenv import load_dotenv
 
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
+
 KUAISHOU_API_BASE = 'https://www.kuaishou.com/graphql'
 KUAISHOU_URL = "https://www.kuaishou.com/"
-load_dotenv()
+if not os.environ.get("VIDEONOTE_DATA_DIR"):
+    load_dotenv()
 headers = {
     'Accept-Language': 'zh-CN,zh;q=0.9',
     'Cache-Control': 'no-cache',
@@ -30,7 +33,16 @@ headers = {
 
 logger = get_logger(__name__)
 
-cfm=CookieConfigManager()
+cfm = None  # 惰性单例（B13）：import 不构造 CookieConfigManager，避免落空 downloader.json
+
+
+def _get_cfm():
+    global cfm
+    if cfm is None:
+        cfm = CookieConfigManager()
+    return cfm
+
+
 class KuaiShou:
     def __init__(self):
         self.header = headers.copy()
@@ -39,23 +51,26 @@ class KuaiShou:
     @staticmethod
     def _extract_kuaishou_link(text):
 
-        url = re.findall('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
+        url = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
+        if not url:
+            return None
         return url[0]
 
     def get_photo_id(self, url):
-        response = requests.get(url, allow_redirects=True, headers=self.header)
+        response = requests.get(url, allow_redirects=True, headers=self.header, timeout=(5, 10))
         real_url = response.url
         # 提取short—video/后面的id
         pattern = re.compile(r'short-video/(\w+)')
         match = pattern.search(real_url)
-        return match.group().split('/')[1]
+        if match is None:
+            return None
+        return match.group(1)
 
     def get_temp_cookies(self):
-        is_exist = cfm.get('kuaishou')
-        print(is_exist)
+        is_exist = _get_cfm().get('kuaishou')
         if is_exist:
             return is_exist
-        res = requests.get(url=KUAISHOU_URL, headers=self.header, allow_redirects=True)
+        res = requests.get(url=KUAISHOU_URL, headers=self.header, allow_redirects=True, timeout=(5, 10))
         cookie_string = '; '.join([f"{k}={v}" for k, v in res.cookies.get_dict().items()])
         return cookie_string
 
@@ -65,32 +80,33 @@ class KuaiShou:
             "variables": {"photoId": photo_id, "page": "detail"},
             "query": "query visionVideoDetail($photoId: String, $type: String, $page: String, $webPageArea: String) {\n  visionVideoDetail(photoId: $photoId, type: $type, page: $page, webPageArea: $webPageArea) {\n    status\n    type\n    author {\n      id\n      name\n      following\n      headerUrl\n      __typename\n    }\n    photo {\n      id\n      duration\n      caption\n      likeCount\n      realLikeCount\n      coverUrl\n      photoUrl\n      liked\n      timestamp\n      expTag\n      llsid\n      viewCount\n      videoRatio\n      stereoType\n      croppedPhotoUrl\n      manifest {\n        mediaType\n        businessType\n        version\n        adaptationSet {\n          id\n          duration\n          representation {\n            id\n            defaultSelect\n            backupUrl\n            codecs\n            url\n            height\n            width\n            avgBitrate\n            maxBitrate\n            m3u8Slice\n            qualityType\n            qualityLabel\n            frameRate\n            featureP2sp\n            hidden\n            disableAdaptive\n            __typename\n          }\n          __typename\n        }\n        __typename\n      }\n      __typename\n    }\n    tags {\n      type\n      name\n      __typename\n    }\n    commentLimit {\n      canAddComment\n      __typename\n    }\n    llsid\n    danmakuSwitch\n    __typename\n  }\n}\n"
         }
-        response = requests.post(url=KUAISHOU_API_BASE, headers=self.header, json=json_data)
-        if response.status_code == 200:
-            response.raise_for_status()
-
-            return response.json()
-        else:
-            return None
+        response = requests.post(url=KUAISHOU_API_BASE, headers=self.header, json=json_data, timeout=(5, 10))
+        # 旧实现 raise_for_status 写在 200 分支内永不触发——非 200 静默返回 None，
+        # 外层只能报「详情解析失败」掩盖真实 HTTP 状态码（#124 B9）
+        response.raise_for_status()
+        return response.json()
 
     def run(self, url):
         real_url = self._extract_kuaishou_link(url)
         if not real_url:
-            logger.error(f"快手视频 URL 解析失败 {url}")
+            raise RuntimeError(f"快手视频 URL 解析失败 {url}")
 
         cookies = self.get_temp_cookies()
         if not cookies:
-            logger.error(f"快手视频 cookies 解析失败 {url},请考虑设置环境变量 KUAISHOU_COOKIES")
+            raise RuntimeError(f"快手视频 cookies 解析失败 {url},请考虑设置环境变量 KUAISHOU_COOKIES")
 
         self.header['Cookie'] = cookies.strip()
         photo_id = self.get_photo_id(real_url)
         if photo_id is None:
-            logger.error(f"快手视频 ID 解析失败 {url}")
+            raise RuntimeError(f"快手视频 ID 解析失败 {url}")
         video_details = self.get_video_details(real_url, photo_id)
-        print(video_details)
+        logger.debug("快手视频详情已获取")
         if video_details is None:
-            logger.error(f"快手视频详情解析失败 {url}")
-        return video_details['data']
+            raise RuntimeError(f"快手视频详情解析失败 {url}")
+        data = video_details.get('data')
+        if data is None:
+            raise RuntimeError(f"快手视频详情响应无 data(接口可能变更): {url}")
+        return data
 
 
 if __name__ == '__main__':

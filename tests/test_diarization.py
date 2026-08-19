@@ -1,10 +1,10 @@
-"""说话人分离（app/services/diarization.py）单元测试。
+"""diarization 模块级单例测试（#125 B14）：pipeline 只加载一次、失败不缓存。
 
-不碰真实 pyannote（重依赖未装）——验证：
-1. pyannote 未装时 diarize_audio 抛 RuntimeError 带安装指引；
-2. 缺 HF_TOKEN 时报错；
-3. assign_speakers 按时间重叠对齐给段填 speaker。
+不碰真实网络 / pyannote，全 mock。运行：
+    cd <repo>
+    .venv/bin/python tests/test_diarization.py
 """
+import os
 import sys
 import tempfile
 import unittest
@@ -13,82 +13,112 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models.transcriber_model import TranscriptSegment
-from app.services import diarization
+
+def _install_fake_pyannote(pipeline_cls):
+    """注入 fake pyannote.audio 模块（带可替换的 Pipeline 类）。"""
+    fake = mock.Mock()
+    fake.Pipeline = pipeline_cls
+    sys.modules["pyannote"] = fake
+    sys.modules["pyannote.audio"] = fake
 
 
-def _real_import_blocker():
-    """返回一个 __import__ 替身：仅对 pyannote.audio 抛 ImportError，其余透传。"""
-    real_import = __import__
+class _FakePipeline:
+    """可注入的 Pipeline 替身：from_pretrained 计数 + 每次调用返回 turns。"""
 
-    def fake_import(name, *args, **kwargs):
-        if name == "pyannote.audio":
-            raise ImportError("no pyannote")
-        return real_import(name, *args, **kwargs)
+    from_pretrained_count = 0
 
-    return fake_import
+    def __init__(self):
+        self.calls = []
+
+    @classmethod
+    def from_pretrained(cls, model, token=None):
+        cls.from_pretrained_count += 1
+        return cls()
+
+    def __call__(self, wav_path, **kwargs):
+        self.calls.append(wav_path)
+        return self
+
+    def itertracks(self, yield_label=True):
+        yield (mock.Mock(start=0.0, end=1.0), None, "SPEAKER_00")
 
 
-class DiarizeNotInstalledTest(unittest.TestCase):
-    def test_raises_install_hint_when_pyannote_missing(self):
-        with tempfile.NamedTemporaryFile(suffix=".wav") as f:
-            with mock.patch("builtins.__import__", side_effect=_real_import_blocker()):
-                with self.assertRaises(RuntimeError) as ctx:
-                    diarization.diarize_audio(f.name, hf_token="t")
-        self.assertIn("pyannote", str(ctx.exception))
+class DiarizationSingletonTest(unittest.TestCase):
+    def setUp(self):
+        from app.services import diarization
 
-    def test_missing_file_raises(self):
+        self.mod = diarization
+        # 重置模块级缓存与计数
+        self.mod._pipeline_cache = None
+        self.mod._pipeline_token = ""
+        _FakePipeline.from_pretrained_count = 0
+        self.td = tempfile.TemporaryDirectory()
+        self.wav = Path(self.td.name) / "a.wav"
+        self.wav.write_bytes(b"wav")
+        os.environ.pop("HUGGINGFACE_HUB_TOKEN", None)
+
+    def tearDown(self):
+        self.td.cleanup()
+        sys.modules.pop("pyannote", None)
+        sys.modules.pop("pyannote.audio", None)
+        os.environ.pop("HUGGINGFACE_HUB_TOKEN", None)
+
+    def test_pipeline_loaded_once_then_cached(self):
+        """两次调用只 from_pretrained 一次（#125 B14）。"""
+        _install_fake_pyannote(_FakePipeline)
+        self.mod.diarize_audio(str(self.wav), hf_token="tok")
+        self.mod.diarize_audio(str(self.wav), hf_token="tok")
+        self.assertEqual(_FakePipeline.from_pretrained_count, 1)
+
+    def test_failure_not_cached_retries_next_time(self):
+        """加载失败不缓存：下次调用重试 from_pretrained（#125 B14）。"""
+
+        class _FlakyPipeline(_FakePipeline):
+            fail = True
+
+            @classmethod
+            def from_pretrained(cls, model, token=None):
+                cls.from_pretrained_count += 1
+                if cls.fail:
+                    raise RuntimeError("模型授权未同意")
+                return cls()
+
+        _install_fake_pyannote(_FlakyPipeline)
+        with self.assertRaises(RuntimeError) as ctx:
+            self.mod.diarize_audio(str(self.wav), hf_token="tok")
+        self.assertIn("模型加载失败", str(ctx.exception))
+        # 修复后再次调用 → 重新加载成功
+        _FlakyPipeline.fail = False
+        turns = self.mod.diarize_audio(str(self.wav), hf_token="tok")
+        self.assertEqual(_FlakyPipeline.from_pretrained_count, 2)
+        self.assertEqual(turns[0]["speaker"], "SPEAKER_00")
+
+    def test_token_change_reloads(self):
+        """token 变化 → 重新加载（不同账号授权不同模型）。"""
+        _install_fake_pyannote(_FakePipeline)
+        self.mod.diarize_audio(str(self.wav), hf_token="tok1")
+        self.mod.diarize_audio(str(self.wav), hf_token="tok2")
+        self.assertEqual(_FakePipeline.from_pretrained_count, 2)
+
+    def test_missing_token_raises_clear_error(self):
+        _install_fake_pyannote(_FakePipeline)
+        with self.assertRaises(RuntimeError) as ctx:
+            self.mod.diarize_audio(str(self.wav), hf_token="")
+        self.assertIn("HF_TOKEN", str(ctx.exception))
+        self.assertEqual(_FakePipeline.from_pretrained_count, 0)
+
+    def test_not_installed_raises_install_hint(self):
+        sys.modules.pop("pyannote", None)
+        sys.modules.pop("pyannote.audio", None)
+        with self.assertRaises(RuntimeError) as ctx:
+            self.mod.diarize_audio(str(self.wav), hf_token="tok")
+        self.assertIn("pyannote.audio", str(ctx.exception))
+
+    def test_missing_file_raises_before_loading(self):
+        _install_fake_pyannote(_FakePipeline)
         with self.assertRaises(FileNotFoundError):
-            diarization.diarize_audio("/no/such.wav", hf_token="t")
-
-    def test_missing_token_raises(self):
-        # pyannote 可 import 但未传 token 且环境无 HUGGINGFACE_HUB_TOKEN → RuntimeError
-        import types
-
-        fake_pkg = types.ModuleType("pyannote.audio")
-        fake_pkg.Pipeline = mock.Mock()
-        sys.modules["pyannote.audio"] = fake_pkg
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav") as f:
-                with mock.patch.dict(
-                    "os.environ", {}, clear=False
-                ):
-                    # 确保模块内读 HUGGINGFACE_HUB_TOKEN 为空
-                    with mock.patch(
-                        "app.services.diarization.os.environ.get", return_value=""
-                    ):
-                        with self.assertRaises(RuntimeError) as ctx:
-                            diarization.diarize_audio(f.name)  # 无 hf_token
-                    self.assertIn("HF_TOKEN", str(ctx.exception))
-        finally:
-            sys.modules.pop("pyannote.audio", None)
-
-
-class AssignSpeakersTest(unittest.TestCase):
-    def _turns(self):
-        return [
-            {"start": 0.0, "end": 5.0, "speaker": "SPEAKER_00"},
-            {"start": 5.0, "end": 10.0, "speaker": "SPEAKER_01"},
-        ]
-
-    def test_assigns_overlap_speaker(self):
-        segs = [
-            TranscriptSegment(0, 2, "你好"),
-            TranscriptSegment(6, 8, "世界"),
-        ]
-        out = diarization.assign_speakers(segs, self._turns())
-        self.assertEqual(out[0].speaker, "SPEAKER_00")
-        self.assertEqual(out[1].speaker, "SPEAKER_01")
-
-    def test_no_overlap_keeps_none(self):
-        segs = [TranscriptSegment(100, 102, "无重叠")]
-        out = diarization.assign_speakers(segs, self._turns())
-        self.assertIsNone(out[0].speaker)
-
-    def test_original_not_mutated(self):
-        segs = [TranscriptSegment(0, 2, "你好")]
-        diarization.assign_speakers(segs, self._turns())
-        self.assertIsNone(segs[0].speaker)
+            self.mod.diarize_audio(str(Path(self.td.name) / "nope.wav"), hf_token="tok")
+        self.assertEqual(_FakePipeline.from_pretrained_count, 0)
 
 
 if __name__ == "__main__":

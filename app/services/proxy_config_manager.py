@@ -1,7 +1,8 @@
-import json
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from app.utils.json_store import read_json, write_json_atomic
 
 
 class ProxyConfigManager:
@@ -23,15 +24,10 @@ class ProxyConfigManager:
     def _read(self) -> Dict[str, Any]:
         if not self.path.exists():
             return {}
-        try:
-            with self.path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        return read_json(self.path)
 
     def _write(self, data: Dict[str, Any]):
-        with self.path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.path, data)
 
     def get_config(self) -> Dict[str, Any]:
         data = self._read()
@@ -62,22 +58,3 @@ class ProxyConfigManager:
             if val:
                 return val
         return None
-
-    def apply_to_env(self) -> Optional[str]:
-        """把当前生效的代理 URL 写进进程环境变量，返回生效的 url（无则 None）。
-
-        为什么需要（issue #417）：huggingface_hub / requests 这类库**只认**环境变量
-        HTTP_PROXY / HTTPS_PROXY / ALL_PROXY，不读我们 UI 配置文件。whisper 模型用
-        snapshot_download 从 HuggingFace 拉取，如果用户只在设置页填了代理，下载根本
-        不走代理 —— 就是用户说的「Docker 容器里代理没生效」。在下载前/启动时调用本
-        方法，把 UI 配的代理 export 到环境变量，HF 下载就能复用同一个代理。
-
-        大小写别名都写，覆盖不同库的读取习惯。
-        """
-        url = self.get_proxy_url()
-        if not url:
-            return None
-        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-                    "http_proxy", "https_proxy", "all_proxy"):
-            os.environ[key] = url
-        return url

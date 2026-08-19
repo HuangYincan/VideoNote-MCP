@@ -1,11 +1,35 @@
-import json
 import os
+import threading
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
+from app.utils.json_store import read_json, write_json_atomic
+
+
+def _config_bool(data: Dict[str, Any], key: str, env_name: str) -> bool:
+    """配置布尔解析：配置文件优先、env 兜底，字符串值按与 videonote_mcp.config.env_bool
+    相同的规则（'1'/'true'/'yes'/'on'，大小写不敏感）解析（#124 A6）。
+
+    两点旧坑：1) env 解析大小写敏感且不接受 yes/on，与 config.env_bool 规则分叉；
+    2) 配置文件里手滑的字符串 "false" 被 `bool("false")` 判成 True——预处理/说话人
+    分离被字符串垃圾值误开。此处不 import videonote_mcp（vendored 层单向依赖纪律），
+    规则内联同源。
+    """
+    v = data.get(key)
+    if v is None:
+        v = os.getenv(env_name, "0")
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
 
 
 class TranscriberConfigManager:
     """管理转写器配置，存储在 JSON 文件中，支持前端动态修改。"""
+
+    # class-level 锁（#126 B9，与 cookie_manager #124 B15 同款）：update_config 是
+    # read-modify-write 整文件，并发 set_transcriber 会互相抹掉对方刚写的字段；
+    # 锁上整个 RMW 区间。get_config 只读不锁（json 读取是原子的文件级操作）。
+    _lock = threading.RLock()
 
     def __init__(self, filepath: str = None):
         # 默认落在 VIDEONOTE_CONFIG_DIR（由 videonote_mcp.config 设置），避免依赖 CWD
@@ -17,22 +41,16 @@ class TranscriberConfigManager:
     def _read(self) -> Dict[str, Any]:
         if not self.path.exists():
             return {}
-        try:
-            with self.path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        return read_json(self.path)
 
     def _write(self, data: Dict[str, Any]):
-        with self.path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.path, data)
 
     def get_config(self) -> Dict[str, Any]:
         """获取当前转写器配置，fallback 到环境变量默认值。
 
-        whisper 默认 size 从 'medium' (~1.5GB) 改为 'tiny' (~75MB)：
-        新装用户没主动设置时不应该被首次下载卡住。想要更高精度可在「音频转写配置」
-        页主动切换。
+        默认 size 为 small（#34 与 videonote_mcp.config 同源；MCP/CLI 下 env 已先设
+        small，裸 vendored 用法由这里兜底——旧注释称 tiny 是更早时代的残留，#125 A8）。
         """
         data = self._read()
         return {
@@ -42,17 +60,10 @@ class TranscriberConfigManager:
             ),
             "whisper_model_size": data.get(
                 "whisper_model_size",
-                os.getenv("WHISPER_MODEL_SIZE", "tiny"),
+                os.getenv("WHISPER_MODEL_SIZE", "small"),
             ),
-            "enable_preprocess": bool(
-                data.get(
-                    "enable_preprocess",
-                    os.getenv("VIDEONOTE_ENABLE_PREPROCESS", "0") in ("1", "true", "True"),
-                )
-            ),
-            "diarization": bool(
-                data.get("diarization", os.getenv("VIDEONOTE_DIARIZATION", "0") in ("1", "true", "True"))
-            ),
+            "enable_preprocess": _config_bool(data, "enable_preprocess", "VIDEONOTE_ENABLE_PREPROCESS"),
+            "diarization": _config_bool(data, "diarization", "VIDEONOTE_DIARIZATION"),
             "diarization_speakers": data.get("diarization_speakers"),
         }
 
@@ -65,17 +76,18 @@ class TranscriberConfigManager:
         diarization_speakers: Optional[int] = None,
     ) -> Dict[str, Any]:
         """更新转写器配置并持久化。"""
-        data = self._read()
-        data["transcriber_type"] = transcriber_type
-        if whisper_model_size is not None:
-            data["whisper_model_size"] = whisper_model_size
-        if enable_preprocess is not None:
-            data["enable_preprocess"] = bool(enable_preprocess)
-        if diarization is not None:
-            data["diarization"] = bool(diarization)
-        if diarization_speakers is not None:
-            data["diarization_speakers"] = int(diarization_speakers)
-        self._write(data)
+        with self._lock:
+            data = self._read()
+            data["transcriber_type"] = transcriber_type
+            if whisper_model_size is not None:
+                data["whisper_model_size"] = whisper_model_size
+            if enable_preprocess is not None:
+                data["enable_preprocess"] = bool(enable_preprocess)
+            if diarization is not None:
+                data["diarization"] = bool(diarization)
+            if diarization_speakers is not None:
+                data["diarization_speakers"] = int(diarization_speakers)
+            self._write(data)
         return self.get_config()
 
     def get_transcriber_type(self) -> str:
@@ -89,6 +101,11 @@ class TranscriberConfigManager:
 
     def get_diarization(self) -> bool:
         return bool(self.get_config()["diarization"])
+
+    def get_diarization_speakers(self) -> Optional[int]:
+        """说话人数提示（可选；None=自动检测）。"""
+        v = self.get_config().get("diarization_speakers")
+        return int(v) if v else None
 
     def is_model_ready(self) -> Dict[str, Any]:
         """当前转写器是否就绪可用。
@@ -142,8 +159,8 @@ class TranscriberConfigManager:
         # 从 utils.model_status 取纯函数（本仓库已剥离 routers.config 的 Web 层）
         try:
             from app.utils.model_status import (
-                check_whisper_model_exists,
                 check_mlx_whisper_model_exists,
+                check_whisper_model_exists,
                 is_downloading,
             )
         except Exception as e:

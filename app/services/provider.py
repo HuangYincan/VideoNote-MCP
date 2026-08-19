@@ -1,18 +1,40 @@
 import uuid
 from typing import Optional
+from urllib.parse import urlsplit
 
 from app.db.models.providers import Provider
 from app.db.provider_dao import (
-    insert_provider,
-    get_all_providers,
-    get_provider_by_name,
-    get_provider_by_id,
-    update_provider,
     delete_provider,
+    get_all_providers,
+    get_provider_by_id,
+    get_provider_by_name,
+    insert_provider,
+    update_provider,
 )
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ProviderService:
+
+    @staticmethod
+    def _validate_base_url(base_url: Optional[str]) -> Optional[str]:
+        """base_url 仅支持 http/https 且须含主机名（docs/05 第 16 轮 A2）。
+
+        允许 localhost/私网地址——自建网关/Ollama 等本地 LLM 是合法用例；
+        key 外泄防护靠「base_url 变更使 key 失效」，而非禁私网。
+        """
+        s = str(base_url or "").strip()
+        if not s:
+            return s
+        try:
+            parts = urlsplit(s)
+        except ValueError as e:
+            raise ValueError(f"base_url 无法解析: {s}") from e
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+            raise ValueError(f"base_url 仅支持 http/https 且须包含主机名: {s}")
+        return s
 
     @staticmethod
     def serialize_provider(row: Provider) -> dict:
@@ -81,20 +103,27 @@ class ProviderService:
             existing = get_provider_by_name(name)
             if existing is not None:
                 raise ValueError(f'供应商名称已存在: {name}')
+            base_url = ProviderService._validate_base_url(base_url)
             id = uuid.uuid4().hex
             logo = 'custom'
             return insert_provider(id, name, api_key, base_url, logo, type_, enabled)
         except Exception as  e:
-            print('创建模式失败',e)
+            # 走 logger 而非 print（#127 B8）：MCP 下 stdout 被劫持、CLI 打 stdout 无堆栈；
+            # 与同文件 update_provider 的 logger.error(..., exc_info=True) 同口径（#123 B8）
+            logger.error('创建模式失败 %s: %s', name, e, exc_info=True)
             raise
     @staticmethod
     def provider_to_dict(p: Provider):
+        from videonote_mcp.crypto import (
+            decrypt_value,  # 惰性：vendored 层不强制依赖 videonote_mcp
+        )
+
         return {
             "id": p.id,
             "name": p.name,
             "logo": p.logo,
             "type": p.type,
-            "api_key": p.api_key,
+            "api_key": decrypt_value(p.api_key),
             "base_url": p.base_url,
             "enabled": p.enabled,
             "created_at": p.created_at,
@@ -138,24 +167,46 @@ class ProviderService:
             # 如果用户未重新输入直接保存，带星号的值不应覆盖原 key。
             if 'api_key' in filtered_data and '*' in str(filtered_data.get('api_key', '')):
                 filtered_data.pop('api_key')
+            # base_url scheme 校验（docs/05 第 16 轮 A2）
+            if filtered_data.get('base_url') is not None:
+                filtered_data['base_url'] = ProviderService._validate_base_url(filtered_data['base_url'])
+            # 先取旧行（不存在早退）：base_url 变更且未同时提供新 key → 已存 key 失效（A2）。
+            # 否则被注入的 agent 改 base_url 后 list_models/test_provider 会把库中 key
+            # 定向发给攻击者服务器——key 绝不允许静默跟随新端点。
+            old_provider = get_provider_by_id(id)
+            if old_provider is None:
+                return None
+            new_base = filtered_data.get('base_url')
+            if (
+                new_base
+                and new_base != old_provider.base_url
+                and 'api_key' not in filtered_data
+                and old_provider.api_key
+            ):
+                filtered_data['api_key'] = ''
+                logger.warning('供应商 %s 的 base_url 变更，已使已存 api_key 失效（需重新录入）', id)
             # 打码 api_key，避免 key 泄进日志
             _log_data = {
                 k: (str(v)[:4] + '****' if k == 'api_key' and v else v)
                 for k, v in filtered_data.items()
             }
-            print('更新模型供应商', _log_data)
+            logger.info('更新模型供应商 %s', _log_data)
             update_provider(id, **filtered_data)
             # 获取更新后的供应商信息：get_provider_by_id 是模块级导入的 DAO，
-            # 返回 ORM 对象，用属性访问（.get 反而会 AttributeError）
+            # 返回 ORM 对象，用属性访问（.get 反而会 AttributeError）。
+            # 供应商不存在时必须返回 None（此前返回 {'id':…, 'enabled': None} 恒真，
+            # CLI/MCP 的 `if not updated` 判空永不生效，会把不存在报成「已更新」）。
             updated_provider = get_provider_by_id(id)
             return {
                 'id': id,
-                'enabled': updated_provider.enabled if updated_provider else None,
+                'enabled': updated_provider.enabled,
             }
 
         except Exception as e:
-            print('更新模型供应商失败：',e)
-            return None
+            # 真实异常（DB 锁/连接等）必须透传：此前 print + return None 把原因吞掉，
+            # 调用方拿到 None 只能报「供应商不存在」——DB 问题被误报成不存在（#123 B8）。
+            logger.error('更新模型供应商失败 %s: %s', id, e, exc_info=True)
+            raise ValueError(f"更新供应商 {id} 失败: {e}") from e
 
     @staticmethod
     def delete_provider(id: str):

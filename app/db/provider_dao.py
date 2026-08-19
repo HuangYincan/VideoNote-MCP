@@ -1,9 +1,10 @@
 import json
 import os
 import sys
+
+from app.db.engine import get_db
 from app.db.models.providers import Provider
 from app.utils.logger import get_logger
-from app.db.engine import get_db
 
 logger = get_logger(__name__)
 
@@ -52,21 +53,20 @@ def seed_default_providers():
 def insert_provider(id: str, name: str, api_key: str, base_url: str, logo: str, type_: str, enabled: int = 1):
     db = next(get_db())
     try:
-        provider = Provider(id=id, name=name, api_key=api_key, base_url=base_url, logo=logo, type=type_, enabled=enabled)
+        # 落盘加密（docs/05 #29）；明文兼容：加密失败自动回退明文写入。
+        # 惰性 import：app/ 是 vendored 层，不强制依赖 videonote_mcp（上游可独立跑）
+        from videonote_mcp.crypto import encrypt_value
+
+        provider = Provider(
+            id=id, name=name, api_key=encrypt_value(api_key), base_url=base_url,
+            logo=logo, type=type_, enabled=enabled,
+        )
         db.add(provider)
         db.commit()
         logger.info(f"Provider inserted successfully. id: {id}, name: {name}, type: {type_}")
         return id
     except Exception as e:
         logger.error(f"Failed to insert provider: {e}")
-    finally:
-        db.close()
-
-
-def get_enabled_providers():
-    db = next(get_db())
-    try:
-        return db.query(Provider).filter_by(enabled=1).all()
     finally:
         db.close()
 
@@ -105,6 +105,24 @@ def update_provider(id: str, **kwargs):
 
         for key, value in kwargs.items():
             if hasattr(provider, key):
+                if key == "api_key":
+                    # 落盘加密（docs/05 #29）。update 通常先读后写（已解密），
+                    # 但 enc: 前缀值会二次加密——先解密再加密保持幂等。
+                    # 解密失败（key 缺失/不匹配）时跳过写入而非二次加密：
+                    # 二次加密会把 enc: 串再包一层，产生永远解不出的数据（docs 审计 G1）
+                    from videonote_mcp.crypto import decrypt_value, encrypt_value
+
+                    if value and str(value).startswith("enc:"):
+                        decrypted = decrypt_value(value)
+                        if decrypted is None:
+                            logger.warning(
+                                f"Provider {id} 的 api_key 无法解密（fernet.key 缺失/不匹配），"
+                                f"跳过该字段更新"
+                            )
+                            continue
+                        value = encrypt_value(decrypted)
+                    else:
+                        value = encrypt_value(value)
                 setattr(provider, key, value)
 
         db.commit()

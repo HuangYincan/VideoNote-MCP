@@ -1,0 +1,94 @@
+"""stderr 日志轮转 / 打开失败可见 / 退出摘要（docs/05 #44 可观测性收口）。
+
+不写真实数据目录：mock server.DATA_DIR 到临时目录。
+"""
+
+from unittest import mock
+
+from videonote_mcp import server
+
+
+class TestOpenStderrLog:
+    def test_opens_log_in_data_dir(self, tmp_path):
+        with mock.patch.object(server, "DATA_DIR", tmp_path):
+            f = server._open_stderr_log()
+            assert f is not None
+            assert (tmp_path / "logs" / "mcp_stderr.log").exists()
+            f.close()
+
+    def test_rotates_when_over_limit(self, tmp_path):
+        with mock.patch.object(server, "DATA_DIR", tmp_path):
+            log = tmp_path / "logs" / "mcp_stderr.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_bytes(b"x" * (50 * 1024 * 1024 + 1))
+            f = server._open_stderr_log()
+            assert f is not None
+            assert (tmp_path / "logs" / "mcp_stderr.log.1").exists()
+            assert log.stat().st_size == 0
+            f.close()
+
+    def test_no_rotation_under_limit(self, tmp_path):
+        with mock.patch.object(server, "DATA_DIR", tmp_path):
+            log = tmp_path / "logs" / "mcp_stderr.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_bytes(b"small")
+            f = server._open_stderr_log()
+            assert f is not None
+            assert not (tmp_path / "logs" / "mcp_stderr.log.1").exists()
+            f.close()
+
+    def test_env_max_mb(self, tmp_path):
+        with mock.patch.object(server, "DATA_DIR", tmp_path), \
+             mock.patch.dict("os.environ", {"VIDEONOTE_STDERR_LOG_MAX_MB": "1"}, clear=False):
+            log = tmp_path / "logs" / "mcp_stderr.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_bytes(b"x" * (1024 * 1024 + 1))
+            f = server._open_stderr_log()
+            assert (tmp_path / "logs" / "mcp_stderr.log.1").exists()
+            f.close()
+
+    def test_invalid_env_falls_back_to_default(self, tmp_path):
+        # docs 审计 H 组：非法 env 回退默认阈值，不把日志重定向弄挂
+        with mock.patch.object(server, "DATA_DIR", tmp_path), \
+             mock.patch.dict("os.environ", {"VIDEONOTE_STDERR_LOG_MAX_MB": "abc"}, clear=False):
+            log = tmp_path / "logs" / "mcp_stderr.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_bytes(b"small")
+            f = server._open_stderr_log()
+            assert f is not None
+            assert not (tmp_path / "logs" / "mcp_stderr.log.1").exists()
+            f.close()
+
+    def test_failure_returns_none_and_prints_reason(self, tmp_path, capsys):
+        with mock.patch.object(server, "DATA_DIR", tmp_path), \
+             mock.patch("builtins.open", side_effect=OSError("disk full")), \
+             mock.patch.object(server.sys, "stderr", mock.Mock()) as fake_err:
+            assert server._open_stderr_log() is None
+            assert fake_err.write.called
+            assert "stderr 日志失败" in "".join(
+                c.args[0] for c in fake_err.write.call_args_list)
+
+
+class TestExitSummary:
+    def test_writes_active_task_count_to_stderr(self):
+        with mock.patch.object(server.sys, "__stderr__") as fake_stderr, \
+             mock.patch.object(server, "_task_futures", {"a": object(), "b": object()}), \
+             mock.patch.object(server, "_task_events", {}):
+            server._exit_summary()
+            fake_stderr.write.assert_called_once()
+            assert "2" in fake_stderr.write.call_args[0][0]
+
+    def test_sets_cancel_on_active_tasks(self):
+        # docs 审计 G5：退出时给进行中/排队任务发取消，缩短子进程残留窗口
+        ev1, ev2 = mock.Mock(), mock.Mock()
+        with mock.patch.object(server.sys, "__stderr__"), \
+             mock.patch.object(server, "_task_futures", {"a": object()}), \
+             mock.patch.object(server, "_task_events", {"a": ev1, "b": ev2}):
+            server._exit_summary()
+            ev1.set.assert_called_once()
+            ev2.set.assert_called_once()
+
+    def test_never_raises(self):
+        with mock.patch.object(server.sys, "__stderr__", side_effect=OSError("closed")), \
+             mock.patch.object(server, "_task_events", {"a": mock.Mock(side_effect=RuntimeError)}):
+            server._exit_summary()  # 不抛异常即通过

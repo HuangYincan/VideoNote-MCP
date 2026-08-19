@@ -1,17 +1,13 @@
-import shutil
-from pathlib import Path
-
-from dotenv import load_dotenv
-import subprocess
 import os
+import shutil
+import subprocess
 import uuid
-load_dotenv()
-api_path = os.getenv("API_BASE_URL", "http://localhost")
-BACKEND_PORT= os.getenv("BACKEND_PORT", 8483)
-
-BACKEND_BASE_URL = f"{api_path}:{BACKEND_PORT}"
-
+from pathlib import Path
 from typing import Optional
+
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 def generate_screenshot(video_path: str, output_dir: str, timestamp: int, index: int) -> str:
     """
     使用 ffmpeg 生成截图，返回生成图片路径
@@ -32,11 +28,16 @@ def generate_screenshot(video_path: str, output_dir: str, timestamp: int, index:
         "-y"
     ]
 
-    print("Running command:", command)
-    result = subprocess.run(command, capture_output=True, text=True)
+    logger.debug("Running command: %s", command)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg 截图超时（>120s）: {video_path} @ {timestamp}s")
 
     if result.returncode != 0:
-        print("ffmpeg failed:", result.stderr)
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg 截图失败: {result.stderr[:500]}")
 
     return str(output_path)
 
@@ -68,7 +69,5 @@ def save_cover_to_static(local_cover_path: str, subfolder: Optional[str] = "cove
     file_name = os.path.basename(local_cover_path)
     target_path = os.path.join(target_dir, file_name)
     shutil.copy2(local_cover_path, target_path)  # 保留原时间戳、权限
-    image_relative_path = f"/static/{subfolder}/{file_name}".replace("\\", "/")
-    url_path = f"{BACKEND_BASE_URL.rstrip('/')}/{image_relative_path.lstrip('/')}"
-    # 返回前端可访问的路径
-    return url_path
+    # 返回 file:// 绝对路径（agent 可直接 Read；无后端可指）
+    return Path(target_path).as_uri()

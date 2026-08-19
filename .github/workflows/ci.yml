@@ -7,15 +7,21 @@ on:
 
 jobs:
   smoke:
-    name: Smoke test
+    name: Smoke test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-      - name: Install dependencies
-        run: uv sync --no-dev --frozen
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies (Python ${{ matrix.python-version }})
+        run: |
+          uv python install ${{ matrix.python-version }}
+          uv sync --frozen --python ${{ matrix.python-version }}
       - name: Ruff F-class lint
-        run: uvx ruff check --select F .
+        run: uv run ruff check --select F .
       - name: Server imports
         run: uv run python -c "import videonote_mcp.server; print('import OK')"
       - name: MCP tools/list over stdio
@@ -31,12 +37,31 @@ jobs:
                   async with ClientSession(read, write) as session:
                       await session.initialize()
                       tools = await session.list_tools()
-                      names = [t.name for t in tools.tools]
-                      assert "generate_note" in names, f"missing generate_note: {names}"
-                      print(f"tools/list OK: {len(names)} tools")
+                      names = sorted(t.name for t in tools.tools)
+                      # 名单断言（docs/05 #70）：数量断言放过名字漂移（get_task_status 曾
+                      # 丢失装饰器仍 38 全绿），必须精确匹配。改名/增删工具时同步这里。
+                      expected = [
+                          "batch_generate_notes", "cancel_note", "cleanup_all", "cleanup_note",
+                          "diarize_media", "export_transcript", "generate_note", "get_config",
+                          "get_task_status", "get_task_transcript", "health_check",
+                          "inspect_video", "list_tasks", "merge_audio", "preflight",
+                          "prepare_note_material",
+                      ]
+                      assert names == expected, f"工具名单漂移: {names}"
+                      print(f"tools/list OK: {len(names)} tools (名单精确匹配)")
           asyncio.run(main())
           EOF
       - name: CLI smoke
         run: uv run videonote providers list
       - name: Unit tests
-        run: uv run --with pytest python -m pytest -q
+        run: uv run pytest -q
+
+  # 汇总 job：main 分支保护规则要求 context "Smoke test"（矩阵 job 名带
+  # Python 版本，规则早于矩阵化配置）。needs 矩阵全部通过才绿，
+  # 任一失败即失败（fail-fast: false 保证三个版本都跑完）。
+  smoke-summary:
+    name: Smoke test
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Smoke tests passed (Python 3.11/3.12/3.13)"

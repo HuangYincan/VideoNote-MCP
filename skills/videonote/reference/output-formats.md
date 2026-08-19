@@ -8,9 +8,9 @@
 
 任务成功后（`get_task_status` 返回 `SUCCESS`）：
 
-1. **`get_task_files(task_id)`** —— 列出任务产物，找到 `gen/note.md`（MD 底稿）与 `gen/transcript.json`（转写）。
+1. **`cleanup_note(task_id, dry_run=True)`** —— 列出任务产物，找到 `gen/note.md`（MD 底稿）与 `gen/transcript.json`（转写）。
 2. **`result.markdown`**（MD 底稿）—— 在 `get_task_status` 的轻量结果里直接有，或读 `gen/note.md`；需要转写时用 **`get_task_transcript(task_id)`**（`full_text` 全文 + `segments` 时间轴，可按段切片）。
-3. 便携笔记：`result.note_dir` 指向 `note.md` 所在目录。
+3. 便携笔记：`result.note_dir` 指向 `note.md` 所在目录（默认 `{task_id}/gen/`）；若生成时指定了 `notes_dir`，额外有 `result.portable_note_dir` 指向便携副本目录（`<notes_dir>/<标题>/`）。
 
 底稿 = **转换的信息源**。所有格式转换都以它为依据，不再重新下载/转写。
 

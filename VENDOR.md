@@ -13,19 +13,19 @@
 
 | 子包 | 内容 |
 |------|------|
-| `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, **bilibili_comment**, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, **generic_downloader**, xiaoyuzhoufm_download（**未接入** SUPPORT_PLATFORM_MAP，已去掉 import-time HTTP） |
+| `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, **bilibili_comment**, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, **generic_downloader** + 子包 `douyin_helper/`、`kuaishou_helper/`（xiaoyuzhoufm_download **已删除** 2026-08-17：未接入且 yt-dlp 通用提取已覆盖小宇宙） |
 | `app/transcriber/` | base, transcriber_provider, whisper, groq, bcut, kuaishou, mlx_whisper_transcriber, **funasr_transcriber**, **audio_preprocess**, model_download_state, whisper_models |
-| `app/gpt/` | base, gpt_factory, openai_gpt, deepseek_gpt, qwen_gpt, universal_gpt, prompt, prompt_builder, request_chunker, utils, tools（不含 test.py）+ `app/gpt/provider/OpenAI_compatible_provider.py`（gpt_factory 依赖） |
-| `app/db/` | engine, init_db, sqlite_client, provider_dao, model_dao, video_task_dao + `app/db/models/`（models, providers, video_tasks） |
-| `app/models/` | audio_model, gpt_model, model_config, notes_model, provide_model, transcriber_model, video_record |
+| `app/gpt/` | base, gpt_factory, universal_gpt, prompt, prompt_builder, request_chunker + `app/gpt/provider/OpenAI_compatible_provider.py`（gpt_factory 依赖）（openai_gpt / deepseek_gpt / qwen_gpt / utils / tools **已删除** 2026-08-17：全仓零引用——gpt_factory 走 OpenAICompatibleProvider 直连，上游直连类死代码） |
+| `app/db/` | engine, init_db, provider_dao, model_dao, video_task_dao + `app/db/models/`（models, providers, video_tasks）（sqlite_client **已删除** 2026-08-17：全仓零引用 + CWD 相对 DB 路径死引信） |
+| `app/models/` | audio_model, gpt_model, model_config, notes_model, transcriber_model（provide_model / video_record **已删除** 2026-08-17 #132 C10：全库零引用死模块） |
 | `app/enmus/` | exception, note_enums, task_status_enums |
-| `app/exceptions/` | biz_exception, note, provider, **task**（**不含** exception_handlers —— 仅 FastAPI 用） |
+| `app/exceptions/` | note, provider, **task**（biz_exception **已删除** 2026-08-18 #134：全仓零引用死类；**不含** exception_handlers —— 仅 FastAPI 用） |
 | `app/decorators/` | timeit |
-| `app/validators/` | video_url_validator |
-| `app/services/` | note, constant, provider, cookie_manager, task_serial_executor, transcriber_config_manager, proxy_config_manager, **pipeline**, **merge**, **diarization**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用） |
-| `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, status_code, logger, path_helper, url_parser, openai_client, env_checker, **task_manifest** + **本仓库新增** `model_status.py`（见下）（**不含** response / export / ppt_generator / minio_client） |
+| `app/validators/` | **整个子包已删除**（2026-08-18 #134：video_url_validator 全仓零引用死模块，上游同步时勿重引入） |
+| `app/services/` | note, constant, provider, cookie_manager, transcriber_config_manager, proxy_config_manager, **pipeline**, **merge**, **diarization**, **note_cache**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用；**task_serial_executor 已删** —— 2026-08-17 全仓零引用死模块，MCP 用自己的线程池） |
+| `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, logger, path_helper, url_parser, openai_client, env_checker, **task_manifest**, **json_store**, **url_safety** + **本仓库新增** `model_status.py`（见下）（status_code **已删除** 2026-08-17 #132 C10：全库零引用死模块；**不含** response / export / ppt_generator / minio_client） |
 | `videonote_mcp/export/` | SRT/VTT/JSON 确定性导出（不在上游 `utils/export.py`） |
-| `events/` | signals（blinker `transcription_finished`）、handlers（转写完成后临时文件清理）—— 顶层模块，供各转写器 `from events import transcription_finished` |
+| `events/` | **整个子包已删除**（2026-08-17，#130 B2）：signals（blinker `transcription_finished`）+ handlers（转写完成后临时文件清理）是死链——4 个转写器 `on_finish` 调用全部注释、`transcription_finished` 永不触发，server 的 register_handler 纯空转。整链（server 注册点 + events 包 + 4 个 on_finish 方法）已删；若上游恢复该机制需重新引入 |
 
 ## 外科手术改动（相对上游）
 
@@ -48,9 +48,11 @@
 - `app/services/note.py`（任务文件夹、`IMAGE_OUTPUT_DIR`、material_only、便携笔记）
 - `app/services/provider.py` / `app/db/video_task_dao.py` / `app/db/models/video_tasks.py`
 - `app/services/transcriber_config_manager.py` / `app/utils/model_status.py` / `app/utils/path_helper.py` / `app/utils/logger.py`
-- `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py` / `xiaoyuzhoufm_download.py`
+- `app/services/cookie_manager.py` / `proxy_config_manager.py` / **`app/utils/json_store.py`**（2026-08-17 #106：三个配置管理器改 `json_store` 安全读写——损坏不静默当空（warning + `.corrupt` 备份）、`_write` 原子化（tmp+replace+0600）；上游若带原生读写逻辑需人工合并）
+- `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py`
 - `app/transcriber/transcriber_provider.py`（funasr / mlx）
-- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`task_manifest.py`
+- `app/gpt/universal_gpt.py`（checkpoint 损坏弃用时打 warning 留痕，#106）
+- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`
 
 ## 如何同步上游更新
 
@@ -65,3 +67,10 @@ git -C /path/to/BiliNote rev-parse HEAD
 # 4. 更新本文件的 commit 号与日期
 # 5. 在 docs/CHANGELOG.md 记一条「同步上游」
 ```
+
+## 许可标注（docs/05 #45）
+
+- `app/utils/abogus.py`（抖音 ABogus 签名）来自 **TikTokDownloader**，作者 JoeanAmier，
+  **GPL-3.0** 许可 —— 与本仓库 MIT 混合分发。保留文件头出处声明；整体分发时如需
+  规避 GPL 传染，可替换为纯 Python 实现或仅在独立进程调用。
+- 其余 `app/` vendored 代码按上游 BiliNote 许可分发。

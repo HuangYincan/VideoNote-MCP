@@ -1,6 +1,300 @@
 # CHANGELOG
 
+> ⚠️ **历史档案（127KB，只追加）** —— 按关键节点的变更记录。
+> 新 Agent **不要通读**。发版/节点回溯时用 `grep -n "批 21" docs/CHANGELOG.md` 定位。
+> 新变更在文末追加，格式沿用「Wave X 批 N（日期 · 内容，N tests）」。
+
 按关键节点记录项目变更（日期 + 做了什么 + 文档改了什么）。
+
+## Wave F 批 20（2026-08-17 · 第 15 轮收敛验证 #131，667 tests）
+
+- **发布门禁修复（A1）**：`.github/workflows/release.yml` wheel 内容校验删掉已不存在的 `app/events/__init__.py`（#130 B2 整链删除的同波遗漏）——此前打 v* tag 发布必失败。
+- **blinker 死依赖（A2）**：pyproject.toml 删除「转写完成事件」注释与 `blinker>=1.9.0`（events 包已删、全仓零引用），`uv lock` 重新生成。
+- **docs/05 状态回写（A3）**：#128/#129/#130 标题 ⏳ → ✅（批 16-19 均已实施完成）。
+- **收敛判定**：第 15 轮双代理独立全库复扫——代理 B（app 流水线）无新增 finding、代理 A（工具面）仅上述 #130 同波遗漏；修复后**两代理一致「可停」**。长时任务收敛：19 轮扫描/批次共落地 200+ 项修复，667 tests + ruff F/I-clean 全绿。
+
+## Wave F 批 19（2026-08-17 · 第 14 轮双代理扫描 #130，667 tests）
+
+- **bool truthy-swallow 收口（A1）**：`config.py` 新增 `resolve_bool_config`（bool 直通 / `1·true·yes·on / 0·false·no·off` 词表 / 垃圾值 warning 回退 env/默认），`generate_note` / `prepare_note_material` 的 `video_understanding` / `include_comments` / `screenshot` 五处接入——字符串 `"false"` 不再恒为 True 白开视频理解烧多模态 token（#116 int 系收口后 bool 系的最后一窝）。
+- **comments_limit 显式 0（A2）**：`comments_limit or 20` 改显式 `is not None` 判断——传 0 关评论不再被 falsy 吞成 20 条（#116 同族漏网）。
+- **CLI 导出契约（A3）**：`export --out-dir` help 改「缺省 note_results/{task_id}/gen/」（与实际一致）；CLI 侧补 file:// 解码 + expanduser（#105 只修了 MCP 工具面，CLI 直传 URI 曾误报文件不存在）。
+- **本地文件契约（A4/A5）**：`inspect_video` local 分支加 is_file 校验——幻影路径返回 `ok:false` + 明确错误，不再 ok:true 骗 Agent 喂 `generate_note` 到半路才报错；`merge_audio` 文件参数 `os.path.exists` → `Path.is_file()`（目录不再穿透到 ffmpeg 深处炸泛化错误）。
+- **死链整链删除（B1/B2/A6）**：`app/db/sqlite_client.py` 整文件删除（全仓零引用 + CWD 相对 DB 路径死引信）；blinker `transcription_finished` 死链整链删除——server 注册点 + `app/events/` 包 + 4 个转写器 `on_finish` 方法全部清掉（信号永不触发、register_handler 纯空转的悬空接口）；server.py 移除无使用的 `env_bool` import。VENDOR.md / docs/02 同步。
+- **RequestChunker 二分（B3）**：`chunk()` 主循环改 `_largest_fitting_prefix` 二分找最大可容纳前缀（fits 单调，_fits 调用从 O(段数) 降到 O(log 段数)，长转写不再每次重建整条消息 O(n²)）；`group_texts_by_budget` 同款二分。块边界与线性扫描完全一致——**400 随机 trial 差分验证 diffs=0**（超长段 split / comments 首块注入 / max_tokens 约束 / 异常一致性全覆盖）。
+
+## Wave F 批 18（2026-08-17 · 第 13 轮双代理扫描 #129，666 tests）
+
+- **SKILL/docs 红线与死点清扫（A1-A4）**：troubleshooting.md 改「填 key 一律走 `! videonote providers set`」（不再教 Agent 用 update_provider/add_provider 填 key 撞红线）；docs/04 `get_task_transcript` 改「默认空=前 50 段」（实现口径）、`cleanup_all` 去掉「/logs」（#121 C3 刻意不清）；docs/02 `cleanup_all` 改「同步清空全局索引」。
+- **health_check 模型列表同源（A5）**：遍历 `get_registry().visible_model_names()`——自定义注册模型不再在 list 显示已下载、health 永远缺席，两个工具给 Agent 的就绪信号不再矛盾。
+- **preflight/导出契约（A6/A7）**：多集建议改「一条 batch_generate_notes 服务端逐个排队」；export_transcript docstring 输出目录改「缺省为 note_results/{task_id}/gen/」（与实际一致）。
+- **自定义大写模型名下载修复（A8）**：`download_transcriber_model` 改为「原 case 可解析则不动，仅内置档位小写容差」——注册名 "MyModel"（`add_custom_model`）不再被 lower 成 "mymodel" 报 unknown，CLI/MCP 两侧行为对齐。
+- **默认值收敛（B1/B3）**：`get_whisper_transcriber` / `get_mlx_whisper_transcriber` 默认 base → small（#128 B3 漏掉的两个类型级 getter）；`merge_audio` 缺省落 `NOTE_OUTPUT_DIR/merged`（不再不确定 CWD，对清理失明）。
+- **app 层文档死点（B2）**：bilibili_downloader / bilibili_subtitle 日志文案改引导 `! videonote login bilibili`——不再教被 MCP 拒绝的 `set_downloader_cookie` 用法（#128 A1 从工具面清到 app 层）。
+- **半收口闭环（B4/B5/B6/B7）**：task_manifest `delete_task` 失败改 `logger.warning`（不再 except: pass 丢上下文）；note.py 内 `screenshot=True` 自闭合并入 format（直接调 note.generate 不再残留 Screenshot 标记）；kuaishou 转写器 `data:null` 守卫；transcriber_provider 释放旧实例前持 `old._lock`（切模型尺寸时进行中转写不再读空模型）。
+
+## Wave F 批 17（2026-08-17 · 第 12 轮双代理扫描 #128，666 tests）
+
+- **SKILL 死点 + 指引矛盾（A1/A7）**：troubleshooting.md 5 处 `set_downloader_cookie(cookie=…)` 改引导 `! videonote login bilibili`（Agent 按 SKILL 逐字执行不再撞「拒绝 cookie」红线）；tools.md `inspect_video` 改「多集全出用 `batch_generate_notes`、只一集用对应 url」——不再教逐条 subagent 撞并发上限。
+- **下载/导出契约（A2/A3）**：`download_transcriber_model` 仅内置档位名 lowercase——直通 HF repo_id / 本地目录保持原 case，不再 1.5GB 白下而 preflight 仍报「未下载」；`export_transcript` 未知格式去重前先 `str(f)`——`formats=[1,"pdf"]` 不再 int/str 比较崩、`[["srt"]]` 不再 unhashable。
+- **docstring 与行为对齐（A4）**：`cleanup_all`「数据库记录不动」改「同步清空全局索引 video_tasks」；`cleanup_note` include_note=True 的删索引副作用一并注明——文档不再与实现相反。
+- **状态快照补缺（A5）**：`get_task_status` status.json 缺失也先查 `_status_memory`——提交时首写失败（磁盘满/只读）任务在跑不再误报 NOT_FOUND、与 list_tasks 的 PENDING 矛盾。
+- **模型列表同源（A6）**：`list_transcriber_models` 遍历 `WhisperModelRegistry.visible_model_names()`——large-v1/自定义模型下载后不再永远「未下载」、反复误判重下。
+- **CLI 默认分叉关闭（A8）**：`transcriber set` 未带 `--size` 时保留现有配置——用户配好 large-v3 → 切 groq → 切回 fast-whisper 不再悄悄降级 small。
+- **groq 引擎可配置（B1）**：`GroqTranscriber` 按名称 `get_provider_by_name('groq')` 查找——`providers add` 建的 uuid 供应商也能驱动 groq 引擎（不再锁死内置 seed 行、无修复入口）。
+- **产物目录统一（B2）**：note/pipeline/universal_gpt 三处 `NOTE_OUTPUT_DIR` 缺省统一 `get_data_dir()/note_results`——裸脚本产物不再落 CWD、对清理/status/list_task_files 失明。
+- **默认值收敛（B3）**：transcriber_provider / whisper / mlx 兜底统一 `small`——绕过 config manager 的直接调用不再静默 base 降质。
+- **临时目录 / 删除 / 日志（B4/B6/B7）**：`apply_diarization` `created=True` 在 mkdtemp 后立即置位（normalize 失败不再残留 `/tmp/vn_dia_*`）；`cleanup_temp_files` 沙箱化（仅任务目录内清理，绝不连带删用户源目录）；timeit 度量 print → `logger.info`（裸脚本/pytest 不再污染 stdout）。
+- **快手接口防御（B5）**：`_extract_photo` 统一校验 `visionVideoDetail.photo` 与 `photoUrl`——视频被删/接口形状变更给可排查的明确错误，不再 `None['photo']` 天书 TypeError。
+
+## Wave F 批 16（2026-08-17 · 第 11 轮双代理扫描 #127，666 tests）
+
+- **任务索引时序（A1）**：note/material 任务提交时先 `insert_video_task(PENDING)` 再写状态——运行期每次 `_write_status` 不再刷「不在全局索引」warning，**FAILED 任务也进 list_tasks**（不再重启后孤儿目录）；`_submit_step_task` 顺序同步修正。
+- **工具校验/形状补齐（A2/A5/A7）**：`delete_model` 先校验供应商（provider_id 拼错不再误报「模型不存在」）；`validate_url` ValueError 分支补 `platform: "unknown"`；`get_task_files` 成功路径补 `ok: true`（与 cleanup/export 同形状）。
+- **转写来源统一（A3/A8）**：`export_transcript` 改 gen/transcript.json 优先、result.json 兜底——与 CLI 和 `_load_task_transcript` 同口径（#122 A2 漏掉的 server 出口）；`get_task_transcript` 切片 full_text 统一空格分隔（与全量一致，Agent 对比字节数不失真）。
+- **Agent DX（A4/A6）**：`add_provider` docstring + CLI help 标注 type 恒为 custom（不再有永不生效的死参数）；`list_tasks(limit=0)` 返回空列表（不再钳成 1、误导「没有任务」）。
+- **FunASR 设备兜底（B1）**：`device="cuda"` 请求加 CUDA 探测——无 CUDA 机器（Mac 全系/无 N 卡 Linux）回退 cpu，构造 AutoModel 不再崩、无「请用 cpu」提示。
+- **并发互毁关闭（B2）**：`WhisperModelRegistry` add/remove_custom_model 加 class-level RLock——并发 RMW 不再互抹（cookie_manager #124 B15 / transcriber_config_manager #126 B9 的漏网兄弟）。
+- **close 生效（B3）**：whisper/funasr/mlx 三个转写器实现 `close()`——transcriber_provider 的「防御性释放」不再静默 no-op，切模型尺寸时旧 large-v3（~3GB）不再双驻留。
+- **内存/None/异常长尾（B4-B10）**：kuaishou 转写器流式上传文件对象（不再整文件 read() 进内存）；kuaishou caption null 守卫；douyin `download_video` `.get()` 链 + 显式错误；universal_gpt env 数值防御式解析；`add_provider` 失败改 `logger.error`（不再 print）；`convert_to_mp3` 缺省落数据目录；note.py 日志 `(title or '')[:40]`。
+
+## Wave F 批 15（2026-08-17 · 第 10 轮双代理扫描 #126，643 tests）
+
+- **导出门禁（C1）**：`export_transcript` 非 SUCCESS 任务返回 `{ok:false}`——FAILED/运行中不再导出成功；CLI `export` 同口径，两个读转写工具给 Agent 的结论不再相反。
+- **cleanup 形状对齐（C2）**：`cleanup_all` 成功路径补 `ok: true`。
+- **数值参数长尾（C3/C5）**：`fetch_comments` limit、`set_transcriber` diarization_speakers 统一 `_coerce_int`——垃圾值回退默认/None，不再裸 int 天书错误。
+- **mlx 预校验可达（C4）**：`download_transcriber_model` mlx 分支提交前校验尺寸；`mlx_whisper` 顶层 import 改惰性——未装 extras 也能 import MLX_MODEL_MAP 做前置校验，缺依赖时给安装提示而非 ModuleNotFoundError。
+- **配置解密边界（C6）**：`get_app_config` 解密 per-key try/except——手改 JSON 里的坏值只 drop 该 key，不再整包 `{}`（下一次 set 不再抹掉其余配置）。
+- **CLI 口径（C7/C8）**：`transcriber set --size` help 补全 large-v3-turbo（自定义尺寸不再被 argparse 拒）；`export --out-dir` 规整 file:// URI，不再建字面 `file:` 目录。
+- **validate 语义（C9）**：`validate_url` 本地路径加存在性检查——不存在返回 supported:false，不再与 generate_note 的拒绝矛盾。
+- **并发互毁关闭（B1）**：预处理临时产物落独立 `vn_prep_`/`vn_dia_` 临时目录——两个并发任务处理同一本地文件时互不覆盖、互不误删。
+- **资源与兼容（B2/B3/B4）**：youtube_subtitle Session try/finally close；dm_img patch 遇 TypeError 降级无 fatal 重调（旧版 yt-dlp 兼容）；b23.tv/v.douyin.com 短链解析 lru_cache（单任务 3-5 次 HEAD → 1 次）。
+- **None/异常长尾（B5-B9）**：bcut/kuaishou 段文本 None 守卫 + per_size=0 拒绝上传空块；`_first_choice_content` 空内容错误同口径；`cleanup_all` 索引失败不再静默吞（warning + `index_error`）；`insert_video_task` 日志 `(title or "")[:40]`；`update_config` class-level RLock 补无锁 RMW。
+
+## Wave F 批 14（2026-08-17 · 第 9 轮双代理扫描 #125，612 tests）
+
+- **损坏配置不再抹掉其余配置（A1）**：`get_app_config` 遇损坏 JSON 打 warning + `.corrupt` 备份 + 按空配置处理——`set_app_config` 读 `{}` 写回把 default_model/notes_dir 全抹掉的窗口关闭。
+- **CLI export 假成功修正（A2）**：`_errors` 不再被当导出格式计数——全部落盘失败时报「没有成功导出任何格式」+ 失败原因。
+- **结果窗口可见（A3）**：SUCCESS 但 result.json 尚未落盘 → `result_pending: true`——Agent 不再拿到 result:null 却无从判断。
+- **工具口径统一（A4/A6/A7/A9）**：`inspect_video` 改「多集全出笔记 → 一条 batch」；`fetch_subtitles` docstring 补 `{ok: true}`；模型下载校验与 `set_transcriber` 同源（自定义尺寸可预下载）；tools.md 补 `preflight.need_provider`。
+- **数值参数天书错误（A5）**：6 处裸 `int()` 统一 `_coerce_int`——`"abc"` 等垃圾值 warning 回退默认，不再 invalid literal 崩后台任务。
+- **转写默认 small（A8）**：配置兜底 `tiny` → `small`（与 #34 默认口径一致，中文质量不再被配置缺失拉低）。
+- **cleanup 形状对齐（A11）**：`cleanup_task_files` 成功路径补 `ok: true`——Agent 统一按 ok 判读。
+- **抖音短链缓存命中（B1）**：`v.douyin.com` 解析失败回退解短链——App 分享默认短链不再每次重下+重转写。
+- **快手 download_video 免白转（B2）**：直接 `_download_mp4`，need_video 场景不再多一次全量 ffmpeg 转码 + 双份磁盘。
+- **状态文件写入失败不再毁终态（B3）**：原子写失败回退保留已落盘 SUCCESS，只在无原文时写错误说明。
+- **封面目录纳入全局清理（B4）**：`static/cover/` + `data/covers/` 随 cleanup_all 清理——local 任务不再永久累积。
+- **短链只解一次（B6）**：b23.tv lookup 不再 BV/p 各解一次短链（慢网省 5-10s）。
+- **ytdlp_retry 不再白等（B7）**：FileNotFoundError（yt-dlp 缺失/路径不存在）立即抛出——顺带修了 except 缺 `as e` 会 NameError 的隐藏 bug。
+- **空 choices 明确报错（B8）**：`_first_choice_content` 统一 merge/summarize 两处——上游异常响应不再 IndexError 天书。
+- **旧格式 cookie 兼容（B9）**：`{platform: "字符串"}` 旧格式照常读，垃圾值降级空串不裸崩。
+- **full_text 线性拼接（B10）**：5 个转写器统一 `" ".join`——万段级转写不再 O(n²) 累计拷贝。
+- **快手转码失败带链（B11）**：ffmpeg 失败 `from e` + 退出码/超时区分——后台任务不再只看一句话。
+- **cleanup_all 批量删索引（B12）**：`delete_all_tasks` 单条 DELETE——大量任务时不再 N+1 SQL。
+- **<1s 视频不再静默 0 帧（B13）**：duration<1s 回退 t=0 单帧 + warning。
+- **pyannote 只加载一次（B14）**：Pipeline 模块级单例（首次失败不缓存，token 变化重载）——分离任务不再每次重建多 GB 模型。
+- **bcut 分段读文件（B15）**：分片从文件 seek+read，多 GB 音频不再整读 + 切片复制——顺带修了多分片只留最后一片 etag 的隐藏 bug。
+- **YouTube 代理 Session 释放（B16）**：显式 `close()`/`__del__`——连接池条目不再泄漏到 GC。
+- **B5 测试补全**：KuaishouTranscriber（成功/空结果/业务错误/网络错误链）、BilibiliDmPatch（参数形状/幂等注入/缺失降级）、screenshot_marker（m:ss/[m:ss]/星号变体）首次覆盖。
+
+## Wave F 批 13（2026-08-17 · 第 8 轮双代理扫描 #124，582 tests）
+
+- **转写向导默认值漏 funasr（A1）**：`_TRANSCRIBER_ENGINES` 同源复用——当前引擎为 funasr 时回车确认不再无意识切回 fast-whisper。
+- **add_model 幂等（A3）**：`get_model_by_provider_and_name` 查重——重复添加返回 `added:false`，models 表不再产生重复行。
+- **CLI export 字符集误报（A4）**：默认格式解析共享 `resolve_default_export_formats()`（MCP/CLI/自动导出三处同源）——字符串 `"srt"` 不再被 `set()` 拆成字符报「未知格式 'r','s','t'」。
+- **env_bool 垃圾值回退 default（A5）**：`"maybe"` 等手滑值不再把 default=True 的开关静默翻反。
+- **转写配置布尔解析同源（A6）**：JSON 手填 `"false"` 字符串不再因 `bool("false")` 误开预处理/说话人分离。
+- **模型下载去重原子化（A7）**：`model_download_state` 加模块锁 + `try_mark(key)` 原子原语——两个并发请求不再各起一个 worker 重下整个模型。
+- **export_transcript 零格式显式报错（A8）**：`formats=[]` 不再 ok:true + formats:{} 假成功。
+- **summarize 外来 segment 清洗（A9）**：未知键（words/id）过滤、缺 start/end/text 跳过留痕——第三方转写 dict 不再 TypeError 后台 FAILED。
+- **result.json 损坏可见（A10）**：`get_task_status` 增加 `result_error` 字段——SUCCESS 但结果文件读不出不再静默 result:null。
+- **batch 单集退化分支形状补齐（A11）**：truncated/remaining/platform/kind 与多集分支同键——Agent 按多集形状取值不再 KeyError。
+- **preflight 可跳过 LLM 检查（A12）**：`need_provider=False` 时 material 流程不再被「无已填 key 的供应商」误导。
+- **快手零字节 mp3 不再当成功产物（B1）**：转前 unlink 残留 + exists 分支校验非零字节——ffmpeg 中断残留的 0 字节 mp3 不再命中缓存被当转写产物。
+- **checkpoint 写失败不炸主流程（B2）**：磁盘满/权限错误只 warning——LLM 成功输出不再被恢复辅助的写失败变成任务 FAILED。
+- **ytdlp_retry 补 DNS 关键词（B3）**：`urlopen error [Errno -2] Name or service not known` 类 DNS 瞬时故障现在会重试。
+- **抖音下载细节（B4/B5/B6）**：异常保留链（`from e`，消息不再是元组 repr）；音频下载改用注入 cookie 的实例 headers；duration 毫秒归一为秒（与 bilibili/youtube 口径一致）。
+- **快手下载细节（B7/B8/B9）**：title 清洗统一（换行/空格进 DB 与 prompt 的历史问题消除）；`_download_mp4` 响应 with 托管 + raise_for_status（每任务连接池不再泄漏）；`get_video_details` 非 200 不再静默返 None。
+- **bcut Etag None 守卫（B10）**：header 存在但值为 None 的异常网关响应不再 AttributeError。
+- **封面短 hash 防互踩（B11）**：`{base}_{sha256(input)[:8]}_cover.jpg`——不同目录同名视频不再互相覆盖封面、先前笔记的 file:// 引用不再静默指错。
+- **单帧超时不再毁整批（B12）**：`TimeoutExpired` 与 CalledProcessError 同处理——已抽出的几百帧不再因一帧超时全丢。
+- **笔记/缓存原子写（B13）**：note.py 9 处产物写点改 `write_json_atomic`/`write_text_atomic`（tmp+replace）——转写缓存截断不再引发下次任务重下+重转写、note.md 不再半残不可恢复。
+- **list_tasks 分页下推 SQL（B14）**：DAO 层 limit/offset（LIMIT/OFFSET）——长跑用户不再每次全表拉回 Python 切片。
+- **Cookie 并发写锁（B15）**：类级 RLock 保护读-改-写区间——两个并发 set 不同平台不再互相覆盖。
+- **第三方日志落盘（B16）**：文件 handler 挂 root（一次性）——httpx/yt-dlp 等依赖的 WARNING+ 进入 app.log，root level 保持 WARNING 防第三方 INFO 洪泛。
+- **whisper 误删模型收窄（B18）**：仅 cache 损坏类异常（LocalEntryNotFoundError/本地 OSError）purge；网络抖动/404 只告警重试一次——不再整目录 rmtree 丢掉可断点续传的半截下载。
+- **帧目录防互踩（B19）**：extract_frames 默认目录 `frames_{stem}_{uuid8}`——同名视频并发/重复处理不再互相覆盖帧文件。
+- **B17 弃用 API**：抖音 msToken 签名路径 datetime.utcnow → timezone-aware（3.12+ DeprecationWarning 消除）。
+
+## Wave F 批 12（2026-08-17 · 第 7 轮双代理扫描 #123，532 tests）
+
+- **cleanup_all 模型下载守卫（A1）**：`include_models=True` 且仍有模型后台下载时拒绝（dl_state.downloading_keys）；CLI 向导扫 models/ 下 `.incomplete` 残留（huggingface 下载中标记）兜底另一进程的下载——删 models/ 不再打断下载线程、health_check 不报「已下载」的残缺模型。
+- **步骤任务取消复查（A3）**：`_run_step_task` 在 step_fn 返回后复查 cancel_event——转写/抽帧跑完但取消信号已发时写 CANCELLED，不再与 cancel_note 返回的 CANCELLING 矛盾。
+- **便携笔记目录原子占用（B7）**：`mkdir(exist_ok=False)` 替换 `exists()` 预检——两个同 notes_dir+同标题的并发任务不再选同一目录互相 rmtree 对方 Assets/；冲突回退 `-{task_id[:6]}`、极端兜底再拼随机段。
+- **下载器注册表弱引用化（B5）**：`_created` 强引用 list 改 `weakref.WeakSet`——实例出作用域即 GC，`__del__` 的 SESSDATA cookie 清理真正触发（此前注释宣称能清、实际引用计数永不归零）；atexit 兜底对仍存活实例照常清理。
+- **update_provider 异常透传（B8）**：`except: print + return None` 改 logger.error + raise ValueError——DB 锁等真实原因不再被伪装成「供应商不存在」；CLI 向导/子命令捕获后如实报出。
+- **douyin %-格式化 bug（B10）**：`output_path % {...}` 改 `Path` 拼接——output_dir 含字面 `%`（如 `/tmp/100%off/`）不再 ValueError。
+- **kuaishou 悬空 video_path（B9）**：mp3 缓存命中但 mp4 缺失时补下视频——VideoReader 不再拿不存在路径炸「视频处理失败」。
+- **本地文件 sha256 缓存（B4）**：按 `(path, mtime_ns, size)` 缓存——同一任务 2-3 次身份解析共享一次哈希，文件修改自动失效。
+- **字幕 API 去重（B1）**：`_get_transcript(skip_subtitle=True)`——generate 主路径已试过字幕时不再让 pipeline 层重复调用无字幕视频的字幕接口。
+- **lookup_media 过滤 .tmp（B2）**：promote 原子替换之间进程被杀遗留的半成品不再被当音频复制给下游。
+- **whisper_models 原子写（B6）**：`_write_custom` 用 write_json_atomic（tmp+replace）——中断不再留下截断的 whisper_models.json。
+- **add_model 孤儿行（A7）**：先校验供应商存在——无 FK + SQLite 弱类型不再静默写入孤儿模型行。
+- **transcript 真实状态（A8）**：`get_task_transcript` 非法 segment_range 读 status.json 真实状态（抽 `_read_task_status`），SUCCESS 任务不再误报 UNKNOWN。
+- **CLI/MCP export 缺省统一（A6）**：CLI `export` 缺省格式从全三种收敛为 `["srt"]`（与 MCP export_transcript 同源）。
+- **_status_memory 上限（A9）**：写盘持续失败时快照只增不删——上限 512 按最旧淘汰。
+- **bcut Session 释放（B11）**：`close()` + `__del__` 兜底——每任务新实例的连接池不再泄漏到进程退出。
+- **文案修正（A4/A5/A10）**：summarize_note docstring 不再宣传 screenshot/link（无视频文件/video_id 无法执行）；cleanup_all/CLI/SKILL/docs 从「清空 logs/」改为「logs/ 不清」（fd inode 陷阱 + 非任务产物）；config.set_app_config 注释改为「锁只保证单进程内线程安全」。
+
+## Wave F 批 11（2026-08-17 · 第 6 轮双代理扫描 #122，500 tests）
+
+- **json 导出不再覆盖转写缓存（A2）**：自动导出/工具缺省 out_dir 指向 gen/ 时，json 导出写 `transcript.export.json`（此前写 `transcript.json` 与 note.py 转写缓存规范来源同路径，覆盖后丢 raw 等完整字段）——exporter 统一 `_FORMAT_FILENAME` 映射。
+- **json 导出保留 speaker（A2）**：`_seg_to_dict` 透传 speaker 字段（说话人分离结果进导出，会议纪要不丢信息）。
+- **分 P 缓存精确匹配（B2）**：`?p=2` 请求不再命中 `{BV}_p1.mp4`（跨 P 通配拿错集画面）——带 p 精确 `{BV}_p{p}.mp4`，无 p 匹配 `{BV}.mp4` 或 `{BV}_p1.mp4`。
+- **媒体缓存置 None 回归修复（B1）**：#119 的置 None 缺存在性检查——本地文件真实路径被吞（二次跑素材包 audio_path 恒空）；加 `is_file()` 存在才保留。
+- **导出落盘失败 ok:False（A1）**：工具层 `ok = not errors`——全部格式失败不再报 ok:True（Agent 误以为导出成功实际零文件）。
+- **inspect cookie 改 http_headers（B3）**：Netscape 临时文件绑死 `.example.com`、cookie 塞 generic 字段 yt-dlp 永不发送——改 `http_headers.Cookie` 直接注入，不再留临时文件。
+- **模型下载去重 TOCTOU（A7）**：`mark_downloading` 前移到 submit 前——连续两次提交第二次立刻命中「下载中」，不再各起一个 worker 重下。
+- **转写读取状态门禁（A3）**：`_load_task_transcript` 非 SUCCESS 返回 None——FAILED/运行中任务不再被误报成「成功拿转写」。
+- **summarize 标记残留（A5）**：剥离 screenshot/link format（无视频文件/video_id 无法后处理）+ `strip_media_markers` 兜底清洗 `*Screenshot-*`/`*Content-*` 字面标记。
+- **cancel 终态措辞区分（A8）**：FAILED →「任务已失败，无需取消」；CANCELLED →「任务已取消」——不再一律「任务已完成」误导 Agent。
+- **CLI 清理运行中守卫（A6）**：setup 向导清理路径读磁盘 status.json 判终态，运行中任务要求二次确认（交互式可强清，区别于 MCP 硬拒绝）；`_press_any_key` 捕获 OSError（非交互 stdin 不崩）。
+- **export 空列表契约（A4）**：`formats=[]` 显式零导出（不再被 `or ["srt"]` 重解释成默认 srt）。
+- **ytdlp_retry 死代码清理（B4）**：删不可达 `raise last_exc`；attempts<=0 显式 ValueError（此前 raise None）。
+- **尾部星号（B5）**：note_helper/screenshot_marker 正则消费闭合星号，`*Content-[04:16]*` 替换后不再残留尾部 `*`。
+
+## Wave E 批 10（2026-08-17 · 自主改进轮 #121，469 tests）
+
+- **batch 并发门禁旁路（C1）**：batch_generate_notes 文档承诺「排队等待」但 worker 毫秒级把任务置 running，第 4 条起逐条被门禁拒——thread-local 旁路（批量排队靠线程池承担，max_entries ≤ 50 封顶），批量结束复位。
+- **diarize_media 临时文件清理（C2）**：归一化 wav 写源文件旁，每次调用永久残留（小时级数百 MB）——`finally` 成功/异常都清。
+- **cleanup_all 不再清 logs/（C3）**：MCP 进程持有 mcp_stderr.log 打开 fd，unlink 后日志进入已删除 inode（文件消失、磁盘不回收、无报错）——logs/ 保留并记入 kept。
+- **cancel_note 竞态收窄（C5）**：运行中任务取消只发协作信号（CANCELLING，终态由 worker 在阶段边界写）——此前 cancel 直接写盘 CANCELLED 会把 worker 刚写的 SUCCESS 覆盖成「已取消」而 result.json 已有完整笔记；排队中仍收尾写 + pop registry。
+- **模型下载去重 + 大小写宽容（C10）**：download_transcriber_model 尺寸 strip+lower 后校验；is_downloading 命中返回「跳过重复提交」（此前排队重下 ~75MB-1.5GB）。
+- **短视频零帧兜底（B1）**：video_reader 组不满整批 continue——短视频只有一组残组产出 0 张网格图静默成功；残组在还没有任何网格图时按单组拼接。
+- **空转写按失败处理（B2）**：whisper 对静音/黑屏返回空——曾当成功缓存、任务 SUCCESS 后 LLM 拿空素材凭空生成笔记；直转/预处理两分支统一抛错。
+- **B 站 p 越界显式失败（B4）**：显式 p 越界静默回退 pages[0]（调用方以为拿到第 p 集内容实际是第 1 集）——改返回 None 走转写。
+- **分 P 缓存精确匹配（B5）**：`{BV}*.mp4` 前缀 glob 会把 BV12345_p1.mp4 命中给 BV1234 的查询——精确枚举 `{BV}.mp4` / `{BV}_pN.mp4`。
+- **字幕回退临时目录（B6）**：yt-dlp 字幕文件曾写数据根从不清理——调用方没给 output_dir 时落专属临时目录、finally 清理。
+- **groq/bcut 失败清理与检查（B7/B8）**：compress_audio ffmpeg 失败删临时 mp3（调用方拿不到路径无从删起）；bcut 上传业务 code≠0 显式 RuntimeError（此前 KeyError 裸崩）。
+- **youtube embed/{id} 匹配（B9）**：url_parser 正则补 embed 形态。
+- **收尾**：export_transcript 失败补 `ok:False`（C4）；inspect 失败归一批量形状（C6）；validate_url 死分支（C7）；终态弹内存快照（C9）；delete_model 只清「删的就是默认」的配置（C12）；update_provider 返回 changed（C13）；docstring 修正（C8/C11）；local cover makedirs（B3）。
+
+## Wave E 批 9（2026-08-17 · 自主改进轮 #120，438 tests）
+
+- **回归链修复（#120 R1）**：#119 把媒体缓存 miss 的 `audio.file_path` 置 None 后，缓存加载分支的 falsy 检查把 None 当「缓存有效」直接返回 → 切换转写引擎后重跑同视频 `Path(None)` 抛误导性 TypeError；改 `file_path is None or not is_file()` 视为失效重新下载。
+- **screenshot/format 双向闭合（G1/G1b）**：布尔开关（screenshot/link）从不下发到 format 列表——screenshot=True 时视频白下载但 prompt 无标记指令 → LLM 不输出 `*Screenshot-[mm:ss]`、笔记无图；反向 format=["screenshot"] 但布尔 False 时有字幕就不下载视频 → 标记残留。server 层布尔并入 `_format`（去重）+ note 层 `_format` 回并布尔（`_download_media.need_video` 只认布尔）+ `need_full_download` 含 format 检查——两个方向都闭合。
+- **chunker 评论预算只计首 chunk（G2）**：summarize 只把 comments_danmaku 注入首 chunk，但估算每个 chunk 都计评论 → 评论大时 chunk 数成倍膨胀、极端抛误导性「single segment too large to fit request」；估算与注入同语义。
+- **quota 判定先于 429 重试 + merge 取消检查 + 降级走 logger**：`_is_retryable_error` 先识别配额耗尽（insufficient_user_quota / quota exceeded / 预扣费额度失败）再判 429——此前命中 429 判定可重试，白等 backoff + 白烧尝试；`_merge_partials` 组循环前检查取消（cancel 后仍在烧配额）；temperature 降级提示 print → logger（stdio 模式 stdout 被吞）。
+- **CLI 向导加固（C1-C5/S4）**：wizard add 重名 ValueError 就地消化不崩；`_edit_provider` 更新失败如实报（此前失败也打印「已更新」）；`resolve_int_config` 上移 config.py，CLI 6 处裸 `int()` 接入（垃圾值不再进向导循环就崩）；`export` 未知格式入口拒绝 + 转写源与 server 同源（gen/transcript.json 优先、损坏回退 result.json、损坏分开报）；`login` 失败路径 `exit_on_fail=False` 供向导（失败不再带崩整个向导）；纯文本兜底选默认模型回车=保持（此前被当「清除」，管道/EOF 误删已设默认）。
+- **死代码清理**：`app/services/task_serial_executor.py` 全仓零引用整文件删除（VENDOR.md 冻结清单同步）；`universal_gpt` 死属性 `self.screenshot/link`、`_chat_completion_create` 不可达 raise 与 `last_exc`。
+- **修复期间发现的历史破坏**：claude 脚本编辑事故在 cli.py 留下 6 处 sys.exit 缩进错位（providers test/set、transcriber set/download 的 exit 被提出块外 → 成功路径也退出、login 成功块悬挂、export result.json 回退分支永远走不到）——全部恢复原始缩进 + 新增契约测试钉住。
+- 新测试 tests/test_gpt_resilience.py（quota 不重试/429 仍重试/单次尝试、merge 取消、temperature 降级）+28。**438 passed + ruff F-clean**。
+
+## Wave D 批 1-5（2026-08-17 · 52 项全部落地，198 tests）
+
+- **批 1 安全（c5c65d2）**：print 全清（抖音/快手/helper/groq/video_helper——含 Cookie 打印）；tiktok 平台映射→generic；requests 全带 timeout；下载器惰性工厂 `get_downloader()` 每次新建实例 + atexit 兜底清理 cookie 文件（模块级单例 `__del__` 永不触发）；bilibili SRT 解析 CRLF 归一化。
+- **批 2 发布（6c3ffa1）**：Dockerfile 删失效 `COPY events/`；pyproject 去掉 `events/**`；`fastmcp>=3,<4` pin；release.yml 加 test gate（ruff + pytest）、三处版本核对、`uv build --no-sources` + wheel 内容验证。
+- **批 3 状态机（5a9755b）**：default_model 分支检查 key；cancel_note 竞态（`_status_is_terminal` 已终态不覆盖 SUCCESS）；result.json 原子写（tmp+replace）；`_parse_segment_range` 抛 ValueError→UNKNOWN；preflight 队列满提示；`_write_app_config` 加锁原子写。
+- **批 4 可靠性（9ed1b47）**：ffmpeg 全带 timeout=120/600 + 失败反馈（generate_screenshot unlink 半成品）；note_cache 媒体 100MB 上限；缓存键 Windows 安全（`_fs_safe` 冒号→连字符）；时间戳正则 `\d+`；local cover 默认数据目录、douyin stream 分块下载 + aweme_id 校验、generic 下载后 exists 校验；ytdlp_retry 补 2 处（inspect/url 探测）。
+- **批 5 分发/门禁/卫生（aaee3a8）**：install.sh 回退修复（marketplace 成功清用户级 mcp add、插件已装跳过 add、步骤 1/3）；plugin.json userConfig 补满 12 个 env；conftest 按 pid 隔离测试目录；CI Python 3.11/3.12/3.13 矩阵 + ruff/pytest 进 `[dependency-groups] dev`（版本随 lock 固定）+ tools/list 断言工具数；CLI export task_id 正则校验、登录失败只打印域名（不泄 crossDomain URL）；server 细节（_MAX_WORKERS 容错、is_file、model_size 校验、extract_frames 收敛 `_submit_step_task`、参数下限钳制）；universal_gpt content None 防护；openai_client http_client weakref.finalize 释放；transcriber rebuild 防御性 close 旧实例。
+
+## 大型改动 6a-6i（2026-08-17 · 9 项全部落地）
+
+- **6a 引擎与默认模型（8b78f65）**：whisper 默认 tiny→small；HF_HUB_DOWNLOAD_TIMEOUT 10→60；health_check 模型行区分 downloaded/downloading/failed(+error)/missing；新增 engine_advice（fast-whisper 配 tiny/base 时建议升级）。#39 语言自动选引擎评估后不做自动切换（需先跑推理才知语言、funasr 非默认安装），改显式建议。
+- **6b 视频理解成本（3147ed3）**：`effective_frame_interval` 帧组封顶（≤24 组 3×3 网格，超限自适应拉大间隔不截尾）；截图/视频理解模式视频已下载后从本地提取音频，免第二次网络下载。
+- **6c token 级切块（5e620d7）**：RequestChunker 双约束（字节 + token，汉字≈1 token 保守估计）；`OPENAI_MAX_TOKENS_PER_CHUNK` 默认 12000；merge 分组同步；source_signature 含切块策略（旧 checkpoint 不复用）。
+- **6d 说话人分离进主路径（5ade3ed）**：`pipeline.apply_diarization` 转写完成后自动打 speaker（预处理/非预处理两路径，generate_note 与 transcribe_media/prepare_note_material 全部生效）；失败只 warning 不阻断；prompt 在 2+ 说话人时渲染 `[SPEAKER_00]` 前缀（会议纪要风格真正吃到 speaker）。
+- **6e 播放列表批量（35f900e）**：新工具 `batch_generate_notes`（服务端 inspect 展开 + 逐个排队、max_entries 默认 10、单条失败收集继续）；工具数 37→38。
+- **6f 工具面收敛（fa2c89c）**：MCP Resource `videonote://task/{task_id}/transcript`（时间轴纯文本含 speaker）；`_load_task_transcript` 公共函数。
+- **6g 敏感信息加密（ce51514）**：新 `videonote_mcp/crypto.py`（Fernet 机器级密钥 `config/fernet.key` 0600、`enc:` 前缀、明文兼容迁移、key 丢失回退 None 不抛）；providers.api_key 与 app_config.hf_token 落盘加密；Claude builtin base_url `https://`→`https://api.anthropic.com/v1/`；`providers add --api-key` 改可选 + getpass 交互；export/merge 数据目录外输出 warning；VENDOR.md 标注 abogus.py GPL-3.0 来源。依赖新增 `cryptography>=42`。
+- **6h vendor 边界（864fe9c）**：docs/02 同步纪律（冻结清单引用、惰性 import 约定）；docs/04 修正「所有方式共用同一数据目录」错误说法。
+- **6i 插件更新路径（5745a84）**：plugin.json 加 version（版本维护点 3 处）；health_check 返回 plugin_version + 落后时 skill_refresh 点名提示；release 四处版本核对（pyproject/__init__/plugin.json/tag）。
+
+## Wave E（2026-08-17 · E2 + E1 落地，216 tests）
+
+- **E2 大纲传递（af4a198）**：多 chunk 笔记标题漂移根治——新增 `extract_outline`（从已生成 partials 提取 `#`~`####` 标题、清理 markdown 记号与 `*Content-[mm:ss]` 后缀、去重、上限 15 条/40 字）；summarize 循环给每个后续 chunk 的 prompt 注入「已生成的章节大纲」块（含 checkpoint 恢复的 partials，首个 chunk 不注入）；`generate_base_prompt` 新增 outline 参数；MERGE_PROMPT 加强（同义章节合并保留最早标题、分散内容按时间归并）。切块估算不含大纲（留 ~5% 余量）。新测试 tests/test_outline.py 11 项。
+- **E1 可观测性收口（1ced97a）**：stderr 日志超限轮转（`VIDEONOTE_STDERR_LOG_MAX_MB` 默认 50MB → `.log.1`，防长跑体积失控）；`_open_stderr_log` 打开失败不再静默（原因打到原始 stderr）；atexit 退出摘要记录进行中/排队任务数（排查孤儿 ffmpeg/whisper 子进程）。新测试 tests/test_stderr_log.py 7 项。
+- 文档：docs/06 新增 Wave E 章节；docs/05 #39/#44 标注更新。
+
+## Wave E 批 8（2026-08-17 · 自主改进轮 #119，410 tests）
+
+- **素材包 audio_path 悬空 + 分块连词 + 死代码（#119）**：① **P2** skip_download 字幕路径的 `audio.file_path` 是下载器拼出来的假路径（文件不存在，yt-dlp 只取 metadata）——跨任务媒体缓存 miss 是常态（字幕路径从不写媒体缓存），此前假路径原样透传素材包 → `audio_path` 指向不存在的文件，Agent Read 失败；改 miss 时置 None + info 留痕（诚实契约：无真实媒体不谎报路径；`promote_media` 对 None 安全跳过、audio.json 落盘 None 下次缓存加载一致）。② **P3** `_transcribe_with_preprocess` 的 `full_text = "".join(...)` 无分隔拼接——英文 chunk 边界连词（"hello"+"hello" → "hellohello"），改空格连接。③ **P3** `universal_gpt._is_insufficient_quota_error` 全仓零引用死代码删除。+2 测试。**410 passed + ruff F-clean**。
+
+## Wave E 批 7（2026-08-17 · 自主改进轮 #90-#118，408 tests）
+
+- **转写失败不静默 + 状态写保护（#118）**：第三轮并行扫描（transcriber 失败形状 + note.py 状态机）→ ① **P0** 预处理分块转写失败只 warning 跳过——全块失败静默返回空转写，上层当成功缓存、任务 SUCCESS 产空笔记；全失败改 raise（任务显式 FAILED，消息带块数与首个错误），部分失败汇总 warning + 返回 dict 附 `truncated` 标记（Agent 可见转写不完整）。② **P0 收敛** `_write_status` 写盘无保护——磁盘满/只读时裸抛进后台线程被吞、FAILED 重写循环同样失败，任务与状态机失联；加保护（写失败 logger.error 不裸抛）+ `_status_memory` 内存快照，`get_task_status` 读盘损坏时回退快照（「状态文件读取失败」误报 PENDING 消除）。③ **P1** `_write_status` 每次重打 started_at——PENDING→INITIALIZING→…→SUCCESS 全由本函数写，成功任务终态 `elapsed_secs≈0`；改保留旧值（首次提交起算）。④ **P1** funasr 空结果显式成功分支无留痕——warning（静音合法，引擎异常可排查）。⑤ **P2** `probe_duration` ffprobe 失败静默返回 0（未知时长被当「不长」跳过超长分块）→ warning；`_index_step_task` 无日志 pass → warning。+6 测试。**408 passed + ruff F-clean**。
+
+## Wave E 批 6（2026-08-17 · 自主改进轮 #90-#117，402 tests）
+
+- **format 字符串/混型校验（#117）**：`_check_style_and_format` 的 `set(formats)` 把字符串 `"toc"` 拆成字符集报「收到: ['c','o','t']」——合法格式被说成非法；int/str 混排（`[1, "toc"]`）还让 `sorted()` 裸 TypeError。入口显式要求字符串列表（与 export_transcript #104 口径一致），未知元素字符串化后报出。接入 generate_note / summarize_note（batch 委托 generate_note 自动受益）。+3 契约测试。**402 passed + ruff F-clean**。
+
+## Wave E 批 5（2026-08-17 · 自主改进轮 #90-#116，399 tests）
+
+- **下载器健壮性（f5bdc8b，#90）**：#36 剩余 4 子项——kuaishou 失败点抛明确 RuntimeError（原 TypeError/AttributeError/IndexError 三连）；Bcut 轮询指数退避 `min(1<<i, 5)` + 5 处 HTTP 补 timeout；generic cookie 从「写死 example.com 的 Netscape 文件（永不生效）」改 `http_headers` 直接注入；audio.json 实体悬空视为缓存失效重新下载。tests/test_downloader_robustness.py 16 项。
+- **DB 路径修复（5ba8497，#91）**：`app/db/engine.py` 默认 `sqlite:///video_note.db` 是相对 CWD 路径——裸脚本/单文件测试在仓库根分裂出 DB（根目录残留垃圾的真实根因）；改 `get_data_dir()` 稳定路径；`cache_data` 弃用 vendored 旧 `DATA_DIR` env。
+- **下载器集成测试（364e7ad，#92）**：真实下载器类 + mock yt-dlp 的全流程 15 项（字段契约/quality 映射/skip_download/多 P glob 缓存/ytdlp_retry 语义）；顺带修 `download_video` 提取失败 `None.mp4` 误导报错（改 ValueError）与 douyin tuple 错误形状。
+- **插件 userConfig 对齐（05cb87a + 2c1ad9f，#93/#94）**：全仓 15 个 `VIDEONOTE_*` env 与 plugin.json 对齐（补 max_workers/stderr_log_max_mb，内部路径 3 个刻意不暴露）；`batch_generate_notes` 透传 generate_note 全部高级参数（link/视频理解/弹幕/notes_dir）；`_USER_CONFIG_MAPPED_ENV` 同步（CI 门禁拦截）。
+- **死代码清理（#95）**：`app/gpt/` 删 5 个全仓零引用模块（openai_gpt / deepseek_gpt / qwen_gpt / utils / tools——gpt_factory 走 `OpenAICompatibleProvider` 直连，上游直连类死代码）；VENDOR.md 分叉清单同步；AST 全仓死模块普查确认无其余残留。**268 passed + ruff F-clean（Wave C 13 收口）**。
+- **CLI 契约测试 + update_provider 假成功修复（#96）**：`ProviderService.update_provider` 对不存在供应商返回恒真 dict——CLI `providers set` 与 MCP `update_provider` 的「不存在」判空永不生效（不存在的 id 被报成「已更新」）；改 `updated_provider is None` 时返回 None。新 tests/test_cli.py 18 项（CLI 此前零测试覆盖：providers 加密落盘 enc:/掩码/交互取 key/错误路径、transcriber 配置闭环、export 渲染 transcript.srt、subprocess seed 验证）；另清 2 处旧 worktree 路径 docstring。**286 passed + ruff F-clean**。
+- **style/format 白名单 enum 化（#97）**：4 个工具（generate_note/prepare_note_material/summarize_note/batch_generate_notes）签名 `Literal` 化——schema 呈现 enum（Agent 可见合法值）；`_check_style_and_format` 入口显式校验兜底（FastMCP 不做运行时参数校验，直接调用传非法 style 曾静默降级成「无风格笔记」）；校验在 provider 解析前（H6：不需要 provider 的错误先报）。+7 契约测试。**293 passed + ruff F-clean + 39 工具**。
+- **fetch_comments limit 钳制（#98）**：`limit<=0` 令 fetcher 的 `len(seen) >= limit` 恒真——第一页即停止，**静默返回空评论**（ok:true 无数据，Agent 误判视频无评论）；入口钳制 `max(1, int(limit))`。+3 契约测试。**296 passed + ruff F-clean**。
+- **notes_dir 数据目录外提示（#99）**：export/merge 的「只提示不拦截」warning（#45 口径）唯一漏网的是 notes_dir——便携笔记写任意绝对路径静默无声；generate_note 解析完缺省链（参数 → app_config → VIDEONOTE_NOTES_DIR）后统一校验，数据目录外打 warning（便携笔记是显式用户意图，不拦截；batch_generate_notes 委托 generate_note 自动继承）。+3 契约测试。**299 passed + ruff F-clean**。
+- **grid_size 入口显式校验（#100）**：extract_frames 工具校验 grid_size，但 generate_note / prepare_note_material 直传——非法值（[0,0] / [1] / [1,2,3]）在流水线深处 VideoReader 才炸成「视频处理失败」泛化错误；校验提取为共享助手 `_check_grid_size`（与 style/format 同口径：None/空不拦、入口显式报错），接入 generate_note / prepare_note_material / extract_frames 三处；顺带清 note.py 2 处裸 `except:`。+7 契约测试。**306 passed + ruff F-clean**。
+- **num_speakers 无效值显式提示（#101）**：`diarize_audio` 的 `kwargs = {"num_speakers": n} if n else {}`——0 / 负值 / 非 int 静默回退自动检测（用户显式传了无效值却无声无息）；入口校验打 warning 后回退，合法值照常透传。+4 单元测试。**310 passed + ruff F-clean**。
+- **list_tasks 分页（#102）**：无上限返回全量（每行含 200 字 summary，长跑用户任务上百条时响应膨胀）；加可选 `limit` / `offset`（缺省全量，向后兼容；limit 钳制 ≥1，offset 钳制 ≥0）；skills tools.md 同步新签名。+4 契约测试。**314 passed + ruff F-clean**。
+- **set_transcriber 引擎白名单（#103）**：未知 `transcriber_type` 被持久化后，运行时 `get_transcriber` 的 `TranscriberType(...)` 解析失败**静默回退 fast-whisper**——用户以为配了 groq/bcut 云端引擎，实际在跑本地 whisper；入口白名单校验（与 style/format 同口径；CLI 侧 argparse choices 本就安全），白名单与 TranscriberType 枚举同源防漂移。+3 契约测试。**317 passed + ruff F-clean**。
+- **静默错误族收尾（#104）**：① summarize_note 的 transcript 形状——垃圾/空 dict/传 fetch 结果外层 `{"ok": ...}` 曾静默规整成空素材，LLM 拿零转写**凭空生成笔记**（幻觉内容还烧配额）；入口显式报错（provider 解析前，H6；只查字段存在不查内容——静音视频的 `segments: []` 是合法转写不拦）。② extract_frames 的 video_interval 非数值——`int("abc")` 失败静默回退默认 6（用户设了间隔却无声生效默认值）；与 num_speakers 同口径打 warning 后回退，数字字符串照常透传。③ export_transcript 未知格式——底层 exporter 只写 stderr 警告后静默跳过，Agent 请求 `["srt","pdf"]` 拿到 `ok:true` 实际缺 pdf；入口白名单校验（srt/vtt/json，与 exporter FORMATS 同源），config/env 缺省链解析后同样校验。+14 契约测试。**331 passed + ruff F-clean**。
+- **误导错误收口（#105）**：① fetch_subtitles 的 platform 拼错（"bilibil"）——`pipeline.fetch_subtitles` 把 `get_downloader` 的 ValueError 吞掉转 None，工具误报「该视频没有可用平台字幕」（其余平台参数工具的平台错误都显式 FAILED，唯独此处静默转换）；入口白名单校验（与 SUPPORT_PLATFORM_MAP 同源防漂移），空串曾因 falsy 静默走自动检测一并显式报错。② merge_audio 不认 `file://`——全工具面唯一漏网（%20 未 unquote、`Path("file:///...")` 判不存在），入口统一 `_coerce_local_path` 规整。③ diarize_media 目录输入——`.exists()` 对目录为 True 穿透到 ffmpeg 深处炸「转换失败」，改 `.is_file()` 与其余本地文件工具同口径。+9 契约测试。**340 passed + ruff F-clean**。
+- **app 层静默降级加固（#106）**：4 并行代理对 `app/` 全 8 目录二轮扫描（第一轮 E3 清 4 P0，本轮无 P1）→ 7 项：① 三个配置管理器（cookie/transcriber/proxy）损坏 JSON 静默当空——引擎悄悄回退 fast-whisper、cookie 悄悄消失，最重的是 `cookie_manager.set()` 读损坏文件写回会把**其它平台 cookie 永久抹掉**（数据丢失）；新增 `app/utils/json_store.py`（损坏 → warning + `.corrupt` 备份 + 空配置；`write_json_atomic` tmp+replace+0600）全部接入。② `check_whisper_model_exists` 模型名解析失败谎报「未下载」→ 区分 ValueError + warning。③ `chunk_duration_guess` probe 失败无日志回退 1800s → 分段时间轴漂移数十秒任务照常 SUCCESS，warning 留痕。④ note.py 全局索引同步失败 debug→warning（list_tasks 静默缺任务）。⑤ started_at 读取 `except:pass`→warning。⑥ universal_gpt checkpoint 损坏静默弃用白烧 LLM 配额 → warning。⑦ inspect 播放列表非 http 条目以成功形状返回 → 跳过 + warning，全坏显式错误。VENDOR.md 冻结清单同步。+17 测试（test_json_store.py 10 + test_app_silent_fallbacks.py 7）。**357 passed + ruff F-clean**。
+- 文档：docs/05 第三轮 #90-#94、docs/06、CHANGELOG；skills tools.md 同步 batch 新签名；docs/05 Wave B 第 6 条过时 ⏸ 标记修正（Resource 6f 已落地）。
+- **输出目录 file:// 规整 + 导出格式垃圾配置（#107）**：① 三处输出目录参数（`generate_note(notes_dir)` / `export_transcript(out_dir)` / `merge_audio(out_dir)`）统一 `_coerce_local_path` 规整——`file:///…` URI 直传曾 `Path("file:///…")` 在 CWD 下建字面 `file:` 垃圾目录，「数据目录外」提示也基于未规整值恒误报；batch 委托 generate_note 自动继承。② `app_config.default_export_formats` 非列表垃圾值（如字符串）令缺省链 `or` 短路——工具入口炸「必须是列表」、自动导出静默失败、env 回退永不生效；抽 `_resolve_default_export_formats()`（非列表 → warning + 回退 env）接入工具与 `_auto_export_transcript`。docstring 与 tools.md 标注输出目录支持 file://。+7 契约测试（OutputDirFileUriTest + DefaultExportFormatsJunkTest）。**364 passed + ruff F-clean**。
+- **set_transcriber 尺寸入口校验（#108）**：#103 收口——引擎类型已白名单但 `whisper_model_size` 没有：`set_transcriber("fast-whisper", whisper_model_size="bogus")` 成功返回后配置落盘，任务跑到 TRANSCRIBING 才因模型加载失败（#106 之后 preflight 也只报「未下载」）。改用运行时同源的 `resolve_whisper_model`（whisper_models 注册表：内置档位 / 自定义名 / 含 `/` 的 HF repo_id / 已存在本地目录）入口校验，未知尺寸立即报错；CLI `transcriber set --size`（自由串，download 才有 choices）同口径拒绝。+7 测试（SetTranscriberSizeValidationTest 5 项 + CLI 2 项，含 repo_id/本地目录直通不被误伤）。**371 passed + ruff F-clean**。
+- **merge 目录穿透 + batch 单集退化（#109）**：① `merge_audio` 目录输入——merge.py 的 `os.path.exists` 对目录为 True，穿透到 ffmpeg 深处才炸「转换失败」泛化错误（真因是「是目录不是文件」）；入口 `is_file`（与 diarize_media 同口径）返回「文件不存在或不是文件」，file:// 规整（#107）与 is_file 叠加生效。② `batch_generate_notes` 单集退化路径（`kind=="single"`）`_submit` raise 裸传中断调用——多条目循环有「单条失败收集继续」契约、单集没有；收进 errors 返回与多条目同形状（`ok:false, submitted:0`）。+5 契约测试。**376 passed + ruff F-clean**。
+- **SKILL/文档与 batch 工具面对齐（#110）**：6e 落地 `batch_generate_notes`（服务端展开+排队）后 SKILL 仍是 subagent 时代的编排——`SKILL.md` 规则 2 / 默认路径步骤 4 / 工作流 3 处、`troubleshooting.md` 并发段 2 处、`docs/04` 1 处统一改为「合集/分P/播放列表 → 一条 batch（服务端排队）；互相独立的多个链接 → 各一个 subagent」。纯文档批次。**376 passed + ruff F-clean**。
+- **cleanup 运行中任务防护（#111）**：`cleanup_note` / `cleanup_all` 对 `_task_futures` 中未完成的进行中/排队任务拒绝清理——直接删会破坏下载器/转写器正在写的 `raw/` / `gen/` 缓存，任务中途 `FileNotFoundError` 失败（被 FAILED 吞成误导错误）或状态文件在删除后被重建出幽灵任务；此前唯一防线是「cancel 再清理」靠 agent 自觉。`cleanup_note` 返回 `{ok:false, error: "先 cancel_note 或等终态"}`，`cleanup_all` 返回 `{ok:false, running, running_task_ids}`（agent 可按 ids 逐个取消）；判定用本进程 `_task_futures`（server 重启后自然放行，崩溃残留的 status.json 不误锁）。CLI 向导不动（交互式已有 `[status]` 展示 + 双重 confirm，且独立进程看不到 MCP 注册表）。+4 契约测试（CleanupRunningTaskGuardTest）。**380 passed + ruff F-clean**。
+- **cleanup_note 便携笔记副本孤儿化修复（#112）**：`cleanup_task_files(include_note=True)` 此前只删 `task_dir`——便携笔记副本（`<notes_dir>/<标题>/note.md`，用户指定 `notes_dir` 时常在数据目录外）不在删除范围：数据目录内的副本漏删（`notes_dir` 指向数据目录子目录时），数据目录外的副本随 manifest 删除而永久失联（list_tasks / get_task_files 全查不到，磁盘残留含笔记+Assets 的目录），docstring 却声称「连最终笔记一起删」。修复：目录内副本（manifest 记录 + 沙箱校验通过）随 include_note=True 一起删；目录外副本沙箱红线不删，但经新增返回字段 `notes_kept_outside` 列出（Agent 可转告用户路径，不再静默孤儿）；CLI 向导清理后黄字报告；server docstring 与 tools.md 同步。+2 测试。**382 passed + ruff F-clean**。
+- **LLM/转写调用超时收敛（#113）**：`build_openai_client` timeout 缺省 None → openai SDK 默认 600s（代理路径另写 600s）——上游 LLM API 挂死时任务卡 SUMMARIZING 10 分钟才超时，universal_gpt 再 ×3 重试（最坏 ~30 分钟/chunk），worker 槽占死、并发门禁拒掉所有新提交、cancel 无法在 chunk 边界生效；全项目外部调用都有超时（#58 ffmpeg 家族），唯独 LLM 调用是裸 SDK 默认。修复：构造点单点收敛 `DEFAULT_TIMEOUT = httpx.Timeout(300.0, connect=10.0)`（连接 10s 快速失败 + 读写 300s 兜底死读），LLM 主路径（gpt_factory → OpenAICompatibleProvider）与 groq 转写两个未传 timeout 的调用点同时受益，代理路径 httpx.Client 与客户端超时同源（删另写 600s 旧分支），显式传参（连通性测试 15s）不受影响。+4 测试（tests/test_openai_client.py）。**386 passed + ruff F-clean**。
+- **app_config 整数配置缺省链加固（#116）**：video_interval / comments_limit 的 `get(...) or env_int(...)` truthy 短路——垃圾值（手动编辑 app_config.json 写入 `"abc"`）让 `int()` 在工具入口裸 ValueError 遮蔽 env 回退（#107 default_export_formats 同族）；`0`（显式关闭视频理解）被当 falsy 吞掉、app_config 优先级倒挂给 env。抽 `_resolve_int_config`（is not None + 防御性 int()，垃圾值 warning 后回退）接入 generate_note / prepare_note_material 4 处。+6 契约测试。**399 passed + ruff F-clean**。
+- **preflight 队列检查与门禁同源（#115）**：`preflight` 的 queue 检查用 `len(_task_futures)`（含排队）且详情写「N/3 进行中」——`_guard_concurrency`（F7）只统计 running()、排队不占名额（batch 语义）；提交 10 集 batch 后（3 运行+7 排队）再对新视频 preflight 会误报「已满，请等任务完成」，门禁实际放行。修复：与门禁同源只统计 running()，详情「N/M 运行中（另 K 排队）」，运行中占满 `_MAX_WORKERS` 才拦。+2 契约测试。**393 passed + ruff F-clean**。
+- **「无转写」文案误报修复（#114）**：三个读转写入口（`get_task_transcript` / MCP Resource `transcript_resource` / `export_transcript`）拿不到转写时一律笼统报「尚未成功或已清理 / 任务可能未成功」——任务还在 DOWNLOADING/TRANSCRIBING 时 Agent 据此向用户误报「任务失败了」。新增共享原因函数 `_transcript_unavailable_reason`（读 status.json 区分：运行中→「仍在运行（{status}）：先 get_task_status 等终态」；FAILED/CANCELLED→「未成功」；成功无转写→如实说；状态不可读→「可能已清理」）接入三处，`get_task_transcript` 结构化 status 字段保留。+5 契约测试（TranscriptUnavailableReasonTest）。**391 passed + ruff F-clean**。
+
+## Wave E 批 3（2026-08-17 · 契约收尾 + 截图路径闭环，236 tests）
+
+- **G2 收尾（06f011c）**：video_tasks 表 note 任务列 `note_dir` 改指 `gen/`（与 get_task_status 的 result.note_dir 一致），list_tasks 与 get_task_status 口径统一；NoteDirContractTest 2 项。
+- **extract_frames 参数校验（1d5088b）**：interval 钳制 ≥1（非法值回退 6）；grid_size 必须两个正整数；3 项契约测试。
+- **G5 退出取消 + YouTube cookie（90a6011）**：_exit_summary set 全部任务 cancel_event（提前终止 ffmpeg/whisper 子进程残留窗口，摘要注明已发送取消）；youtube_downloader 读 setup ③ 填的 youtube cookie → Netscape 临时文件（.youtube.com 域名、0600、__del__ 清理）→ `ydl_opts["cookiefile"]`（download / download_video 两路径）。
+- **Assets/ absolutize 修复闭环（781e991）**：H4 修的 `_absolutize_images` 只匹配 `static/screenshots/` 旧全局模式，数据层重构后截图走 `gen/Assets/` + `Assets/xxx.jpg` 相对引用——旧正则不命中，Agent 拿到死路径。加 `base_dir` 参数 + 第二正则（resolve + 目录内校验防穿越），get_task_status 传 `base_dir=result.note_dir`；旧路径保留兼容旧任务；+3 测试。
+- 文档：docs/04 get_task_status 补 G3 例外（素材包/transcribe 任务转写是主产物默认返回，仅 note 任务剥）；docs/05 登记 #89；docs/06 Wave E 追加。
+
+## Wave E 批 2（2026-08-17 · E3 扫描 + F1-F9/G1-G4/H 组，225 tests）
+
+- **E3 扫描**：4 并行代理对 Wave D/E 引入代码 + 全仓一致性做第三轮审计，4 个 P0 全部当场修复：
+  - **P0 get_task_status 装饰器丢失**：`3c0c9a67` 重构随 `_stage_label` 抽取误删 `@mcp.tool()`，工具 38→37 却随 v0.1.5 发布；CI 数量断言被 batch_generate_notes 补足未红。已恢复，CI 升级精确 39 名单。
+  - **P0 图片 token 估算回归**（6c 引入）：base64 图片按字符计数（一张 ≈ 数十万 token）致 video_understanding 静默失效。改结构感知 `_count_tokens`，`image_url.url` 按 1105 token/图固定估算。
+  - **P0 merge 永不收敛**：合并轮次复用 `max_tokens_per_chunk`，partials 超限时无限递归。改 merge_chunker `max_tokens=None` + 分组不减少即 raise 明确错误。
+  - **P0 wheel 缺 skills/**：release.yml 门禁断言 wheel 含 skills 但 include 没写 → 发布必失败。已加 `"skills/**"` 并重建验证。
+- **F4-F9/G1-G4**：CLI key 交互输入（getpass）；provider_dao 解密 None 跳过写入；并发门禁 `not f.done()`→`f.running()`（排队不占名额，batch 语义成立）+ 新增排队放行契约测试；Fernet key O_EXCL 独占创建并发安全；退出摘要写 `sys.__stderr__`（修 atexit 时 logging handler 已关的 I/O error）；conftest 隔离数据目录。
+- **G2 note_dir 契约**：`note_dir` 改指 `gen/`（note.md 真实所在），指定 `notes_dir` 时从 manifest 定位便携副本补 `portable_note_dir`。
+- **G3 素材包转写保留**：transcribe_media / prepare_note_material 的转写是主产物，`get_task_status` 默认不再剥离（仅 note 任务剥；`raw` 恒剥）。
+- **H 组 8 项**：docstring 死代码、`_local_video_exists` 空串/目录误判、started_at 损坏保护、**_absolutize_images 存量 no-op bug**（`m.group(2)` 越界致截图 absolutize 从未生效，新测试暴露）+ 路径穿越防护、stderr env 非法值回退、handoff 前置、install.sh `--no-dev`、`_stage_label` 文档。
+- 文档：docs/02/03/00 工具数 39；docs/02/04 Fernet 加密说明 + env 表补 `VIDEONOTE_STDERR_LOG_MAX_MB` + funasr 引擎；docs/04 + skills 平台数口径统一 6；README wait_for_note 废弃标注；skills tools.md/output-formats.md note_dir 与素材包契约；docs/05 第三轮 #77-#85；docs/06 Wave E 更新。
+
+## 第二轮全库扫描（2026-08-17 · 4 个并行审计代理）
+
+- 工具层 / vendored 流水线 / 下载器 / 分发·文档·测试·CI 四路并行扫描，**无新增 P0**。
+- 新增 #46-#76 共 31 条发现：P1 7 条（Cookie print 泄漏、tiktok 平台映射错误、requests 无 timeout、下载器 `__del__` 永不触发致 #10 修复未生效、Dockerfile 构建失败、release 无测试门禁、默认供应商不查 key）；P2 16 条（cancel_note 竞态、result.json 非原子写、ffmpeg 无 timeout、note_cache 媒体无上限/Windows 键、插件 userConfig 只覆盖 7/12 等）；P3 8 条（文档代差、CI 一致性无门禁等）。
+- 关键结论已代码级核实（default_model 分支、cancel 竞态、preflight 队列、tiktok 映射、模块级单例、Dockerfile COPY、时间戳正则、缓存键冒号）。
+- docs/05 追加「第二轮全库扫描」章节 + Wave D 建议落地顺序。
+
+## 小项批（2026-08-17 · 7 项全部落地）
+
+- **下载质量可配置 + yt-dlp 重试**：base.py 写死的 `self.quality` 删除；bilibili postprocessor 按 `quality` 映射码率（fast=32 / medium=64 / slow=128）；新增 `app/downloaders/common.py` 的 `ytdlp_retry`（仅重试网络类错误、指数退避 1.5s×2^i、3 次，业务错误立即抛），6 处 `extract_info` 接入。youtube/generic 保持 `bestaudio` 不转码（转码反而降质）。
+- **`.env` 隔离**：6 处 vendored `load_dotenv()` 加守卫（`VIDEONOTE_DATA_DIR` 已设置则不加载），MCP/CLI 启动不再被 CWD `.env` 覆盖。
+- **仓库垃圾清理**：删除 `API_BASE_URL` / `BACKEND_PORT` / `BACKEND_BASE_URL` 残留（note.py / config.py / video_helper.py）；截图封面返回 `file://` 绝对路径（不再伪造后端 URL）；顶层 `events/` 迁入 `app/events/`；删除根目录泄漏的旧 `video_note.db`。
+- **小宇宙死代码删除**：`xiaoyuzhoufm_download.py` stub + 测试删除（从未接入，yt-dlp generic 已覆盖）。
+- **错误形状统一**：`fetch_subtitles` 成功返回 `{ok: true, ...}`。
+- **progress 判定**：FastMCP 3.4.5 stdio 下后台线程无 session 可用，推式通知架构不可行；`stage`/`elapsed_secs`（Wave B 已交付）为替代。结论记录在 docs/05 #21。
+- kuaishou URL 正则改 raw string，消除 SyntaxWarning。
+- 文档：docs/05 标记 #11/#21/#27/#29/#35/#36/#38/#41 状态；VENDOR.md 同步删除与迁移。
 
 ## 发布 v0.1.5（2026-08-17）
 
@@ -374,3 +668,46 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **工具矩阵**：9 项检查全 PASS（health_check / validate_url×4 / set-get_transcriber / 14 工具 / tiny 已下载）。
 - **遗留**：`local_downloader` 封面提取对纯音频文件非致命化（改进）；`list_models` 字段访问修复。
 - 文档：核对 `docs/` 与实现一致。
+
+## Wave F 批 22（2026-08-18 · 第 17 轮四维全库扫描 #133，743 tests）
+
+- **A1 SSRF 覆盖不全修复**：显式 platform=bilibili/kuaishou/douyin 曾绕过 #132 A1（只覆盖 generic/youtube 下载器内部）——短链解析器 / inspect / generate_note / prepare_note_material / fetch_subtitles 五处入口补 `assert_public_http_url`。
+- **B1 显式 provider_id 空 key 校验**（#52 只修默认分支）；**B2 inspect 认 file://**（全工具面最后一块）；**B3 summarize_note full_text-only 拒绝**（防 LLM 零素材凭空生成）；**B7 quality 先于 provider 校验**；**B8 batch max_entries=0 提交 0 条**。
+- **测试基建修复**：test_url_safety 类名非 Test 前缀从未被 pytest 收集——#132 A1 的 21 个 SSRF 回归测试实际从未执行，重命名后 36 用例进套件。
+- **C1 依赖修正**：FastMCP 由 mcp 包自带（mcp.server.fastmcp），直接依赖从未被 import 的独立 fastmcp 包 → 改声明 `mcp>=1.29.0`，lock -500 行；**C2 VENDOR.md 分叉清单同步**；**C3 action-gh-release v2→v3**。
+- **743 passed + ruff F/I-clean**（691 → +52：+14 契约/批量 + 36 收集修复 + 2 batch）。
+
+## Wave G 批 23（2026-08-18 · 死代码清理专项 #134，743→741 tests）
+
+用户确认清理后的专项轮（承接批 22 审计结论）。
+
+- **删除 2 个死模块**：`app/validators/` 整包（video_url_validator 全仓零引用）、`app/exceptions/biz_exception.py`（零引用死类）。
+- **删除 ~15 个死函数**：whisper_models 自定义模型写 API ×6（读端保留，写端改手工编辑 `config/whisper_models.json`）、delete_note + delete_task_by_video 链、bilibili delete_video、get_all_models、get_enabled_providers、mark_downloading/get_error、preprocess_pipeline、get_app_dir、apply_to_env、OpenAI provider test_connection、abogus 4 个生成辅助、record_task_meta。
+- **工具冗余结论**：无实质冗余（wait_for_note = deprecated compat、_stage_label = micro-tool），**39 工具名单不变**。
+- **741 passed + ruff F/I-clean**（743 − 2：删 WhisperRegistryConcurrencyTest + test_record_meta_preserved；WhisperModelsAtomicWriteTest 重写为 WhisperCustomJsonReadTest 2→2 净 0）。
+
+## Wave H 批 24（2026-08-19 · 工具面精简 #135，39→18 工具，741→662 tests）
+
+用户发起（工具数质疑 → 确认删配置 CRUD + 步骤工具，只读合并）。
+
+- **删 21 个工具**：写配置 13（provider/model/transcriber/cookie CRUD——MCP 面零写配置入口，凭证红线最彻底）、流水线步骤 6（端到端已含）、wait_for_note（SKILL 本已禁用）、_stage_label（降级内部 helper）。
+- **新增 `get_config(provider_id?)`**：只读配置汇总 + 可选连通性探测（用已存 key，不接受 key 参数）。
+- **连带**：步骤任务链 + `_coerce_transcript` + 7 死符号删除；`_index_step_task` 误删恢复。
+- **测试**：−79 + 5（GetConfigTest）= **662 passed + ruff F/I-clean**。
+- **文档全同步**：ci.yml 名单、SKILL、commands、docs/02/04/00、README 中英。
+
+## Wave H 批 25（2026-08-19 · 工具聚合 #136，18→16 工具，662→661 tests）
+
+用户持续目标（六维评估：行为/简洁性/完备性/参数/目的/使用指南）第二轮。
+
+- **validate_url 并入 inspect_video**：inspect 已覆盖全部检查（SSRF/local/file:///平台识别），合并后一次调用 = 识别平台 + 检查链接 + 拆多集。
+- **get_task_files 并入 cleanup_note(dry_run)**：「先查后清」两工具合一——dry_run=True 只列出不删。
+- **参数策略 docstring**：generate_note / batch_generate_notes 引导「除 url 外全可选，套 setup 默认」。
+- **661 passed + ruff F/I-clean**；SKILL/commands/docs/README 中英全同步。
+
+## Wave H 批 26（2026-08-19 · cleanup_all dry_run 预览 #137，661→664 tests）
+
+用户持续目标第三轮（行为维度）。
+
+- **cleanup_all(dry_run=True)**：预览将清理/保留目录与运行中任务（would_clean/would_keep），不删任何东西——`include_config`/`include_models` 的不可逆风险先预览再执行。
+- **664 passed + ruff F/I-clean**；tools.md / docs/04 / commands 同步「先 dry_run 再执行」引导。

@@ -129,27 +129,12 @@ def get_task_paths(task_id: str) -> List[str]:
     return list(_read_manifest(task_id).get("paths", []))
 
 
-def record_task_meta(task_id: str, meta: dict) -> None:
-    """把任务语义元数据（title/summary 等）合并进 manifest 的 meta 键。
-
-    与 record_task_paths 同文件（保留 paths），供 get_task_files 展示。
-    """
-    if not task_id or not meta:
-        return
-    try:
-        data = _read_manifest(task_id)
-        data["meta"] = {**data.get("meta", {}), **meta}
-        f = manifest_path(task_id)
-        f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(f)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("记录 task meta 失败 task_id=%s: %s", task_id, e)
-
-
 def get_task_meta(task_id: str) -> dict:
-    """读 manifest 的 meta 键；不存在返回 {}。"""
+    """读 manifest 的 meta 键（cleanup_note dry_run 响应契约字段）；不存在返回 {}。
+
+    写端 record_task_meta 已删（#134 死代码）——生产不再写 meta，此读函数
+    保留仅为 list_task_files 的响应形状稳定。
+    """
     return dict(_read_manifest(task_id).get("meta", {}))
 
 
@@ -277,25 +262,49 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
 
     数据层重构后以任务文件夹 task_dir 为边界：
       - include_note=False：删 raw/（下载媒体）+ gen/ 内除 note.md 外的一切；保留 task_dir + status/manifest/result。
-      - include_note=True：删整个 task_dir + manifest + 全局索引（video_tasks）记录。
-    返回统计（deleted/missing/errors/note_kept）。
+      - include_note=True：删整个 task_dir + 数据目录内的便携笔记副本（manifest 记录）+ manifest + 全局索引（video_tasks）记录。
+        数据目录**外**的便携笔记副本（用户指定 notes_dir 时常见）不删——沙箱红线只清数据目录内；
+        其路径经 notes_kept_outside 列出，避免 manifest 删除后成为无人知晓的孤儿。
+    返回统计（deleted/missing/errors/note_kept/notes_kept_outside）。
     """
     notes = _note_paths(task_id)
     tdir = task_dir(task_id)
 
     to_delete: set = set()
+    kept_outside: List[str] = []
 
     if include_note:
         # 整删：任务文件夹 + manifest + 全局索引
         if tdir.exists():
             to_delete.add(tdir)
+        # 便携笔记副本：<notes_dir>/<标题>/note.md（或含 note.md 的目录）
+        roots = [get_note_dir(), get_data_dir()]
+        for p in get_task_paths(task_id):
+            try:
+                resolved = Path(str(p)).expanduser().resolve()
+            except Exception:  # noqa: BLE001
+                continue
+            if not (
+                resolved.name == "note.md"
+                or (resolved.is_dir() and (resolved / "note.md").exists())
+            ):
+                continue
+            if _safe_resolve(p, roots) is not None:
+                # 数据目录内 → 连目录一起删（note.md 文件则删其所在目录）
+                to_delete.add(resolved if resolved.is_dir() else resolved.parent)
+            else:
+                # 数据目录外 → 沙箱红线不删，列出目录路径供报告
+                kept_outside.append(str(resolved if resolved.is_dir() else resolved.parent))
+        kept_outside = sorted(set(kept_outside))
         remove_manifest(task_id)
         try:
             from app.db.video_task_dao import delete_task
 
             delete_task(task_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            # 磁盘已清但索引删除失败 → list_tasks 出现 note_dir 悬空幽灵任务；
+            # 不能静默吞（曾 except: pass 连哪个任务失败都丢，与 #126 B7 同口径）
+            logger.warning(f"清理任务 {task_id} 全局索引失败（文件已清理，索引可能残留）: {exc}")
     else:
         # 保留 note：删 raw/ 整个 + gen/ 内非 note.md 的子项
         raw = tdir / "raw"
@@ -317,13 +326,17 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
         "task_id": task_id,
         "include_note": include_note,
         "note_kept": (not include_note) and bool(notes),
+        "notes_kept_outside": kept_outside,
         **stats,
     }
 
 
 def cleanup_all_files(include_config: bool = False, include_models: bool = False) -> Dict:
-    """全局清理（恢复出厂）：清空 note_results / static/screenshots / logs 的所有任务产物。
+    """全局清理（恢复出厂）：清空 note_results / static/screenshots / static/cover / covers / note_cache 的任务产物。
 
+    **logs/ 刻意不清**（#121 C3）：MCP 进程持有 mcp_stderr.log 的打开 fd，unlink 后
+    日志写入进入已删除的 inode——文件消失、磁盘不回收、无报错直到重启；日志也不属
+    于任务产物，计入 kept。
     默认保留 config/（LLM key / cookie / 转写设置）与 models/（模型可复用、重下成本高）；
     include_config=True 时连 config/ 一起清；include_models=True 时连 models/ 一起清。
     同步清空 video_tasks 全局索引（任务目录删了，索引记录一并清）。
@@ -338,17 +351,24 @@ def cleanup_all_files(include_config: bool = False, include_models: bool = False
 
     _empty(get_note_dir(), "note_results")
     _empty(get_screenshots_dir(), "static/screenshots")
-    _empty(get_logs_dir(), "logs")
+    # local 封面两处目录（#125 B4）：每个 local 任务各产 1 个文件，此前永不清理
+    _empty(get_screenshots_dir().parent / "cover", "static/cover")
+    _empty(get_data_dir() / "covers", "covers")
+    # logs/ 不清理（#121 C3）：MCP 进程持有 mcp_stderr.log 的打开 fd，unlink 后
+    # 日志写入进入已删除的 inode——文件消失、磁盘不回收、无任何报错直到重启；
+    # 且日志不属于任务产物。保留并记录到 kept。
+    result["kept"].append(f"logs（{get_logs_dir()}）")
     _empty(get_cache_dir(), "note_cache")
-    # 同步清空全局任务索引（尽力而为）
+    # 同步清空全局任务索引（尽力而为；#125 B12 单条 DELETE 替代 N+1 循环）。
+    # 失败不能静默：目录已清但索引残留 → list_tasks 出现 note_dir 悬空的任务
+    # 且零痕迹（DAO 契约是抛给调用方显式处理，#126 B7）
     try:
-        from app.db.video_task_dao import list_tasks as _list
-        from app.db.video_task_dao import delete_task
+        from app.db.video_task_dao import delete_all_tasks
 
-        for t in _list():
-            delete_task(t["task_id"])
-    except Exception:
-        pass
+        delete_all_tasks()
+    except Exception as exc:
+        logger.warning(f"清空全局任务索引失败（目录已清理，索引可能残留）: {exc}")
+        result["index_error"] = str(exc)
 
     if include_config:
         _empty(get_config_dir(), "config")
