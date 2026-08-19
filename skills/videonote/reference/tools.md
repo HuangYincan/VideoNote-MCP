@@ -129,7 +129,8 @@
 
 ## 配置（只读）
 
-- `get_config(provider_id?)` —— **唯一**配置工具（只读）：`app_config` 默认值（默认供应商/模型、风格、开关，敏感项过滤）+ `providers`（key 掩码）+ `transcriber`（引擎/尺寸/就绪）+ `cookie_configured`（已配 Cookie 的平台名）。传 `provider_id` 附加该供应商连通性探测（用已存 key，不接受 key 参数）→ `{probe: {ok, models, error}}`。
+- `get_config(provider_id?)` —— **唯一**配置工具（只读）：`app_config` 默认值（默认供应商/模型、风格、开关，敏感项过滤）+ `providers`（key 掩码）+ `transcriber`（引擎/尺寸/就绪）+ `cookie_configured`（已配 Cookie 的平台名）+ `transcript_source`（固定 `platform_subtitles_first`：平台官方字幕优先，无字幕才转写引擎）。传 `provider_id` 附加该供应商连通性探测（用已存 key，不接受 key 参数）→ `{probe: {ok, models, error}}`。
+- **转写素材来源（自动，无需配置）**：`generate_note` / `prepare_note_material` / `batch_generate_notes` 都优先用平台官方字幕（YouTube/B 站人工+自动字幕，YouTube 走 youtube-transcript-api 自动抓取；有官方字幕就不下载音轨、不耗转写引擎）；无字幕或获取失败才下载音频走转写引擎（fast-whisper/groq/funasr 等）。因此「YouTube 有官方字幕」≠「需要转写引擎」——除非视频无字幕。
 - **配置修改一律走 CLI**（MCP 面无写配置工具，凭证红线最干净）：
   - 填 key：`! videonote providers set <id> --api-key '...'`（隐藏输入）
   - 新增/删供应商、模型：`! videonote providers add/delete`、`! videonote models ...`

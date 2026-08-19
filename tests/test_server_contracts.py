@@ -1586,6 +1586,7 @@ class GetConfigTest(unittest.TestCase):
         self.assertEqual(resp["providers"][0]["api_key"], "sk-***")  # key 掩码
         self.assertTrue(resp["transcriber"]["ready"])
         self.assertEqual(resp["cookie_configured"], ["bilibili"])   # 只给平台名
+        self.assertEqual(resp["transcript_source"], "platform_subtitles_first")  # #C3 字幕优先
         self.assertNotIn("probe", resp)
         # cookie 值绝不出现在返回里（凭证红线）
         self.assertNotIn("SESSDATA", json.dumps(resp))
