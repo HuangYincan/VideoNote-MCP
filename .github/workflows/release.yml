@@ -32,6 +32,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
+      # uv 不在 runner 默认 PATH（CI job 有 setup-uv，release job 漏了）——
+      # `uv build` command not found（exit 127）致 v0.1.6 首次发布失败
+      - uses: astral-sh/setup-uv@v7
       - name: Verify version matches tag
         run: |
           pkg_version="$(grep -m1 '^version' pyproject.toml | sed -E 's/version = "([^"]+)"/\1/')"
