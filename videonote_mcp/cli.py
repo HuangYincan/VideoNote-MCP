@@ -1485,6 +1485,7 @@ def _verify_youtube_login(browser=None, cookie=None) -> str:
 
     from app.downloaders.youtube_downloader import (
         _apply_browser_headers,
+        _apply_js_challenge,
         _apply_proxy,
         cookie_string_to_netscape,
     )
@@ -1499,6 +1500,7 @@ def _verify_youtube_login(browser=None, cookie=None) -> str:
             opts["cookiefile"] = cookiefile
     _apply_proxy(opts)
     _apply_browser_headers(opts)
+    _apply_js_challenge(opts)
     # yt-dlp 无总超时参数：限 socket 层，避免网络悬挂拖住 login 命令
     socket.setdefaulttimeout(25)
     try:
