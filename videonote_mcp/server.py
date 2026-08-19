@@ -670,6 +670,10 @@ def generate_note(
     - screenshot + format 含 "screenshot": 插入图片，产出便携笔记 note.md + Assets/（相对引用）；不传时用 setup ③ 配置的默认（默认关）；显式传入始终覆盖；
     - notes_dir: 便携笔记的输出目录（可选；缺省 VIDEONOTE_NOTES_DIR 环境变量，再缺省 note_results/{task_id}/；支持 file:// URI）。
 
+    转写素材来源（无需配置，自动优先）：平台官方字幕（YouTube/B 站人工+自动字幕）总是
+    先用——官方字幕准、快、不耗转写引擎；无字幕或获取失败才下载音轨走转写引擎
+    （fast-whisper/groq 等）。因此 YouTube 有官方字幕的视频不会走本地 Whisper。
+
     返回 {task_id, status, platform}。之后用 get_task_status 轮询。SUCCESS 时 result.note_dir 指向 note.md 所在目录（{task_id}/gen/，
     指定 notes_dir 时另有 result.portable_note_dir 指向便携副本）。
 
@@ -830,6 +834,7 @@ def prepare_note_material(
     不需要配置 LLM 供应商/模型。返回 {task_id, status: PENDING, kind: material}。
     之后用 get_task_status 轮询；SUCCESS 时 result 含
     {kind: material, title, transcript, frames, comments_danmaku, video_path, audio_path}。
+    transcript 优先来自平台官方字幕（YouTube/B 站人工+自动字幕），无字幕才走转写引擎。
     需要 AI 生成结构化 Markdown 笔记请用 generate_note。
     """
     if platform is None:
@@ -1698,7 +1703,10 @@ def get_config(provider_id: str = "") -> str:
       导出格式等，已过滤敏感键）；
     - providers: 已配置供应商（api_key 掩码）与默认供应商 id；
     - transcriber: 转写引擎配置与模型就绪状态；
-    - cookie_configured: 已配置 Cookie 的平台名列表（只给布尔状态，不给值）。
+    - cookie_configured: 已配置 Cookie 的平台名列表（只给布尔状态，不给值）；
+    - transcript_source: 转写素材来源（固定 platform_subtitles_first——平台官方字幕优先，
+      YouTube/B 站人工+自动字幕可用时直接用官方字幕，无字幕/获取失败才下载音轨走转写引擎；
+      官方字幕通常比本地 Whisper 更准，且不耗转写引擎资源）。
 
     传 provider_id 时额外对该供应商做连通性探测（用已保存的 key 请求
     /v1/models，15s 超时；**不接受 key 参数**），返回 {probe: {ok, models, error}}。
@@ -1727,6 +1735,9 @@ def get_config(provider_id: str = "") -> str:
             "reason": ready["reason"],
         },
         "cookie_configured": cookie_platforms,
+        # 转写素材来源优先级：平台官方字幕（YouTube/B 站人工+自动字幕）总是优先，
+        # 无字幕/获取失败才下载音轨走转写引擎（#C3 让 Agent 知道有官方字幕可用）。
+        "transcript_source": "platform_subtitles_first",
     }
     if provider_id:
         provider = ProviderService.get_provider_by_id(provider_id)
@@ -1770,7 +1781,8 @@ def batch_generate_notes(
     """对播放列表/合集/分 P 链接批量提交笔记任务（服务端逐个排队，遵守并发门禁）。
 
     参数策略：除 video_url 外全部可选——不传即套 setup ③ 配置的默认
-    （与 generate_note 同款；仅需覆盖时显式传）。
+    （与 generate_note 同款；仅需覆盖时显式传）。每条任务同样优先用平台官方字幕
+    （YouTube/B 站人工+自动字幕），无字幕才走转写引擎。
 
     - video_url: 必填，B 站分 P / YouTube 播放列表等可展开为多集的链接；
     - max_entries: 最多提交条数（默认 10，防 200 集播放列表一次全排；超出截断并标记 truncated）；
