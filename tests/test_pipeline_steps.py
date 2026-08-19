@@ -280,7 +280,8 @@ class TestYoutubeCookie(unittest.TestCase):
     def _dl(self, cookie, tmp_name):
         import app.downloaders.youtube_downloader as mod
 
-        with mock.patch.object(mod.CookieConfigManager, "get", return_value=cookie):
+        with mock.patch.object(mod.CookieConfigManager, "get", return_value=cookie), \
+             mock.patch.object(mod.CookieConfigManager, "get_browser", return_value=None):
             fake = mock.Mock()
             fake.name = tmp_name
             fake.close = mock.Mock()

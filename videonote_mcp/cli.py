@@ -190,6 +190,7 @@ def _show_uninstall_option(inq, pick: str, size: str, label: str) -> None:
 _CYAN = "\033[1;36m"
 _YELLOW = "\033[1;33m"
 _GREEN = "\033[1;32m"
+_RED = "\033[1;31m"
 _DIM = "\033[2m"
 _RESET = "\033[0m"
 # 让「← 左键」= interrupt（返回上一层，与 Ctrl-C 同）；InquirerPy 绑定需带 key 字段、
@@ -1472,14 +1473,120 @@ def _cookie_cli(argv) -> None:
         print(f"✅ 已清除 {opts.platform} 的 Cookie 配置", file=sys.stdout)
 
 
+def _verify_youtube_login(browser=None, cookie=None) -> str:
+    """用 yt-dlp 实测 YouTube 登录态：能取到元数据即视为有效（返回空串=成功，否则错误信息）。
+
+    走与下载器相同的代理/浏览器 headers 路径；网络问题（如代理未配）会误报，
+    错误信息里说明可能性，由调用方提示用户区分。
+    """
+    import socket
+
+    import yt_dlp
+
+    from app.downloaders.youtube_downloader import (
+        _apply_browser_headers,
+        _apply_proxy,
+        cookie_string_to_netscape,
+    )
+
+    opts: dict = {"quiet": True, "no_warnings": True, "skip_download": True}
+    cookiefile = None
+    if browser:
+        opts["cookiesfrombrowser"] = (browser,)
+    elif cookie:
+        cookiefile = cookie_string_to_netscape(cookie)
+        if cookiefile:
+            opts["cookiefile"] = cookiefile
+    _apply_proxy(opts)
+    _apply_browser_headers(opts)
+    # yt-dlp 无总超时参数：限 socket 层，避免网络悬挂拖住 login 命令
+    socket.setdefaulttimeout(25)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info("https://www.youtube.com/watch?v=dQw4w9WgXcQ", download=False)
+        if not info:
+            return "未能取得视频信息"
+        return ""
+    except Exception as e:  # noqa: BLE001 —— 上报 yt-dlp 原始错误，由调用方解读
+        return f"{type(e).__name__}: {str(e)[:200]}"
+    finally:
+        socket.setdefaulttimeout(None)
+        if cookiefile:
+            try:
+                import os as _os
+
+                _os.unlink(cookiefile)
+            except OSError:
+                pass
+
+
+def _login_youtube(args, exit_on_fail: bool = True) -> None:
+    """`videonote login youtube`：配置并验证 YouTube 登录态。
+
+    `--browser <safari|chrome|edge|firefox>`：直接读浏览器登录态（yt-dlp
+    cookiesfrombrowser）并**实测验证**；不带则引导手动粘贴完整 Cookie 字符串。
+    """
+    parser = argparse.ArgumentParser(prog="videonote login youtube")
+    parser.add_argument("--browser", choices=("safari", "chrome", "edge", "firefox"), help="从哪个浏览器读登录态（推荐）")
+    opts = parser.parse_args(args)
+
+    from app.services.cookie_manager import CookieConfigManager
+
+    mgr = CookieConfigManager()
+    if opts.browser:
+        mgr.set_browser("youtube", opts.browser)
+        print(f"已配置读取 {opts.browser} 的登录态，正在实测验证（需要网络）…", file=sys.stdout)
+        err = _verify_youtube_login(browser=opts.browser)
+        if not err:
+            print(f"{_GREEN}✓ YouTube 登录态有效，已保存{_RESET}", file=sys.stdout)
+            return
+        print(f"{_RED}✗ 验证失败: {err}{_RESET}", file=sys.stdout)
+        print("  可能原因：浏览器未登录 YouTube / 浏览器 cookie 读取受限（Safari 需解锁）", file=sys.stdout)
+        print("  / 网络不通（检查 `videonote proxy list`）。也可改用 `videonote cookie set youtube '...'` 手动粘贴。", file=sys.stdout)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+
+    # 交互引导：手动粘贴完整 Cookie 字符串
+    _show_header("YouTube 登录")
+    print("1. 打开 https://www.youtube.com 并确认已登录", file=sys.stdout)
+    print("2. 按 F12 → Network 选项卡 → 刷新页面 → 任选一个请求 →", file=sys.stdout)
+    print("   Request Headers 里复制完整 Cookie 行（以 ; 分隔的 name=value 对）", file=sys.stdout)
+    print("3. 粘贴到下面：", file=sys.stdout)
+    try:
+        from InquirerPy import inquirer as inq
+    except ImportError:
+        print("需要 InquirerPy：`uv sync` 后重试", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    cookie = inq.secret(message="YouTube Cookie 字符串（留空取消）", keybindings=_KB).execute()
+    if not cookie:
+        print("已取消", file=sys.stdout)
+        return
+    mgr.set("youtube", cookie)
+    print("已保存，正在实测验证（需要网络）…", file=sys.stdout)
+    err = _verify_youtube_login(cookie=cookie)
+    if not err:
+        print(f"{_GREEN}✓ YouTube 登录态有效{_RESET}", file=sys.stdout)
+    else:
+        print(f"{_YELLOW}⚠ 验证失败: {err}（配置已保存，下载时若仍失败可重试）{_RESET}", file=sys.stdout)
+
+
 def _login_cli(argv, exit_on_fail: bool = True) -> None:
-    """`videonote login [bilibili]`：扫码登录 B 站，自动获取并保存 SESSDATA（AI 字幕用）。
+    """`videonote login [bilibili|youtube]`：平台登录配置。
+
+    - bilibili：扫码登录，自动获取并保存 SESSDATA（AI 字幕用）
+    - youtube：读浏览器登录态或手动粘贴 Cookie（--browser 时实测验证）
 
     exit_on_fail=False 时失败路径只返回不杀进程（setup 向导内调用，#120：
     登录失败不再让整个向导带 traceback/退出，已配的其它设置不丢失）。
     """
+    if argv and argv[0] == "youtube":
+        _login_youtube(argv[1:], exit_on_fail)
+        return
     if argv and argv[0] != "bilibili":
-        print(f"未知平台: {argv[0]}（当前支持 bilibili）", file=sys.stderr)
+        print(f"未知平台: {argv[0]}（支持 bilibili / youtube）", file=sys.stderr)
         sys.exit(2)
     import time
     import urllib.parse

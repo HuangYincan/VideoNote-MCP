@@ -17,7 +17,7 @@ import yt_dlp
 
 from app.downloaders.base import Downloader, DownloadQuality
 from app.downloaders.common import ytdlp_cancel_hook, ytdlp_retry
-from app.downloaders.youtube_downloader import _apply_proxy
+from app.downloaders.youtube_downloader import _apply_browser_headers, _apply_proxy
 from app.models.notes_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.path_helper import get_data_dir
@@ -76,6 +76,7 @@ class GenericDownloader(Downloader, ABC):
         if cookie:
             ydl_opts["http_headers"] = {"Cookie": cookie}
         _apply_proxy(ydl_opts)
+        _apply_browser_headers(ydl_opts)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -125,6 +126,7 @@ class GenericDownloader(Downloader, ABC):
         if cookie:
             ydl_opts["http_headers"] = {"Cookie": cookie}
         _apply_proxy(ydl_opts)
+        _apply_browser_headers(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ytdlp_retry(ydl.extract_info, video_url, download=True)
         output_path = os.path.join(output_dir, f"{info.get('id')}.mp4")
