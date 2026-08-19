@@ -78,6 +78,16 @@ class TestCookieInjection:
         assert "cookiefile" not in opts
 
 
+class TestJsChallengeOpts:
+    """YouTube JS challenge 硬性配置：EJS 远程组件 + node runtime（缺则 reloaded 错误）。"""
+
+    def test_ejs_and_node_injected(self):
+        dl, _ = _make_dl()
+        opts = _capture_opts(dl)
+        assert opts["remote_components"] == ["ejs:github"]
+        assert opts["js_runtimes"] == {"node": {}}
+
+
 class TestBrowserHeaders:
     """浏览器样请求头：默认 Chrome UA，VIDEONOTE_YTDLP_UA 可覆盖（防 YouTube 人机验证）。"""
 

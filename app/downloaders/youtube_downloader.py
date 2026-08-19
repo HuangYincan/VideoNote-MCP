@@ -54,6 +54,20 @@ def _apply_browser_headers(ydl_opts: dict) -> dict:
     return ydl_opts
 
 
+def _apply_js_challenge(ydl_opts: dict) -> dict:
+    """YouTube 2026+ 的 JS challenge（签名/n 求解）硬性要求（2026-08-19 实测）：
+
+    - EJS 远程组件：yt-dlp 默认**不下载** challenge solver 脚本，须显式允许
+      `ejs:github`，否则报「The page needs to be reloaded」；
+    - node runtime：自动检测在 uvx 隔离环境下不可靠（node 在 PATH 也找不到），
+      显式指定 `{'node': {}}` 才生效。
+    缺任一条件，即使有登录 cookie + 代理也会失败。
+    """
+    ydl_opts['remote_components'] = ['ejs:github']
+    ydl_opts['js_runtimes'] = {'node': {}}
+    return ydl_opts
+
+
 def cookie_string_to_netscape(cookie: str) -> Optional[str]:
     """Cookie 字符串（name=value; ...）→ Netscape 格式临时文件路径（yt-dlp cookiefile 用）。
 
@@ -137,6 +151,7 @@ class YoutubeDownloader(Downloader, ABC):
 
         _apply_proxy(ydl_opts)
         _apply_browser_headers(ydl_opts)
+        _apply_js_challenge(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
             video_id = info.get("id")
@@ -203,6 +218,7 @@ class YoutubeDownloader(Downloader, ABC):
 
         _apply_proxy(ydl_opts)
         _apply_browser_headers(ydl_opts)
+        _apply_js_challenge(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ytdlp_retry(ydl.extract_info, video_url, download=True)
             video_id = info.get("id")
