@@ -121,11 +121,11 @@ flowchart LR
 | 阶段 | 职责 | 典型工具 |
 |------|------|----------|
 | [0 🔄 端到端全流程](#0--端到端全流程) | 一条链接 → 一篇笔记，全自动跑完整条流水线 | `generate_note` / `get_task_status` |
-| [1 📥 下载与平台解析](#1--下载与平台解析) | 识别平台并下载音/视频，覆盖 1800+ 站点与本地文件 | `validate_url` / `fetch_subtitles` |
-| [2 🎙 语音转写（ASR）](#2--语音转写asr) | 音轨转文字，本地 / 云端多引擎可选 | `transcribe_media` / `set_transcriber` |
-| [3 🖼️ 视频画面理解（抽帧）](#3--视频画面理解抽帧) | 按间隔抽帧，多模态 LLM「看」画面 | `extract_frames` / `video_understanding` |
-| [4 💬 弹幕与评论](#4--弹幕与评论) | 抓取 B 站弹幕与评论区观点 | `fetch_danmaku` / `fetch_comments` |
-| [5 ✍️ AI 总结与笔记](#5--ai-总结与笔记) | 素材 → 结构化 Markdown，9 种风格可选 | `summarize_note` / `list_providers` |
+| [1 📥 下载与平台解析](#1--下载与平台解析) | 识别平台并下载音/视频，覆盖 1800+ 站点与本地文件 | `validate_url` / `inspect_video` |
+| [2 🎙 语音转写（ASR）](#2--语音转写asr) | 音轨转文字，本地 / 云端多引擎可选 | `generate_note` 内部完成 |
+| [3 🖼️ 视频画面理解（抽帧）](#3--视频画面理解抽帧) | 按间隔抽帧，多模态 LLM「看」画面 | `video_understanding` 参数 |
+| [4 💬 弹幕与评论](#4--弹幕与评论) | 抓取 B 站弹幕与评论区观点 | `include_comments` 参数 |
+| [5 ✍️ AI 总结与笔记](#5--ai-总结与笔记) | 素材 → 结构化 Markdown，9 种风格可选 | `generate_note` / `prepare_note_material` |
 | [6 📤 多格式导出](#6--多格式导出) | SRT/VTT/JSON 机械导出 + 创意格式（Agent 生成） | `export_transcript` |
 | [7 🎛️ 音频增强](#7--音频增强) | 多文件合并、预处理、说话人分离 | `merge_audio` / `diarize_media` |
 | [8 🗂️ 任务管理与清理](#8--任务管理与清理) | 全局任务索引、占用查看、按需清理 | `list_tasks` / `cleanup_note` |
@@ -134,66 +134,53 @@ flowchart LR
 
 # 0 🔄 端到端全流程
 
-端到端模式只给一条链接即可：`generate_note` 异步跑完整条流水线并返回 `task_id`；用轻量 `get_task_status` 快照轮询到 `SUCCESS/FAILED/CANCELLED`（单进程最多 3 个进行中任务，不要在同一消息里并行提交）。`wait_for_note` 已废弃（曾阻塞整个 MCP 事件循环，现只返回快照）。`cancel_note` 协作式取消。「AGENT 直接生成」走 `prepare_note_material` —— 只准备素材包、**不调用配置 LLM**，由 agent 自己读转写、看图、写笔记。
+端到端模式只给一条链接即可：`generate_note` 异步跑完整条流水线并返回 `task_id`；用轻量 `get_task_status` 快照轮询到 `SUCCESS/FAILED/CANCELLED`（单进程最多 3 个进行中任务，不要在同一消息里并行提交）。`cancel_note` 协作式取消。「AGENT 直接生成」走 `prepare_note_material` —— 只准备素材包、**不调用配置 LLM**，由 agent 自己读转写、看图、写笔记。
 
 | 工具 | 说明 | 类型 |
 |------|------|------|
 | `generate_note` | 一条链接 → 异步生成笔记，返回 task_id（支持视频理解 / 评论整合 / 截图便携笔记） | MCP 工具 |
-| `get_task_status` | 轻量轮询任务状态（`wait_for_note` 已废弃） | MCP 工具 |
+| `get_task_status` | 轻量轮询任务状态（轮询到 SUCCESS/FAILED/CANCELLED） | MCP 工具 |
 | `cancel_note` | 协作式取消进行中 / 排队任务 | MCP 工具 |
 | `prepare_note_material` | 只准备素材包（转写 / 抽帧 / 评论），供 AGENT 直接生成 | MCP 工具 |
 | AGENT 直接生成（`agent_direct`） | agent 读素材包自己写笔记，不走配置 LLM | SKILL / Agent 编排 |
 
 # 1 📥 下载与平台解析
 
-`validate_url` 判断链接属于哪个平台（bilibili / youtube / douyin / tiktok / kuaishou / local）；内置 6 平台之外返回 `platform:"generic"`，自动走 **yt-dlp 通用提取**覆盖 1800+ 站点。`inspect_video` 把 B 站分 P / YouTube 播放列表拆成每集可独立提交的 url（不下载）。平台 Cookie 走 `! videonote login bilibili` / `! videonote setup`，**不要**经 MCP 传入。`fetch_subtitles` 只取平台字幕，不下载不转写。
+`validate_url` 判断链接属于哪个平台（bilibili / youtube / douyin / tiktok / kuaishou / local）；内置 6 平台之外返回 `platform:"generic"`，自动走 **yt-dlp 通用提取**覆盖 1800+ 站点。`inspect_video` 把 B 站分 P / YouTube 播放列表拆成每集可独立提交的 url（不下载）。平台 Cookie 走 `! videonote login bilibili` / `! videonote setup`，**不要**经 MCP 传入。平台字幕（含 B 站 AI 字幕）由 `generate_note` 内部优先使用，无独立工具。
 
 | 工具 | 说明 | 类型 |
 |------|------|------|
 | `validate_url` | 识别链接平台；generic 走 yt-dlp 通用提取（1800+ 站点） | MCP 工具 |
 | `inspect_video` | 解析分 P / 播放列表，返回每集可 `generate_note` 的 url | MCP 工具 |
-| `set_downloader_cookie` | 拒绝写入 Cookie；请用 `! videonote login bilibili` | MCP 工具 |
-| `fetch_subtitles` | 只取平台字幕（含 B 站 AI 字幕），跳过下载与转写 | MCP 工具 |
 
 # 2 🎙 语音转写（ASR）
 
-`transcribe_media` 只做语音识别：本地音频/视频 → 转写（异步）。引擎可选：`fast-whisper`（本地）/ `groq` / `bcut` / `kuaishou`（云端）/ `mlx-whisper`（macOS Apple Silicon GPU）/ `funasr`（中文最优，VAD + 自动标点）。`set_transcriber` / `get_transcriber_config` / `list_transcriber_models` / `download_transcriber_model` 管理引擎与模型。
-
-| 工具 | 说明 | 类型 |
-|------|------|------|
-| `transcribe_media` | 本地音频/视频 → 转写（异步轮询） | MCP 工具 |
-| `set_transcriber` / `get_transcriber_config` | 切换 / 查看转写引擎（本地 ↔ 云端） | MCP 工具 |
-| `list_transcriber_models` / `download_transcriber_model` | whisper 模型管理（下载 / 就绪检查） | MCP 工具 |
+语音转写（ASR）由 `generate_note` 内部完成：优先平台字幕（含 B 站 AI 字幕），无字幕则转写。引擎可选：`fast-whisper`（本地）/ `groq` / `bcut` / `kuaishou`（云端）/ `mlx-whisper`（macOS Apple Silicon GPU）/ `funasr`（中文最优，VAD + 自动标点）。引擎与模型管理走 CLI：`! videonote transcriber set/download`；状态查看 `get_config()`。
 
 # 3 🖼️ 视频画面理解（抽帧）
 
-`extract_frames` 只做画面素材：本地 mp4 → 关键帧 `file://` 列表。`generate_note` 直接支持视频理解参数：`video_understanding=True` + `video_interval`（默认 6s）+ `grid_size`（默认 [3,3]），把网格图发给**多模态 LLM**「看」画面。
+`generate_note` 直接支持视频理解参数：`video_understanding=True` + `video_interval`（默认 6s）+ `grid_size`（默认 [3,3]），把网格图发给**多模态 LLM**「看」画面。
 
-| 工具 | 说明 | 类型 |
+| 参数 | 说明 | 类型 |
 |------|------|------|
-| `extract_frames` | 本地 mp4 → 关键帧 file:// 列表（异步） | MCP 工具 |
 | `video_understanding` / `video_interval` / `grid_size` | 按间隔抽帧 + 网格图内嵌发给多模态模型 | 参数 |
 
 # 4 💬 弹幕与评论
 
-`fetch_comments` / `fetch_danmaku` 单独拉取 B 站评论与弹幕（供预览 / 独立使用）。`generate_note` 加 `include_comments=True` + `comments_limit`（默认 20）会把弹幕刷屏与评论区高频观点整理进笔记，新增「观众观点」章节（需 B 站 SESSDATA；抓取失败不阻断任务）。
+`generate_note` 加 `include_comments=True` + `comments_limit`（默认 20）会把弹幕刷屏与评论区高频观点整理进笔记，新增「观众观点」章节（需 B 站 SESSDATA；抓取失败不阻断任务）。
 
-| 工具 | 说明 | 类型 |
+| 参数 | 说明 | 类型 |
 |------|------|------|
-| `fetch_comments` | 抓 B 站热门评论 | MCP 工具 |
-| `fetch_danmaku` | 抓 B 站弹幕汇总（高密度时段 + 高频词） | MCP 工具 |
 | `include_comments` / `comments_limit` | 笔记新增「观众观点」章节（默认 20 条） | 参数 |
 
 # 5 ✍️ AI 总结与笔记
 
-`summarize_note` 吃**素材包**（字幕 / 帧 / 评论任意组合）→ Markdown。支持 9 种风格：`minimal` / `detailed` / `academic` / `tutorial` / `xiaohongshu` / `life_journal` / `task_oriented` / `business` / `meeting_minutes`；`format=["screenshot"]` 产出便携笔记（`note.md` + `Assets/`，相对引用可整体搬迁）。供应商/模型通过 `list_providers` / `add_provider` / `update_provider` / `list_models` / `add_model` 管理（key 一律走 CLI，对话外）。`agent_direct` 由 AGENT 直接生成。
+支持 9 种风格：`minimal` / `detailed` / `academic` / `tutorial` / `xiaohongshu` / `life_journal` / `task_oriented` / `business` / `meeting_minutes`；`format=["screenshot"]` 产出便携笔记（`note.md` + `Assets/`，相对引用可整体搬迁）。供应商/模型/转写器配置一律走 CLI（`! videonote providers set` / `! videonote transcriber set`），只读查看 `get_config()`。`agent_direct` 由 AGENT 直接生成。
 
-| 工具 | 说明 | 类型 |
+| 参数 | 说明 | 类型 |
 |------|------|------|
-| `summarize_note` | 吃素材包 → Markdown（异步） | MCP 工具 |
 | 9 种笔记风格 + `format` | 风格选择 / screenshot 便携笔记 | 参数 |
-| `list_providers` / `add_provider` / `update_provider` | 供应商管理（key 掩码，填 key 走 CLI） | MCP 工具 |
-| `list_models` / `add_model` | 查看 / 手动添加模型 | MCP 工具 |
+| `get_config` | 只读配置汇总（默认值 / 供应商 / 转写器 / cookie 状态），可附加连通性探测 | MCP 工具 |
 | `agent_direct` | AGENT 自己读素材包写笔记 | SKILL / Agent 编排 |
 
 # 6 📤 多格式导出
@@ -252,7 +239,7 @@ flowchart TB
 - **会议纪要**：`merge_audio` 合并分段录音 → `diarize_media` 说话人分离 → `meeting_minutes` 风格。
 - **讲座精读**：端到端生成后，agent 基于完整字幕精修、按章节补齐细节。
 - **视频赏析**：开启弹幕 + 评论整合，笔记含「观众观点」章节。
-- **端到端 vs 解耦**：一条链接用 `generate_note`；只要某一步（只转写 / 只抽帧 / 只总结 / 只抓评论）就用独立工具任意组合。
+- **端到端**：一条链接用 `generate_note`（下载/转写/总结/评论全流程内部完成）；只准备素材用 `prepare_note_material`。
 - **真实案例**：完整案例过程记录见 [`examples`](examples)。
 
 ## 🤝 如何贡献

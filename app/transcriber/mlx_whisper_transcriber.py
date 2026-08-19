@@ -48,7 +48,7 @@ class MLXWhisperTranscriber(Transcriber):
             raise RuntimeError("MLX Whisper 仅支持 Apple 平台")
 
         # 注意：不做 TRANSCRIBER_TYPE 环境变量检查。引擎切换是写 config JSON
-        #（TranscriberConfigManager / set_transcriber），不写环境变量；此处由
+        #（TranscriberConfigManager / CLI transcriber set），不写环境变量；此处由
         # get_transcriber 按类型路由构造，env 检查只会让配置好的 mlx-whisper 构造即报错。
 
         self.model_size = model_size

@@ -38,9 +38,6 @@
 - 返回 `{task_id, ok, language, segments, full_text, meta:{total_segments, returned_segments, total_chars, returned_chars, truncated}}`。
 - **MCP Resource `videonote://task/{task_id}/transcript`**：转写全文按时间轴渲染的纯文本（含说话人标签），适合整篇直读；工具版用于切片/结构化。
 
-### `wait_for_note`（已废弃）
-- **不要调用**。会卡住 MCP 事件循环；现已改为立刻返回当前快照 + `deprecated`。用 `get_task_status` 轮询。
-
 ### `cancel_note(task_id)`
 - 取消进行中/排队任务（协作式，下一阶段边界生效）；返回 `{ok, task_id, status}`。
 
@@ -67,37 +64,6 @@
   ```
 - 用途：**AGENT 直接生成**（agent_direct）—— AGENT 自己读转写、用 Read 看 `frames` 图片、按 `comments_danmaku` 写「观众观点」章节，不经配置 LLM。转写文本优先用 `get_task_transcript(task_id, segment_range=...)` 按需取（超长分段，避免撑爆 context）；评论/弹幕默认已在素材包 result 里（`raw` 恒剥）。
 
-## 模块解耦（独立步骤工具）
-
-流水线各阶段可**独立调用、任意组合**：不想走整条 `generate_note` 时，可只做其中一步，或自己拼素材后交给 `summarize_note`。**素材包**（material dict，见上方 `prepare_note_material` 返回结构）是步骤间传递对象。
-
-### `fetch_subtitles(video_url, platform?)`
-- **只取平台字幕**（不下载、不转写），同步返回 `{ok: true, language, full_text, segments}`；无字幕/失败返回 `{ok: false, error}`。
-- 适用：先看看平台有没有字幕、只要字幕文本。
-
-### `transcribe_media(file_path)`
-- **只做语音识别（ASR）**：给定本地音频/视频文件 → 异步任务，`get_task_status` 轮询到 `SUCCESS` 后 `result` 为 `{kind: "transcript", transcript: {language, full_text, segments}}`。
-- 适用：已有音频/视频文件，只想转成文字；不下载、不总结。
-
-### `extract_frames(video_path, video_interval=6, grid_size=[3,3])`
-- **只做视频画面理解素材**：给定本地 mp4 → 按间隔抽帧并持久化到 `note_results/{task_id}/frames/`，`result` 为 `{kind: "frames", frames: ["file:///绝对/路径/frame_1.jpg", ...]}`。
-- 适用：已有 mp4 只想要关键帧（多模态模型用 Read 看图）。
-
-### `summarize_note(transcript, frames?, comments_danmaku?, title?, style?, extras?, format?, provider_id?, model_name?)`
-- **只做 LLM 总结**：吃**素材包**（转写/帧/评论任意组合）→ 异步任务，`result` 为 `{kind: "note", markdown, title}`。
-- `comments_danmaku` 传弹幕+评论文本（用 `fetch_comments` + `fetch_danmaku`，没有名为 `fetch_comments_danmaku` 的 MCP 工具）。`provider_id` 可省略。
-- 适用：已有字幕/帧/评论，不想重新下载转写，只让 LLM 出笔记。
-
-### 任意组合示例
-| 场景 | 组合 |
-|------|------|
-| 只抓弹幕+评论区观点 | `fetch_comments` / `fetch_danmaku`（独立，不生成笔记） |
-| 只做语音识别 | `transcribe_media(音频/视频文件)` |
-| 已有字幕 + 画面理解 | `extract_frames(mp4)` + 字幕 → `summarize_note(transcript=字幕, frames=帧)`（不重新下载/转写） |
-| 已有 mp4 画面理解 | `extract_frames(mp4)`，或 `generate_note(video_url=mp4, platform="local", video_understanding=True)` |
-| 弹幕/评论 + 已有字幕 → 笔记 | `summarize_note(transcript, comments_danmaku=聚合文本, ...)` |
-
-## 多格式导出（机械格式）
 
 ### `export_transcript(task_id, formats?, out_dir?)`
 - 把已完成任务的转写导出为**确定性格式**（srt/vtt/json），**不耗 LLM**。同步返回。
@@ -164,43 +130,29 @@
 - `include_config=False`（默认）：**保留** `config/`（LLM key / cookie / 转写设置）；`include_config=True` 才清。
 - `include_models=False`（默认）：**保留** `models/`（已下载模型可复用，重下成本高）；`include_models=True` 才清。
 
-## 供应商 / 模型
+## 配置（只读）
 
-- `list_providers()` —— 供应商列表（key 掩码）。空 key 让用户在终端 `videonote providers set <id> --api-key '...'`。
-- `add_provider(name, base_url, type)` / `update_provider(provider_id, name?, base_url?, enabled?)` —— 只改非敏感字段；**传 api_key 会被拒绝**。填 key：`! videonote providers set <id> --api-key '...'`。
-- `delete_provider(provider_id)` / `delete_model(provider_id, model_name)` —— 删供应商/模型（只清「删的就是默认模型」的默认设置，删非默认不动）。
-- `test_provider(provider_id)` —— 用已存 key 探测连接并列出模型（不接受 key 参数）。
-- `read_app_config()` —— setup 持久化的默认值（默认供应商/模型、视频理解/弹幕开关、风格、导出格式、notes_dir）；敏感项不返回。
-- `list_models(provider_id)` —— `{ok, source, models:[{id, name}]}`。实时 /v1/models，回退本地 DB。
-- `add_model(provider_id, model_name)` —— 手动加模型名（接口不可用时）。
-
-## 转写
-
-- `get_transcriber_config()` —— 当前引擎/尺寸/就绪（`ready=false` 时先下载或切云端）。
-- `set_transcriber(transcriber_type, whisper_model_size?)` —— 切引擎（fast-whisper/groq/bcut/kuaishou/mlx-whisper/funasr）。
-- `list_transcriber_models()` / `download_transcriber_model(model_size, transcriber_type?)` —— 模型管理（下载为后台任务）。
-- `set_transcriber("funasr")` —— 中文最优引擎（Paraformer-zh + VAD + 标点）。**可选重依赖**：需 `funasr` + torch（`uvx --with funasr --with torch`）；模型首次转写时自动下载。未装时返回安装指引。
+- `get_config(provider_id?)` —— **唯一**配置工具（只读）：`app_config` 默认值（默认供应商/模型、风格、开关，敏感项过滤）+ `providers`（key 掩码）+ `transcriber`（引擎/尺寸/就绪）+ `cookie_configured`（已配 Cookie 的平台名）。传 `provider_id` 附加该供应商连通性探测（用已存 key，不接受 key 参数）→ `{probe: {ok, models, error}}`。
+- **配置修改一律走 CLI**（MCP 面无写配置工具，凭证红线最干净）：
+  - 填 key：`! videonote providers set <id> --api-key '...'`（隐藏输入）
+  - 新增/删供应商、模型：`! videonote providers add/delete`、`! videonote models ...`
+  - 转写引擎/模型下载：`! videonote transcriber set/download`（funasr 中文最优，可选重依赖）
 
 ## 其它
 
 - `health_check()` —— `server_version` / ffmpeg / db / 队列 / keyed_providers / `skill_refresh`。
 - `preflight(url?, platform?, provider_id?, need_provider=true)` —— 提交前体检：ffmpeg / 磁盘剩余 / 转写器就绪 / 供应商 key+模型 / 队列，url 非空时预解析时长。`ok=false` 时先修 detail 再提交，避免长任务半路失败。`prepare_note_material` 流程不需要 LLM，传 `need_provider=false` 跳过供应商 key/模型检查（#125 C9）。
 - `validate_url(url)` —— 识别平台（bilibili/youtube/douyin/tiktok/kuaishou/local 共 6 种）。内置平台之外返回 `{supported: true, platform: "generic"}`（yt-dlp 通用提取，覆盖 1800+ 站点）；仅当 yt-dlp 也失败时 Agent 接手解析。
-- `set_downloader_cookie` —— **拒绝写入 Cookie**。B 站：`! videonote login bilibili` / `! videonote setup`。
-- `fetch_comments(video_url, limit=20)` —— B 站热门评论（供生成前预览）。
-- `fetch_danmaku(video_url)` —— B 站弹幕汇总（高密度时段 + 高频词）。
-
 ## 配置要点
 
 | 场景 | 操作 |
 |------|------|
 | 配置入口（首次使用） | 用户在 Claude Code 跑 `/videonote-setup`（体检 → 填 key → 转写 → 默认值 → B站扫码 → 数据管理） |
 | 给内置供应商填 key | 用户在本会话 `! videonote providers set <id> --api-key 'sk-...'`（隐藏输入、agent 不碰 key） |
-| 自建/新增供应商 | `add_provider(name, base_url, type)`（空 key），再 `! videonote providers set <id> --api-key '...'` |
-| 查看供应商 / 模型 | `list_providers()`（掩码）/ `list_models(provider_id)` |
-| 测试/删除供应商 | `test_provider(provider_id)`；`delete_provider(provider_id)` / `delete_model(provider_id, model_name)` |
-| 切本地转写 | `set_transcriber("fast-whisper", "small")` + `download_transcriber_model("small")` |
-| 切云端转写 | `set_transcriber("groq")`（groq key 用 CLI 填） |
+| 查看配置 / 供应商 / 模型 / 转写器 | `get_config()`（只读汇总）；传 `provider_id` 可附加连通性探测 |
+| 自建/新增/删除供应商或模型 | `! videonote providers add/delete`、`! videonote models ...`（配置修改一律走 CLI） |
+| 切本地转写 | `! videonote transcriber set --engine fast-whisper --size small` + `! videonote transcriber download small` |
+| 切云端转写 | `! videonote transcriber set --engine groq`（groq key 用 CLI 填） |
 | B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA） |
 | 本地文件 | `generate_note(video_url="file:///绝对/路径/foo%20bar.mp4")` 或普通路径，`platform` 可省略 |
 | 视频理解默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `video_understanding`/`video_interval` 即套用（默认关/6s） |

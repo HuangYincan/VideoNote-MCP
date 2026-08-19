@@ -47,7 +47,7 @@ _cache_lock = threading.Lock()
 # 公共实例初始化函数
 def _init_transcriber(key: TranscriberType, cls, *args, **kwargs):
     # 已存在实例且模型尺寸不同 → 重建（否则切模型尺寸后拿到的仍是首次构造的实例，
-    # set_transcriber 配置的 large-v3 永远不会生效）。模型在构造时即加载完毕。
+    # CLI transcriber set 配置的 large-v3 永远不会生效）。模型在构造时即加载完毕。
     want_size = kwargs.get("model_size")
     existing = _transcribers[key]
     need_build = existing is None or (
@@ -120,7 +120,7 @@ def get_transcriber(transcriber_type="fast-whisper", model_size=None, device="cu
     参数:
         transcriber_type: 支持 "fast-whisper", "mlx-whisper", "bcut", "kuaishou", "groq"
         model_size: 模型大小，适用于 whisper 类；显式传入优先于环境变量
-            （WHISPER_MODEL_SIZE 仅作兜底，避免 setup/set_transcriber 配置的
+            （WHISPER_MODEL_SIZE 仅作兜底，避免 setup/CLI 配置的
             模型尺寸被环境变量覆盖——那是此前模型切换不生效的根因）
         device: 设备类型（如 cuda / cpu），仅 whisper 使用
 

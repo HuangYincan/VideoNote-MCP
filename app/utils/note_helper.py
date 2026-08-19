@@ -4,7 +4,7 @@ import re
 def strip_media_markers(markdown: str) -> str:
     """剥掉 LLM 可能输出的截图/时间戳字面标记（*Screenshot-[01:23]*、Content-04:16 等）。
 
-    只用于「无视频文件 / 无 video_id 可做后处理」的路径（如 summarize_note）：
+    只用于「无视频文件 / 无 video_id 可做后处理」的素材包总结路径：
     这些路径的 prompt 不要求输出标记，但 LLM 仍可能自行带上；替换函数
     （replace_content_markers / 截图插入）执行不了时靠它兜底，避免残留
     对读者无意义的字面量（#122 A5）。

@@ -18,7 +18,7 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
      要全出笔记 → 一条 `batch_generate_notes(url)` 服务端逐个排队（省去逐条 subagent，见规则 2）。
 5. 长视频 / 首次使用 / 最近改过转写引擎 → `preflight(url)` 体检（ffmpeg/磁盘/转写器/供应商 key，`ok=false` 先修）。
 6. 直接 `generate_note(video_url)`（`provider_id` 可省略）。参数不传 = setup / userConfig 默认。
-7. **`get_task_status` 轮询**到 SUCCESS / FAILED / CANCELLED。**禁止 `wait_for_note`**（已废弃，会堵事件循环）。等待中可用 `stage` / `elapsed_secs` 报进度（如「转写中，已 3 分钟」）。
+7. **`get_task_status` 轮询**到 SUCCESS / FAILED / CANCELLED。等待中可用 `stage` / `elapsed_secs` 报进度（如「转写中，已 3 分钟」）。
 8. 呈现 `result.markdown`（要点 + 章节 + 原文链接）。用户要细节再用 `get_task_transcript`（默认前 50 段；全文 `"all"`）。
 9. **不要主动问「要不要后续优化」**。用户要精修再读笔记 + 转写改。
 

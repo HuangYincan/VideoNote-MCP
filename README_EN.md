@@ -118,12 +118,12 @@ flowchart LR
 
 | Stage | Responsibility | Typical tools |
 |------|------|----------|
-| [0 🔄 End-to-end Pipeline](#0--end-to-end-pipeline) | One link → one note, runs the whole pipeline automatically | `generate_note` / `wait_for_note` |
-| [1 📥 Download and Platform Parsing](#1--download-and-platform-parsing) | Detect platform and download audio/video; 1800+ sites + local files | `validate_url` / `fetch_subtitles` |
-| [2 🎙 Speech-to-Text (ASR)](#2--speech-to-text-asr) | Audio track → text; local / cloud engines | `transcribe_media` / `set_transcriber` |
-| [3 🖼️ Frame Understanding (Sampling)](#3--frame-understanding-sampling) | Sample frames at an interval; multimodal LLM "sees" the video | `extract_frames` / `video_understanding` |
-| [4 💬 Danmaku and Comments](#4--danmaku-and-comments) | Fetch Bilibili danmaku and comment viewpoints | `fetch_danmaku` / `fetch_comments` |
-| [5 ✍️ AI Summarization and Notes](#5--ai-summarization-and-notes) | Material → structured Markdown; 9 styles | `summarize_note` / `list_providers` |
+| [0 🔄 End-to-end Pipeline](#0--end-to-end-pipeline) | One link → one note, runs the whole pipeline automatically | `generate_note` / `get_task_status` |
+| [1 📥 Download and Platform Parsing](#1--download-and-platform-parsing) | Detect platform and download audio/video; 1800+ sites + local files | `validate_url` / `inspect_video` |
+| [2 🎙 Speech-to-Text (ASR)](#2--speech-to-text-asr) | Audio track → text; local / cloud engines | inside `generate_note` |
+| [3 🖼️ Frame Understanding (Sampling)](#3--frame-understanding-sampling) | Sample frames at an interval; multimodal LLM "sees" the video | `video_understanding` parameter |
+| [4 💬 Danmaku and Comments](#4--danmaku-and-comments) | Fetch Bilibili danmaku and comment viewpoints | `include_comments` parameter |
+| [5 ✍️ AI Summarization and Notes](#5--ai-summarization-and-notes) | Material → structured Markdown; 9 styles | `generate_note` / `prepare_note_material` |
 | [6 📤 Multi-Format Export](#6--multi-format-export) | SRT/VTT/JSON mechanical export + creative formats (Agent-generated) | `export_transcript` |
 | [7 🎛️ Audio Enhancement](#7--audio-enhancement) | Multi-file merge, preprocessing, speaker diarization | `merge_audio` / `diarize_media` |
 | [8 🗂️ Task Management and Cleanup](#8--task-management-and-cleanup) | Global task index, file inspection, on-demand cleanup | `list_tasks` / `cleanup_note` |
@@ -132,66 +132,53 @@ flowchart LR
 
 # 0 🔄 End-to-End Pipeline
 
-End-to-end mode takes a single link: `generate_note` runs the whole pipeline asynchronously and returns a `task_id`; poll with lightweight `get_task_status` until `SUCCESS/FAILED/CANCELLED` (up to 3 in-flight tasks per process; do not submit several `generate_note` calls in the same message). `wait_for_note` blocks the entire MCP event loop — prefer polling. `cancel_note` cancels cooperatively. "AGENT direct generation" uses `prepare_note_material` — it only prepares the material package and **does NOT call the configured LLM**; the agent reads the transcript, looks at the frames, and writes the note itself.
+End-to-end mode takes a single link: `generate_note` runs the whole pipeline asynchronously and returns a `task_id`; poll with lightweight `get_task_status` until `SUCCESS/FAILED/CANCELLED` (up to 3 in-flight tasks per process; do not submit several `generate_note` calls in the same message). `cancel_note` cancels cooperatively. "AGENT direct generation" uses `prepare_note_material` — it only prepares the material package and **does NOT call the configured LLM**; the agent reads the transcript, looks at the frames, and writes the note itself.
 
 | Tool | Description | Type |
 |------|------|------|
 | `generate_note` | One link → async note generation, returns task_id (video understanding / comments / screenshot portable notes) | MCP tool |
-| `get_task_status` / `wait_for_note` | Lightweight polling / blocking wait for the final Markdown | MCP tool |
+| `get_task_status` | Lightweight polling until SUCCESS/FAILED/CANCELLED | MCP tool |
 | `cancel_note` | Cooperatively cancel a running / queued task | MCP tool |
 | `prepare_note_material` | Prepare a material package only (transcript / frames / comments) for AGENT direct generation | MCP tool |
 | AGENT direct generation (`agent_direct`) | The agent reads the material package and writes the note itself | SKILL / Agent orchestration |
 
 # 1 📥 Download and Platform Parsing
 
-`validate_url` detects which platform a link belongs to (bilibili / youtube / douyin / tiktok / kuaishou / local); URLs outside the built-in 6 platforms return `platform:"generic"` and automatically fall back to **yt-dlp generic extraction** (1800+ sites). `inspect_video` splits Bilibili multi-P / YouTube playlists into per-episode URLs you can feed to `generate_note` (no download). Platform cookies go through `! videonote login bilibili` / `! videonote setup` — **do not** pass them via MCP. `fetch_subtitles` fetches platform subtitles only, without downloading or transcribing.
+`validate_url` detects which platform a link belongs to (bilibili / youtube / douyin / tiktok / kuaishou / local); URLs outside the built-in 6 platforms return `platform:"generic"` and automatically fall back to **yt-dlp generic extraction** (1800+ sites). `inspect_video` splits Bilibili multi-P / YouTube playlists into per-episode URLs you can feed to `generate_note` (no download). Platform cookies go through `! videonote login bilibili` / `! videonote setup` — **do not** pass them via MCP. Platform subtitles (incl. Bilibili AI subtitles) are preferred inside `generate_note`; there is no standalone subtitle tool.
 
 | Tool | Description | Type |
 |------|------|------|
 | `validate_url` | Detect link platform; generic → yt-dlp generic extraction (1800+ sites) | MCP tool |
 | `inspect_video` | List multi-P / playlist entries as standalone URLs | MCP tool |
-| `set_downloader_cookie` | Refuses cookies in-tool; use `! videonote login bilibili` | MCP tool |
-| `fetch_subtitles` | Fetch platform subtitles only (incl. Bilibili AI subtitles) | MCP tool |
 
 # 2 🎙 Speech-to-Text (ASR)
 
-`transcribe_media` does speech recognition only: local audio/video → transcript (async). Engines: `fast-whisper` (local) / `groq` / `bcut` / `kuaishou` (cloud) / `mlx-whisper` (macOS Apple Silicon GPU) / `funasr` (best for Chinese — VAD + auto punctuation). `set_transcriber` / `get_transcriber_config` / `list_transcriber_models` / `download_transcriber_model` manage engines and models.
-
-| Tool | Description | Type |
-|------|------|------|
-| `transcribe_media` | Local audio/video → transcript (async, poll) | MCP tool |
-| `set_transcriber` / `get_transcriber_config` | Switch / view the transcription engine (local ↔ cloud) | MCP tool |
-| `list_transcriber_models` / `download_transcriber_model` | Whisper model management (download / readiness) | MCP tool |
+Speech-to-text (ASR) runs inside `generate_note`: platform subtitles (incl. Bilibili AI subtitles) are preferred; otherwise the audio is transcribed. Engines: `fast-whisper` (local) / `groq` / `bcut` / `kuaishou` (cloud) / `mlx-whisper` (macOS Apple Silicon GPU) / `funasr` (best for Chinese — VAD + auto punctuation). Engine and model management goes through the CLI (`! videonote transcriber set/download`); read-only status via `get_config()`.
 
 # 3 🖼️ Frame Understanding (Sampling)
 
-`extract_frames` produces visual material only: local mp4 → keyframe `file://` list. `generate_note` supports video understanding directly: `video_understanding=True` + `video_interval` (default 6s) + `grid_size` (default [3,3]) — it stitches sampled frames into a grid and sends it inline to a **multimodal LLM** to "see" the visuals.
+`generate_note` supports video understanding directly: `video_understanding=True` + `video_interval` (default 6s) + `grid_size` (default [3,3]) — it stitches sampled frames into a grid and sends it inline to a **multimodal LLM** to "see" the visuals.
 
-| Tool | Description | Type |
+| Parameter | Description | Type |
 |------|------|------|
-| `extract_frames` | Local mp4 → keyframe file:// list (async) | MCP tool |
 | `video_understanding` / `video_interval` / `grid_size` | Sample frames at an interval + embed a grid image for a multimodal model | Parameter |
 
 # 4 💬 Danmaku and Comments
 
-`fetch_comments` / `fetch_danmaku` pull Bilibili comments and danmaku on their own (for preview / standalone use). Adding `include_comments=True` + `comments_limit` (default 20) to `generate_note` folds high-frequency danmaku and comment viewpoints into the note as an "Audience viewpoints" section (needs a Bilibili SESSDATA; a fetch failure does not block the task).
+Adding `include_comments=True` + `comments_limit` (default 20) to `generate_note` folds high-frequency danmaku and comment viewpoints into the note as an "Audience viewpoints" section (needs a Bilibili SESSDATA; a fetch failure does not block the task).
 
-| Tool | Description | Type |
+| Parameter | Description | Type |
 |------|------|------|
-| `fetch_comments` | Fetch Bilibili hot comments | MCP tool |
-| `fetch_danmaku` | Fetch Bilibili danmaku summary (dense periods + high-frequency words) | MCP tool |
 | `include_comments` / `comments_limit` | Note gains an "Audience viewpoints" section (default 20) | Parameter |
 
 # 5 ✍️ AI Summarization and Notes
 
-`summarize_note` consumes a **material package** (any combination of transcript / frames / comments) → Markdown. 9 styles: `minimal` / `detailed` / `academic` / `tutorial` / `xiaohongshu` / `life_journal` / `task_oriented` / `business` / `meeting_minutes`; `format=["screenshot"]` produces a portable note (`note.md` + `Assets/`, relative references — move the whole folder anywhere). Providers/models are managed via `list_providers` / `add_provider` / `update_provider` / `list_models` / `add_model` (keys go through the CLI only, outside the conversation). `agent_direct` lets the AGENT write the note itself.
+9 styles: `minimal` / `detailed` / `academic` / `tutorial` / `xiaohongshu` / `life_journal` / `task_oriented` / `business` / `meeting_minutes`; `format=["screenshot"]` produces a portable note (`note.md` + `Assets/`, relative references — move the whole folder anywhere). Provider / model / transcriber configuration goes through the CLI only (`! videonote providers set` / `! videonote transcriber set`); read-only inspection via `get_config()`. `agent_direct` lets the AGENT write the note itself.
 
-| Tool | Description | Type |
+| Parameter | Description | Type |
 |------|------|------|
-| `summarize_note` | Material package → Markdown (async) | MCP tool |
 | 9 note styles + `format` | Style selection / screenshot portable notes | Parameter |
-| `list_providers` / `add_provider` / `update_provider` | Provider management (keys masked; fill via CLI) | MCP tool |
-| `list_models` / `add_model` | View / manually add models | MCP tool |
+| `get_config` | Read-only config summary (defaults / providers / transcriber / cookie state); optional connectivity probe | MCP tool |
 | `agent_direct` | The AGENT reads the material package and writes the note itself | SKILL / Agent orchestration |
 
 # 6 📤 Multi-Format Export

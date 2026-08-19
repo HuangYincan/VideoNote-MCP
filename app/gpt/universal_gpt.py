@@ -460,7 +460,7 @@ class UniversalGPT(GPT):
         if not chunks and not partials:
             raise ValueError(
                 "素材为空（无转写分段、无帧图片），无法总结——请先提供转写"
-                "（transcribe_media / fetch_subtitles / prepare_note_material）或帧素材"
+                "（prepare_note_material）或帧素材"
             )
 
         for offset, chunk in enumerate(chunks[len(partials):]):

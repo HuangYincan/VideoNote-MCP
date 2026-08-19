@@ -685,3 +685,13 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **删除 ~15 个死函数**：whisper_models 自定义模型写 API ×6（读端保留，写端改手工编辑 `config/whisper_models.json`）、delete_note + delete_task_by_video 链、bilibili delete_video、get_all_models、get_enabled_providers、mark_downloading/get_error、preprocess_pipeline、get_app_dir、apply_to_env、OpenAI provider test_connection、abogus 4 个生成辅助、record_task_meta。
 - **工具冗余结论**：无实质冗余（wait_for_note = deprecated compat、_stage_label = micro-tool），**39 工具名单不变**。
 - **741 passed + ruff F/I-clean**（743 − 2：删 WhisperRegistryConcurrencyTest + test_record_meta_preserved；WhisperModelsAtomicWriteTest 重写为 WhisperCustomJsonReadTest 2→2 净 0）。
+
+## Wave H 批 24（2026-08-19 · 工具面精简 #135，39→18 工具，741→662 tests）
+
+用户发起（工具数质疑 → 确认删配置 CRUD + 步骤工具，只读合并）。
+
+- **删 21 个工具**：写配置 13（provider/model/transcriber/cookie CRUD——MCP 面零写配置入口，凭证红线最彻底）、流水线步骤 6（端到端已含）、wait_for_note（SKILL 本已禁用）、_stage_label（降级内部 helper）。
+- **新增 `get_config(provider_id?)`**：只读配置汇总 + 可选连通性探测（用已存 key，不接受 key 参数）。
+- **连带**：步骤任务链 + `_coerce_transcript` + 7 死符号删除；`_index_step_task` 误删恢复。
+- **测试**：−79 + 5（GetConfigTest）= **662 passed + ruff F/I-clean**。
+- **文档全同步**：ci.yml 名单、SKILL、commands、docs/02/04/00、README 中英。

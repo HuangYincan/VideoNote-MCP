@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import uuid
 from concurrent.futures import Future
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -106,65 +107,6 @@ class TaskStatusNotFoundTest(unittest.TestCase):
         self.assertIsNone(resp["elapsed_secs"])
         self.assertIsNone(resp["result"])
 
-    def test_wait_unknown_returns_immediately(self):
-        resp = json.loads(server.wait_for_note("deadbeef0002", timeout=30, poll_interval=5))
-        self.assertEqual(resp["status"], "NOT_FOUND")
-
-
-class StepTaskSuccessTest(unittest.TestCase):
-    def tearDown(self):
-        shutil.rmtree(server.NOTE_OUTPUT_DIR / "stepok000001", ignore_errors=True)
-
-    def test_run_step_task_writes_success(self):
-        def step(task_id, cancel_event):
-            return {"kind": "transcript", "transcript": {"full_text": "hi", "segments": []}}
-
-        server._run_step_task("stepok000001", None, step_fn=step)
-        resp = json.loads(server.get_task_status("stepok000001"))
-        self.assertEqual(resp["status"], "SUCCESS")
-        self.assertEqual(resp["result"]["kind"], "transcript")
-
-    def test_step_task_keeps_transcript_by_default(self):
-        # docs 审计 G3：transcribe_media 的转写是主产物，get_task_status 默认不剥
-        def step(task_id, cancel_event):
-            return {"kind": "transcript", "transcript": {"full_text": "hi", "segments": []}}
-
-        server._run_step_task("stepok000002", None, step_fn=step)
-        resp = json.loads(server.get_task_status("stepok000002"))
-        self.assertEqual(resp["result"]["transcript"]["full_text"], "hi")
-
-    def test_note_result_strips_transcript_by_default(self):
-        # 笔记任务（无 kind）默认剥掉转写，include_transcript=True 才保留
-        tid = "notestr000001"
-        try:
-            server._atomic_write_json(
-                server.NOTE_OUTPUT_DIR / tid / "result.json",
-                {"markdown": "# 笔记", "transcript": {"full_text": "secret", "segments": []}},
-            )
-            server._write_status(tid, "SUCCESS", message="完成")
-            resp = json.loads(server.get_task_status(tid))
-            self.assertNotIn("transcript", resp["result"])
-            resp2 = json.loads(server.get_task_status(tid, include_transcript=True))
-            self.assertEqual(resp2["result"]["transcript"]["full_text"], "secret")
-        finally:
-            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
-
-    def test_index_step_task_visible_in_list(self):
-        tid = "stepidx000001"
-        try:
-            server._index_step_task(tid, "transcript", title="clip.wav")
-            rows = json.loads(server.list_tasks())
-            ids = {r.get("task_id") for r in rows}
-            self.assertIn(tid, ids)
-        finally:
-            from app.db.video_task_dao import delete_task
-
-            try:
-                delete_task(tid)
-            except Exception:
-                pass
-            shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
-
 
 class DefaultProviderTest(unittest.TestCase):
     def test_prefers_default_model_key(self):
@@ -196,21 +138,6 @@ class DefaultProviderTest(unittest.TestCase):
 
 
 class SecretsRefusedTest(unittest.TestCase):
-    def test_add_provider_rejects_api_key(self):
-        with self.assertRaises(ValueError) as ctx:
-            server.add_provider("x", api_key="sk-secret", base_url="https://api.example", type="custom")
-        self.assertIn("不能经 MCP", str(ctx.exception))
-
-    def test_update_provider_rejects_api_key(self):
-        with self.assertRaises(ValueError) as ctx:
-            server.update_provider("openai", api_key="sk-secret")
-        self.assertIn("不能经 MCP", str(ctx.exception))
-
-    def test_set_downloader_cookie_rejects_cookie(self):
-        with self.assertRaises(ValueError) as ctx:
-            server.set_downloader_cookie("bilibili", cookie="SESSDATA=abc")
-        self.assertIn("不能经 MCP", str(ctx.exception))
-
     def test_diarize_media_rejects_hf_token(self):
         with self.assertRaises(ValueError) as ctx:
             server.diarize_media("/tmp/x.wav", hf_token="hf_xxx")
@@ -225,29 +152,6 @@ class HealthCheckVersionTest(unittest.TestCase):
         self.assertIn("keyed_providers", data)
         self.assertIn("skill_refresh", data)
         self.assertEqual(data["max_workers"], server._MAX_WORKERS)
-
-
-class ListModelsShapeTest(unittest.TestCase):
-    def test_live_models_normalized(self):
-        provider = {"id": "p1", "api_key": "sk", "base_url": "https://x", "name": "x"}
-        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=provider):
-            with mock.patch.object(server, "_fetch_live_models", return_value=["b-model", "a-model"]):
-                data = json.loads(server.list_models("p1"))
-        self.assertTrue(data["ok"])
-        self.assertEqual(data["source"], "provider_api")
-        self.assertEqual(data["models"], [{"id": "a-model", "name": "a-model"}, {"id": "b-model", "name": "b-model"}])
-
-    def test_db_fallback_normalized(self):
-        provider = {"id": "p1", "api_key": "sk", "base_url": "https://x", "name": "x"}
-        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=provider):
-            with mock.patch.object(server, "_fetch_live_models", return_value=None):
-                with mock.patch.object(
-                    server, "get_models_by_provider", return_value=[{"model_name": "local-1"}]
-                ):
-                    data = json.loads(server.list_models("p1"))
-        self.assertTrue(data["ok"])
-        self.assertEqual(data["source"], "database")
-        self.assertEqual(data["models"], [{"id": "local-1", "name": "local-1"}])
 
 
 class NoteDirContractTest(unittest.TestCase):
@@ -319,30 +223,6 @@ class NoteDirContractTest(unittest.TestCase):
             shutil.rmtree(portable, ignore_errors=True)
 
 
-class ExtractFramesValidationTest(unittest.TestCase):
-    """docs 审计（F 组后续）：extract_frames 参数校验——非法 interval/grid 不应透传。"""
-
-    def test_invalid_grid_rejected(self):
-        with tempfile.TemporaryDirectory() as td:
-            f = Path(td) / "clip.mp4"
-            f.write_bytes(b"x")
-            with self.assertRaises(ValueError):
-                server.extract_frames(str(f), grid_size=[0, 3])
-            with self.assertRaises(ValueError):
-                server.extract_frames(str(f), grid_size=[3])
-            with self.assertRaises(ValueError):
-                server.extract_frames(str(f), grid_size=[3, "a"])
-
-    def test_zero_interval_clamped_to_one(self):
-        with tempfile.TemporaryDirectory() as td:
-            f = Path(td) / "clip.mp4"
-            f.write_bytes(b"x")
-            with mock.patch.object(server, "_submit_step_task", return_value="f1") as m:
-                server.extract_frames(str(f), video_interval=0)
-            kwargs = m.call_args.kwargs
-            self.assertEqual(kwargs["video_interval"], 1)
-
-
 class StyleFormatValidationTest(unittest.TestCase):
     """style/format 白名单（schema enum 只约束客户端，服务端入口显式校验兜底）。"""
 
@@ -367,20 +247,6 @@ class StyleFormatValidationTest(unittest.TestCase):
             server.generate_note("https://example.com/v", format=["toc", "summary"])
         self.assertNotIn("format 只支持", str(cm.exception))
 
-    def test_bogus_style_rejected_in_summarize_note(self):
-        with self.assertRaises(ValueError) as cm:
-            server.summarize_note(
-                {"language": "zh", "full_text": "x", "segments": []}, style="nope"
-            )
-        self.assertIn("style 必须是", str(cm.exception))
-
-    def test_bogus_format_rejected_in_summarize_note(self):
-        with self.assertRaises(ValueError) as cm:
-            server.summarize_note(
-                {"language": "zh", "full_text": "x", "segments": []}, format=["toc", "bad"]
-            )
-        self.assertIn("format 只支持", str(cm.exception))
-
     def test_none_style_skips_validation(self):
         # 默认路径（None → setup 配置）不被白名单拦截，继续走 provider 解析
         with self.assertRaises(ValueError) as cm:
@@ -398,67 +264,6 @@ class StyleFormatValidationTest(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             server.generate_note("https://example.com/v", format=[1, "toc"])
         self.assertIn("收到: ['1']", str(cm.exception))
-
-    def test_string_format_rejected_in_summarize_note(self):
-        with self.assertRaises(ValueError) as cm:
-            server.summarize_note(
-                {"language": "zh", "full_text": "x", "segments": []}, format="toc"
-            )
-        self.assertIn("format 必须是字符串列表", str(cm.exception))
-
-
-class FetchCommentsLimitTest(unittest.TestCase):
-    """fetch_comments 的 limit<=0 会令 fetcher 的 `len(seen) >= limit` 恒真——静默空结果，钳制到 ≥1。"""
-
-    def test_limit_clamped_to_one(self):
-        with mock.patch(
-            "app.downloaders.bilibili_comment.BilibiliCommentFetcher.fetch_comments",
-            return_value={"ok": True, "comments": []},
-        ) as m:
-            server.fetch_comments("https://www.bilibili.com/video/BV1xx411c7mD", limit=0)
-        self.assertEqual(m.call_args.kwargs.get("limit"), 1)
-
-    def test_negative_limit_clamped(self):
-        with mock.patch(
-            "app.downloaders.bilibili_comment.BilibiliCommentFetcher.fetch_comments",
-            return_value={"ok": True, "comments": []},
-        ) as m:
-            server.fetch_comments("https://www.bilibili.com/video/BV1xx411c7mD", limit=-5)
-        self.assertEqual(m.call_args.kwargs.get("limit"), 1)
-
-    def test_valid_limit_passes_through(self):
-        with mock.patch(
-            "app.downloaders.bilibili_comment.BilibiliCommentFetcher.fetch_comments",
-            return_value={"ok": True, "comments": []},
-        ) as m:
-            server.fetch_comments("https://www.bilibili.com/video/BV1xx411c7mD", limit=10)
-        self.assertEqual(m.call_args.kwargs.get("limit"), 10)
-
-
-class DownloadModelDedupTest(unittest.TestCase):
-    """download_transcriber_model：尺寸大小写宽容 + 进行中去重（#121 C10）。"""
-
-    def test_size_case_insensitive_and_submits(self):
-        with mock.patch.object(server.dl_state, "try_mark", return_value=True):
-            with mock.patch.object(server, "_dl_pool") as m_pool:
-                resp = json.loads(server.download_transcriber_model("  SMALL  "))
-        self.assertTrue(resp["started"])
-        self.assertEqual(resp["model_size"], "small")  # 已归一（大小写+空白宽容）
-        m_pool.submit.assert_called_once()
-
-    def test_duplicate_download_skipped(self):
-        with mock.patch.object(server.dl_state, "try_mark", return_value=False):
-            with mock.patch.object(server, "_dl_pool") as m_pool:
-                resp = json.loads(server.download_transcriber_model("small"))
-        self.assertFalse(resp["started"])
-        self.assertIn("跳过重复提交", resp["message"])
-        m_pool.submit.assert_not_called()
-
-    def test_unknown_size_still_rejected(self):
-        # 大小写宽容不等于尺寸宽松：白名单校验依旧
-        with self.assertRaises(ValueError):
-            server.download_transcriber_model("BOGUS")
-
 
 class ConcurrencyGuardTest(unittest.TestCase):
     def test_guard_raises_when_full(self):
@@ -494,141 +299,6 @@ class ConcurrencyGuardTest(unittest.TestCase):
             with server._tasks_lock:
                 server._task_futures.clear()
                 server._task_futures.update(old)
-
-
-class ProviderConfigToolsTest(unittest.TestCase):
-    """Phase 2d：delete_provider / delete_model / test_provider / read_app_config。"""
-
-    def test_delete_provider_deletes_and_clears_default(self):
-        with mock.patch.object(
-            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
-        ):
-            with mock.patch.object(server.ProviderService, "delete_provider") as m_del:
-                with mock.patch.object(server, "remove_app_config") as m_rm:
-                    resp = json.loads(server.delete_provider("p1"))
-        self.assertTrue(resp["deleted"])
-        self.assertEqual(resp["id"], "p1")
-        m_del.assert_called_once_with("p1")
-        m_rm.assert_called_once_with("default_model:p1")
-
-    def test_delete_provider_missing_raises(self):
-        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=None):
-            with self.assertRaises(ValueError):
-                server.delete_provider("nosuch")
-
-    def test_delete_model_resolves_and_deletes(self):
-        with mock.patch.object(
-            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
-        ), mock.patch.object(
-            server, "get_models_by_provider", return_value=[{"id": 7, "model_name": "local-1"}]
-        ):
-            with mock.patch.object(server, "_dao_delete_model") as m_del:
-                with mock.patch.object(server, "remove_app_config"):
-                    resp = json.loads(server.delete_model("p1", "local-1"))
-        self.assertTrue(resp["deleted"])
-        m_del.assert_called_once_with(7)
-
-    def test_add_model_missing_provider_raises(self):
-        """供应商不存在时 add_model 必须拒绝（无 FK + 弱类型，此前静默写孤儿行，#123 A7）。"""
-        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=None):
-            with mock.patch.object(server, "insert_model") as m_ins:
-                with self.assertRaises(ValueError) as cm:
-                    server.add_model("nosuch", "gpt-x")
-        self.assertIn("供应商不存在", str(cm.exception))
-        m_ins.assert_not_called()
-
-    def test_add_model_success(self):
-        with mock.patch.object(
-            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
-        ), mock.patch.object(server, "get_model_by_provider_and_name", return_value=None):
-            with mock.patch.object(server, "insert_model") as m_ins:
-                resp = json.loads(server.add_model("p1", "gpt-x"))
-        self.assertTrue(resp["added"])
-        m_ins.assert_called_once_with(provider_id="p1", model_name="gpt-x")
-
-    def test_add_model_duplicate_idempotent(self):
-        """重复 add 同一模型名 → added:false，不插重复行（向导写前查重、MCP 直插曾
-        产生重复行 → list_models 本地回退显示重名，#124 A3）。"""
-        with mock.patch.object(
-            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
-        ), mock.patch.object(
-            server, "get_model_by_provider_and_name", return_value={"id": 1, "model_name": "gpt-x"}
-        ):
-            with mock.patch.object(server, "insert_model") as m_ins:
-                resp = json.loads(server.add_model("p1", "gpt-x"))
-        self.assertFalse(resp["added"])
-        self.assertIn("已存在", resp["message"])
-        m_ins.assert_not_called()
-
-    def test_delete_model_missing_raises(self):
-        with mock.patch.object(
-            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
-        ), mock.patch.object(server, "get_models_by_provider", return_value=[]):
-            with self.assertRaises(ValueError):
-                server.delete_model("p1", "nope")
-
-    def test_delete_model_missing_provider_raises(self):
-        """供应商不存在时 delete_model 先拒绝（与 add_model 同款，#127 A2）——
-        此前误报「模型不存在」，误导按模型名排查。"""
-        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=None):
-            with mock.patch.object(server, "get_models_by_provider") as m_rows:
-                with self.assertRaises(ValueError) as cm:
-                    server.delete_model("nosuch", "gpt-x")
-        self.assertIn("供应商不存在", str(cm.exception))
-        m_rows.assert_not_called()
-
-    def test_delete_model_clears_default_only_when_matching(self):
-        # 删「当前默认模型」→ 清 default_model；删非默认 → 保留（#121 C12）
-        rows = [{"id": 7, "model_name": "local-1"}, {"id": 8, "model_name": "local-2"}]
-        with mock.patch.object(
-            server.ProviderService, "get_provider_by_id", return_value={"id": "p1", "name": "测试源"}
-        ), mock.patch.object(server, "get_models_by_provider", return_value=rows):
-            with mock.patch.object(server, "_dao_delete_model"):
-                # 默认是别的模型：不得误清
-                with mock.patch.object(server, "get_app_config", return_value={"default_model:p1": "local-2"}):
-                    with mock.patch.object(server, "remove_app_config") as m_rm:
-                        server.delete_model("p1", "local-1")
-                m_rm.assert_not_called()
-                # 默认就是被删模型：清
-                with mock.patch.object(server, "get_app_config", return_value={"default_model:p1": "local-1"}):
-                    with mock.patch.object(server, "remove_app_config") as m_rm2:
-                        server.delete_model("p1", "local-1")
-                m_rm2.assert_called_once_with("default_model:p1")
-
-    def test_test_provider_ok_and_fail(self):
-        provider = {"id": "p1", "api_key": "sk-123", "base_url": "https://api.x", "name": "x"}
-        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=provider):
-            with mock.patch.object(
-                server, "probe_models", return_value={"ok": True, "models": ["b", "a", "a"]}
-            ):
-                ok = json.loads(server.test_provider("p1"))
-        self.assertTrue(ok["ok"])
-        self.assertEqual(ok["count"], 3)
-        self.assertEqual(ok["models"], ["a", "b"])
-
-        with mock.patch.object(server.ProviderService, "get_provider_by_id", return_value=provider):
-            with mock.patch.object(
-                server, "probe_models", return_value={"ok": False, "error": "401"}
-            ):
-                bad = json.loads(server.test_provider("p1"))
-        self.assertFalse(bad["ok"])
-        self.assertEqual(bad["error"], "401")
-
-    def test_read_app_config_filters_sensitive_and_reports_default(self):
-        cfg = {
-            "hf_token": "hf_xxx",
-            "notes_dir": "/tmp/notes",
-            "default_model:p1": "gpt-4o",
-            "default_export_formats": ["md", "pdf"],
-        }
-        with mock.patch.object(server, "get_app_config", return_value=cfg):
-            with mock.patch.object(server, "_resolve_default_provider_id", return_value="p1"):
-                data = json.loads(server.read_app_config())
-        self.assertNotIn("hf_token", data)
-        self.assertIn("notes_dir", data)
-        self.assertEqual(data["default_provider_id"], "p1")
-        self.assertEqual(data["default_model:p1"], "gpt-4o")
-        self.assertEqual(data["default_export_formats"], ["md", "pdf"])
 
 
 class ExportEmptyFormatsTest(unittest.TestCase):
@@ -1031,18 +701,6 @@ class GridSizeValidationTest(unittest.TestCase):
             server.generate_note("https://example.com/v", grid_size=None)
         self.assertNotIn("grid_size 必须是", str(cm.exception))
 
-    def test_extract_frames_uses_shared_helper(self):
-        # extract_frames 换用共享校验后行为不变：非法值仍在入口被拒（文件存在检查在前）
-        tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-        tmp.close()
-        try:
-            with self.assertRaises(ValueError) as cm:
-                server.extract_frames(tmp.name, grid_size=[1, 2, 3])
-            self.assertIn("grid_size 必须是两个正整数", str(cm.exception))
-        finally:
-            Path(tmp.name).unlink(missing_ok=True)
-
-
 class ListTasksPaginationTest(unittest.TestCase):
     """list_tasks 的 limit/offset 分页（#102）：缺省全量向后兼容；limit 钳制 ≥1。"""
 
@@ -1080,166 +738,6 @@ class ListTasksPaginationTest(unittest.TestCase):
         # limit=0 显式「取 0 条」→ 空列表（不再被钳成 1、误导「没有任务」判断，#127 A6）
         tasks = json.loads(server.list_tasks(limit=0))
         self.assertEqual(tasks, [])
-
-
-class SetTranscriberValidationTest(unittest.TestCase):
-    """set_transcriber 未知引擎：持久化后运行时 get_transcriber 静默回退 fast-whisper——
-    用户以为配了云端引擎实际跑本地；入口显式报错（#103）。"""
-
-    def test_unknown_type_rejected(self):
-        with self.assertRaises(ValueError) as cm:
-            server.set_transcriber("bogus-engine")
-        self.assertIn("transcriber_type 必须是", str(cm.exception))
-        self.assertIn("fast-whisper", str(cm.exception))
-
-    def test_valid_types_pass(self):
-        for t in ("fast-whisper", "groq", "bcut", "kuaishou", "mlx-whisper", "funasr"):
-            with mock.patch.object(
-                server.TranscriberConfigManager,
-                "update_config",
-                return_value={"transcriber_type": t, "whisper_model_size": "small"},
-            ) as m:
-                resp = json.loads(server.set_transcriber(t))
-            m.assert_called_once()
-            self.assertEqual(resp["transcriber_type"], t)
-
-    def test_whitelist_matches_enum(self):
-        # 白名单与 TranscriberType 枚举同源——防止两处漂移
-        from app.transcriber.transcriber_provider import TranscriberType
-
-        self.assertEqual(set(server._TRANSCRIBER_TYPES), {e.value for e in TranscriberType})
-
-
-class SetTranscriberSizeValidationTest(unittest.TestCase):
-    """set_transcriber 的 whisper_model_size 同样入口校验（#103 只校了引擎）：
-    非法尺寸被持久化后，任务跑到 TRANSCRIBING 才因模型加载失败炸（或 preflight
-    报「未下载」）——与运行时同源（whisper_models 注册表），#108。"""
-
-    def test_bogus_size_rejected(self):
-        with self.assertRaises(ValueError) as cm:
-            server.set_transcriber("fast-whisper", whisper_model_size="bogus-size")
-        self.assertIn("未知 whisper 模型尺寸", str(cm.exception))
-        self.assertIn("large-v3", str(cm.exception))
-
-    def test_bogus_size_rejected_even_for_cloud_engine(self):
-        # 云端引擎忽略尺寸，但尺寸仍会被持久化——拼错就该现在报，而不是切回本地时炸
-        with self.assertRaises(ValueError) as cm:
-            server.set_transcriber("groq", whisper_model_size="bogus-size")
-        self.assertIn("未知 whisper 模型尺寸", str(cm.exception))
-
-    def test_builtin_size_passes(self):
-        with mock.patch.object(
-            server.TranscriberConfigManager,
-            "update_config",
-            return_value={"transcriber_type": "fast-whisper", "whisper_model_size": "small"},
-        ) as m:
-            resp = json.loads(server.set_transcriber("fast-whisper", whisper_model_size="small"))
-        m.assert_called_once()
-        self.assertEqual(resp["whisper_model_size"], "small")
-
-    def test_repo_id_passthrough_accepted(self):
-        # 含 "/" 的 HF repo_id 是合法运行时输入（resolve 直通），不得被白名单误伤
-        with mock.patch.object(
-            server.TranscriberConfigManager,
-            "update_config",
-            return_value={"transcriber_type": "fast-whisper", "whisper_model_size": "Systran/faster-whisper-small"},
-        ) as m:
-            server.set_transcriber("fast-whisper", whisper_model_size="Systran/faster-whisper-small")
-        m.assert_called_once()
-
-    def test_local_dir_passthrough_accepted(self):
-        # 已存在的本地目录同样是合法运行时输入
-        with tempfile.TemporaryDirectory() as td:
-            with mock.patch.object(
-                server.TranscriberConfigManager,
-                "update_config",
-                return_value={"transcriber_type": "fast-whisper", "whisper_model_size": td},
-            ) as m:
-                server.set_transcriber("fast-whisper", whisper_model_size=td)
-            m.assert_called_once()
-
-
-class SummarizeTranscriptShapeTest(unittest.TestCase):
-    """summarize_note 的 transcript 形状：缺 segments/full_text 时曾静默拿空素材让 LLM
-    凭空生成笔记（还烧配额）；入口显式报错（#104）。#133 B3 收口：总结流水线只消费
-    segments（_build_segment_text），只传 full_text 也拒绝——segments 必须是列表
-    （空列表=静音视频合法转写，不拦）。"""
-
-    @staticmethod
-    def _submit(transcript):
-        """stub provider/模型/线程池，让 summarize_note 干净走到提交点。"""
-        done = Future()
-        done.set_result(None)
-        with mock.patch(
-            "videonote_mcp.server._resolve_default_provider_id", return_value="t-provider"
-        ), mock.patch(
-            "videonote_mcp.server.get_models_by_provider", return_value=[{"model_name": "t-model"}]
-        ), mock.patch("videonote_mcp.server._pool.submit", return_value=done):
-            return server.summarize_note(transcript)
-
-    def test_empty_dict_rejected(self):
-        with self.assertRaises(ValueError) as cm:
-            self._submit({})
-        self.assertIn("segments 必须是分段列表", str(cm.exception))
-
-    def test_missing_content_fields_rejected(self):
-        # 传 fetch 结果外层（{"ok": ...}）是常见传错——必须报错而不是拿空素材总结
-        with self.assertRaises(ValueError) as cm:
-            self._submit({"ok": True, "language": "zh"})
-        self.assertIn("segments 必须是分段列表", str(cm.exception))
-
-    def test_garbage_json_string_rejected(self):
-        with self.assertRaises(ValueError) as cm:
-            self._submit('{"not": "a transcript"}')
-        self.assertIn("segments 必须是分段列表", str(cm.exception))
-
-    def test_non_dict_rejected(self):
-        with self.assertRaises(ValueError) as cm:
-            self._submit(42)
-        self.assertIn("segments 必须是分段列表", str(cm.exception))
-
-    def test_empty_but_shaped_transcript_accepted(self):
-        # 静音视频的合法转写（segments 为空但字段在）不拦截——是否总结是用户的决定
-        resp = self._submit({"language": "zh", "segments": [], "full_text": ""})
-        self.assertIn('"status": "PENDING"', resp)
-
-    def test_full_text_only_rejected(self):
-        # #133 B3：只传 full_text 曾放行（#104 只查「字段存在」），但流水线只消费
-        # segments——LLM 拿零素材凭空生成。现在显式拒绝
-        with self.assertRaises(ValueError) as cm:
-            self._submit({"full_text": "hello"})
-        self.assertIn("segments 必须是分段列表", str(cm.exception))
-
-    def test_segments_only_accepted(self):
-        resp = self._submit({"segments": [{"start": 0, "end": 1, "text": "hi"}]})
-        self.assertIn('"status": "PENDING"', resp)
-
-
-class ExtractFramesIntervalWarningTest(unittest.TestCase):
-    """video_interval 非数值静默回退 6——与 num_speakers 同口径（#101），打 warning 后回退（#104）。"""
-
-    def test_non_numeric_interval_warns_and_falls_back(self):
-        with tempfile.TemporaryDirectory() as td:
-            f = Path(td) / "clip.mp4"
-            f.write_bytes(b"x")
-            with mock.patch.object(server, "_submit_step_task", return_value="f1") as m:
-                with self.assertLogs("videonote_mcp.server", level="WARNING") as logs:
-                    server.extract_frames(str(f), video_interval="abc")
-            kwargs = m.call_args.kwargs
-            self.assertEqual(kwargs["video_interval"], 6)
-            self.assertTrue(any("video_interval" in msg for msg in logs.output))
-
-    def test_numeric_string_still_accepted(self):
-        # 数字字符串是合法输入（int() 可转），不打扰
-        with tempfile.TemporaryDirectory() as td:
-            f = Path(td) / "clip.mp4"
-            f.write_bytes(b"x")
-            with mock.patch.object(server, "_submit_step_task", return_value="f1") as m, mock.patch.object(
-                server.logger, "warning"
-            ) as w:
-                server.extract_frames(str(f), video_interval="10")
-            self.assertEqual(m.call_args.kwargs["video_interval"], 10)
-            self.assertFalse(any("video_interval" in str(c) for c in w.call_args_list))
 
 
 class ExportFormatsWhitelistTest(unittest.TestCase):
@@ -1318,45 +816,6 @@ class ExportFormatsWhitelistTest(unittest.TestCase):
             self.assertIn("srt", resp["formats"])
         finally:
             shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
-
-
-class FetchSubtitlesPlatformTest(unittest.TestCase):
-    """fetch_subtitles 的 platform 参数：拼错平台曾被 pipeline 吞掉异常转成「该视频
-    没有可用平台字幕」——误报成视频没字幕；入口白名单显式报错（#105）。"""
-
-    def test_bogus_platform_reported_explicitly(self):
-        resp = json.loads(server.fetch_subtitles("https://example.com/v", platform="bilibil"))
-        self.assertFalse(resp["ok"])
-        self.assertIn("platform 只支持", resp["error"])
-        self.assertIn("bilibili", resp["error"])
-
-    def test_empty_platform_reported_explicitly(self):
-        # 空串曾因 falsy 静默走自动检测（用户的拼写错误无声消失）
-        resp = json.loads(server.fetch_subtitles("https://example.com/v", platform=""))
-        self.assertFalse(resp["ok"])
-        self.assertIn("platform 只支持", resp["error"])
-
-    def test_valid_platform_passes_to_pipeline(self):
-        with mock.patch(
-            "videonote_mcp.server.pipeline.fetch_subtitles", return_value=None
-        ) as m:
-            resp = json.loads(server.fetch_subtitles("https://example.com/v", platform="bilibili"))
-        m.assert_called_once_with("https://example.com/v", "bilibili")
-        self.assertNotIn("platform 只支持", resp.get("error", ""))
-
-    def test_none_platform_auto_detect(self):
-        with mock.patch(
-            "videonote_mcp.server.pipeline.fetch_subtitles",
-            return_value={"language": "zh", "segments": [], "full_text": ""},
-        ) as m:
-            resp = json.loads(server.fetch_subtitles("https://example.com/v"))
-        m.assert_called_once_with("https://example.com/v", None)
-        self.assertTrue(resp["ok"])
-
-    def test_whitelist_matches_factory(self):
-        from app.services.constant import SUPPORT_PLATFORM_MAP
-
-        self.assertEqual(set(server._KNOWN_PLATFORMS), set(SUPPORT_PLATFORM_MAP))
 
 
 class MergeAudioFileUriTest(unittest.TestCase):
@@ -1947,54 +1406,6 @@ class ScreenshotLinkFormatMergeTest(unittest.TestCase):
         self.assertIs(params["screenshot"], False)
 
 
-class SummarizeStepFormatTest(unittest.TestCase):
-    """#122 A5：_step_summarize 剥离 screenshot/link 并清洗残留标记。
-
-    summarize_note 只有素材（转写/帧/评论），没有视频文件与 video_id，
-    screenshot（抽帧）与 link（平台跳转）两项后处理无法执行。
-    """
-
-    def _run(self, formats, markdown="ok"):
-        with mock.patch.object(server.pipeline, "get_gpt", return_value=object()), mock.patch.object(
-            server.pipeline, "summarize_material", return_value=markdown
-        ) as ms:
-            payload = server._step_summarize(
-                "sumfmt000001",
-                None,
-                {"title": "t", "transcript": {"full_text": "x", "segments": []}},
-                provider_id="p1",
-                model_name="m1",
-                style=None,
-                extras=None,
-                formats=formats,
-            )
-        return payload, ms
-
-    def test_screenshot_link_stripped_from_formats(self):
-        payload, ms = self._run(
-            ["toc", "screenshot", "link", "summary"],
-            "# 标题\n正文 *Content-01:23* 与 *Screenshot-[00:05]* 残留",
-        )
-        # 传给 summarize_material 的 formats 不含 screenshot/link（prompt 不再要求输出标记）
-        self.assertNotIn("screenshot", ms.call_args.kwargs["formats"])
-        self.assertNotIn("link", ms.call_args.kwargs["formats"])
-        self.assertIn("toc", ms.call_args.kwargs["formats"])
-        # 返回 markdown 无残留字面标记
-        self.assertNotIn("Content-", payload["markdown"])
-        self.assertNotIn("Screenshot-", payload["markdown"])
-        self.assertIn("# 标题", payload["markdown"])
-
-    def test_only_toc_formats_untouched(self):
-        payload, ms = self._run(["toc"], "标题 ok")
-        self.assertEqual(ms.call_args.kwargs["formats"], ["toc"])
-        self.assertEqual(payload["markdown"], "标题 ok")
-
-    def test_none_formats_empty(self):
-        payload, ms = self._run(None)
-        self.assertEqual(ms.call_args.kwargs["formats"], [])
-        self.assertEqual(payload["markdown"], "ok")
-
-
 class StripMediaMarkersTest(unittest.TestCase):
     """#122 A5 的清洗函数：三种写法（星号/方括号/裸时间）都能剥掉。"""
 
@@ -2018,49 +1429,6 @@ class StripMediaMarkersTest(unittest.TestCase):
     def test_plain_text_untouched(self):
         md = "# 标题\n正文不含标记"
         self.assertEqual(self._strip(md), md)
-
-
-class ModelDownloadMarkTest(unittest.TestCase):
-    """#122 A7 + #124 A7：download_transcriber_model 的检查-标记必须原子（try_mark）。
-
-    旧实现：is_downloading 检查在调用线程、mark 在 worker 内——两次连续提交
-    各起一个 worker 重下整个模型；再往前 mark 前移后，检查与标记仍是两步，
-    两个并发请求（FastMCP 每请求一线程）可同时通过检查。
-    """
-
-    def test_second_submit_immediately_detects(self):
-        state = {"downloading": False}
-
-        def _try_mark(key):
-            if state["downloading"]:
-                return False
-            state["downloading"] = True
-            return True
-
-        with mock.patch(
-            "videonote_mcp.server.dl_state.try_mark", side_effect=_try_mark
-        ), mock.patch("videonote_mcp.server._dl_pool.submit"):
-            first = json.loads(server.download_transcriber_model("tiny"))
-            second = json.loads(server.download_transcriber_model("tiny"))
-        self.assertTrue(first["started"])
-        self.assertFalse(second["started"])
-        self.assertIn("跳过重复提交", second["message"])
-
-    def test_try_mark_atomic_wins_once(self):
-        """dl_state.try_mark 原子原语：同一 key 只赢一次，并发调用不双开（#124 A7）。"""
-        from app.transcriber import model_download_state as dl
-
-        try:
-            self.assertTrue(dl.try_mark("unit-test-key"))
-            self.assertFalse(dl.try_mark("unit-test-key"))
-            # 失败方不改状态（仍是 downloading）
-            self.assertTrue(dl.is_downloading("unit-test-key"))
-        finally:
-            dl.mark_done("unit-test-key")
-
-    def test_invalid_size_rejected(self):
-        with self.assertRaises(ValueError):
-            server.download_transcriber_model("bogus-size")
 
 
 class ListTasksForwardTest(unittest.TestCase):
@@ -2125,66 +1493,104 @@ class ValidateUrlSsrfTest(unittest.TestCase):
         self.assertEqual(resp["platform"], "local")
 
 
-class UpdateProviderKeyInvalidationTest(unittest.TestCase):
-    """docs/05 第 16 轮 A2：base_url 变更使已存 key 失效，防 key 被定向转发。"""
+class GetConfigTest(unittest.TestCase):
+    """#135：配置只读合并工具 get_config（合并 read_app_config / get_transcriber_config / test_provider）。
 
-    def test_service_clears_key_on_base_url_change(self):
-        from app.services.provider import ProviderService
+    不传 provider_id → 只读汇总（app_config 过滤敏感项 + providers 掩码 + transcriber 状态 +
+    cookie 平台名）；传 provider_id → 附加连通性探测（用已存 key，不接受 key 参数）。
+    写配置一律走 CLI（MCP 面无写配置工具，凭证红线最干净）。
+    """
 
-        fake = mock.MagicMock(base_url="https://old.example/v1", api_key="enc:xxx", enabled=1)
-        with mock.patch("app.services.provider.get_provider_by_id", return_value=fake), mock.patch(
-            "app.services.provider.update_provider"
-        ) as m_dao:
-            ProviderService.update_provider("p1", {"base_url": "https://new.example/v1"})
-        # 服务层在 base_url 变更时把 key 清空后交 DAO（key 不随新端点转发）
-        self.assertEqual(m_dao.call_args[1]["api_key"], "")
+    def _patch_reads(self):
+        return [
+            mock.patch.object(
+                server, "get_app_config",
+                return_value={"default_style": "detailed", "default_provider_id": "p1", "hf_token": "secret"},
+            ),
+            mock.patch.object(
+                server.ProviderService, "get_all_providers_safe",
+                return_value=[{"id": "p1", "name": "测试源", "api_key": "sk-***"}],
+            ),
+            mock.patch.object(
+                server.TranscriberConfigManager, "get_config",
+                return_value={"transcriber_type": "fast-whisper"},
+            ),
+            mock.patch.object(
+                server.TranscriberConfigManager, "is_model_ready",
+                return_value={"ready": True, "downloading": False, "reason": ""},
+            ),
+            mock.patch.object(
+                server.CookieConfigManager, "list_all",
+                return_value={"bilibili": "SESSDATA=secret-value"},
+            ),
+        ]
 
-    def test_service_keeps_key_when_base_url_unchanged(self):
-        from app.services.provider import ProviderService
+    def test_summary_shape_and_sensitive_filter(self):
+        with ExitStack() as st:
+            for p in self._patch_reads():
+                st.enter_context(p)
+            resp = json.loads(server.get_config())
+        self.assertEqual(resp["app_config"]["default_style"], "detailed")
+        self.assertEqual(resp["app_config"]["default_provider_id"], "p1")
+        self.assertNotIn("hf_token", resp["app_config"])      # 敏感项过滤
+        self.assertEqual(resp["providers"][0]["api_key"], "sk-***")  # key 掩码
+        self.assertTrue(resp["transcriber"]["ready"])
+        self.assertEqual(resp["cookie_configured"], ["bilibili"])   # 只给平台名
+        self.assertNotIn("probe", resp)
+        # cookie 值绝不出现在返回里（凭证红线）
+        self.assertNotIn("SESSDATA", json.dumps(resp))
 
-        fake = mock.MagicMock(base_url="https://old.example/v1", api_key="enc:xxx", enabled=1)
-        with mock.patch("app.services.provider.get_provider_by_id", return_value=fake), mock.patch(
-            "app.services.provider.update_provider"
-        ) as m_dao:
-            ProviderService.update_provider("p1", {"name": "改名"})
-        self.assertNotIn("api_key", m_dao.call_args[1])
+    def test_probe_no_provider_id_skips_network(self):
+        # 不传 provider_id 时绝不触发探测（probe_models 是唯一网络出口）
+        with ExitStack() as st:
+            for p in self._patch_reads():
+                st.enter_context(p)
+            with mock.patch.object(server, "probe_models") as m_probe:
+                server.get_config()
+        m_probe.assert_not_called()
 
-    def test_mcp_tool_reports_key_invalidated(self):
-        safe_before = {"id": "p1", "api_key": "sk-xxx", "base_url": "https://old.example/v1"}
-        safe_after = {"id": "p1", "api_key": "", "base_url": "https://new.example/v1"}
-        with mock.patch.object(
-            server.ProviderService,
-            "get_provider_by_id_safe",
-            side_effect=[safe_before, safe_after],
-        ), mock.patch.object(server.ProviderService, "update_provider", return_value={"enabled": 1}):
-            resp = json.loads(server.update_provider("p1", base_url="https://new.example/v1"))
-        self.assertTrue(resp["key_invalidated"])
-        self.assertIn("重新录入", resp["notice"])
+    def test_probe_ok_reports_models(self):
+        with ExitStack() as st:
+            for p in self._patch_reads():
+                st.enter_context(p)
+            st.enter_context(mock.patch.object(
+                server.ProviderService, "get_provider_by_id",
+                return_value={"id": "p1", "name": "x", "api_key": "sk-***", "base_url": "https://x"},
+            ))
+            st.enter_context(mock.patch.object(
+                server, "probe_models",
+                return_value={"ok": True, "models": ["m1", "m2"], "error": None},
+            ))
+            resp = json.loads(server.get_config("p1"))
+        self.assertTrue(resp["probe"]["ok"])
+        self.assertEqual(resp["probe"]["models"], ["m1", "m2"])
 
-    def test_mcp_tool_no_key_no_invalidation(self):
-        safe = {"id": "p1", "api_key": "", "base_url": "https://old.example/v1"}
-        with mock.patch.object(
-            server.ProviderService,
-            "get_provider_by_id_safe",
-            side_effect=[safe, safe],
-        ), mock.patch.object(server.ProviderService, "update_provider", return_value={"enabled": 1}):
-            resp = json.loads(server.update_provider("p1", base_url="https://new.example/v1"))
-        self.assertNotIn("key_invalidated", resp)
+    def test_probe_fail_reports_error(self):
+        with ExitStack() as st:
+            for p in self._patch_reads():
+                st.enter_context(p)
+            st.enter_context(mock.patch.object(
+                server.ProviderService, "get_provider_by_id",
+                return_value={"id": "p1", "name": "x", "api_key": "k", "base_url": "https://x"},
+            ))
+            st.enter_context(mock.patch.object(
+                server, "probe_models",
+                return_value={"ok": False, "models": [], "error": "401 Unauthorized"},
+            ))
+            resp = json.loads(server.get_config("p1"))
+        self.assertFalse(resp["probe"]["ok"])
+        self.assertEqual(resp["probe"]["error"], "401 Unauthorized")
 
-    def test_non_http_scheme_rejected_at_service(self):
-        from app.services.provider import ProviderService
-
-        with self.assertRaises(ValueError) as cm:
-            ProviderService._validate_base_url("file:///etc/x")
-        self.assertIn("http", str(cm.exception))
-        with self.assertRaises(ValueError):
-            ProviderService._validate_base_url("gopher://example.com/x")
-
-    def test_valid_base_urls_pass(self):
-        from app.services.provider import ProviderService
-
-        for ok in ("https://api.openai.com/v1", "http://localhost:11434/v1", "http://127.0.0.1:8000/v1"):
-            self.assertEqual(ProviderService._validate_base_url(ok), ok)
+    def test_probe_unknown_provider_raises(self):
+        with ExitStack() as st:
+            for p in self._patch_reads():
+                st.enter_context(p)
+            st.enter_context(mock.patch.object(
+                server.ProviderService, "get_provider_by_id", return_value=None,
+            ))
+            with self.assertRaises(ValueError) as cm:
+                server.get_config("nosuch")
+        self.assertIn("供应商不存在", str(cm.exception))
 
 
 class SsrfEntryGuardTest(unittest.TestCase):
@@ -2192,8 +1598,8 @@ class SsrfEntryGuardTest(unittest.TestCase):
 
     #132 A1 只在 generic/youtube 下载器内部校验——显式传 platform=bilibili/
     kuaishou/douyin 时下载器/短链解析直接对 URL 发出站请求，可打内网/云元数据。
-    generate_note / prepare_note_material / fetch_subtitles / inspect_video
-    入口统一拦截；本地路径（local 分支）不受影响。
+    generate_note / prepare_note_material / inspect_video 入口统一拦截；
+    本地路径（local 分支）不受影响。
     """
 
     def test_generate_note_blocks_private_ip_with_explicit_platform(self):
@@ -2212,11 +1618,6 @@ class SsrfEntryGuardTest(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             server.prepare_note_material("http://10.0.0.1/x.mp4", platform="kuaishou")
         self.assertIn("SSRF", str(cm.exception))
-
-    def test_fetch_subtitles_blocks_private_ip(self):
-        resp = json.loads(server.fetch_subtitles("http://169.254.169.254/", platform="bilibili"))
-        self.assertFalse(resp["ok"])
-        self.assertIn("SSRF", resp["error"])
 
     def test_inspect_blocks_private_ip(self):
         resp = json.loads(server.inspect_video("http://169.254.169.254/", platform="bilibili"))
