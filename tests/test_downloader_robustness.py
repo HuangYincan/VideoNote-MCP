@@ -143,12 +143,17 @@ class GenericCookieTest(unittest.TestCase):
 
     def test_cookie_injected_as_header(self):
         captured = self._download_with_cookie("sessionid=abc123")
-        self.assertEqual(captured["http_headers"], {"Cookie": "sessionid=abc123"})
+        headers = captured["http_headers"]
+        self.assertEqual(headers["Cookie"], "sessionid=abc123")
+        # 浏览器样头（防 YouTube 人机验证）与 Cookie 共存
+        self.assertIn("Chrome/", headers["User-Agent"])
         self.assertNotIn("cookiefile", captured)
 
-    def test_no_cookie_no_headers(self):
+    def test_no_cookie_still_browser_headers(self):
         captured = self._download_with_cookie("")
-        self.assertNotIn("http_headers", captured)
+        headers = captured["http_headers"]
+        self.assertNotIn("Cookie", headers)
+        self.assertIn("Chrome/", headers["User-Agent"])
 
     def test_no_cookie_file_left_on_disk(self):
         import app.downloaders.generic_downloader as mod

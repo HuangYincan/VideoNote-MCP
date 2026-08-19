@@ -263,6 +263,46 @@ class TestCookieCli:
         assert ei.value.code == 2
 
 
+class TestLoginYoutube:
+    def test_browser_success_saves_and_verifies(self, capsys, monkeypatch):
+        monkeypatch.setattr(cli, "_verify_youtube_login", lambda **kw: "")
+        cli._login_youtube(["--browser", "safari"])
+        out = _cli_out(capsys)
+        assert "登录态有效" in out
+        # 配置已保存（cookie list 可见）
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        assert "youtube: 浏览器（safari）" in _cli_out(capsys)
+        # 清理：不污染共享 downloader.json（其它测试假设 youtube 无 browser 配置）
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "youtube"])
+
+    def test_browser_failure_reports_and_exits(self, capsys, monkeypatch):
+        monkeypatch.setattr(cli, "_verify_youtube_login", lambda **kw: "Read error")
+        with pytest.raises(SystemExit) as ei:
+            cli._login_youtube(["--browser", "chrome"])
+        assert ei.value.code == 1
+        out = _cli_out(capsys)
+        assert "验证失败" in out
+        assert "Read error" in out
+
+    def test_browser_failure_exit_on_fail_false_returns(self, capsys, monkeypatch):
+        monkeypatch.setattr(cli, "_verify_youtube_login", lambda **kw: "Read error")
+        cli._login_youtube(["--browser", "chrome"], exit_on_fail=False)
+        assert "验证失败" in _cli_out(capsys)
+
+    def test_invalid_browser(self):
+        with pytest.raises(SystemExit) as ei:
+            cli._login_youtube(["--browser", "netscape"])
+        assert ei.value.code == 2
+
+    def test_unknown_platform_rejected(self, capsys):
+        with pytest.raises(SystemExit) as ei:
+            cli._login_cli(["vimeo"])
+        assert ei.value.code == 2
+        assert "未知平台" in capsys.readouterr().err
+
+
 class TestExportCli:
     def test_export_list_formats(self, capsys):
         cli._export_cli(["list"])

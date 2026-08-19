@@ -76,3 +76,24 @@ class TestCookieInjection:
         opts = _capture_opts(dl)
         assert "cookiesfrombrowser" not in opts
         assert "cookiefile" not in opts
+
+
+class TestBrowserHeaders:
+    """浏览器样请求头：默认 Chrome UA，VIDEONOTE_YTDLP_UA 可覆盖（防 YouTube 人机验证）。"""
+
+    def test_default_browser_headers(self, monkeypatch):
+        monkeypatch.delenv("VIDEONOTE_YTDLP_UA", raising=False)
+        dl, _ = _make_dl()
+        opts = _capture_opts(dl)
+        ua = opts["http_headers"]["User-Agent"]
+        assert "Chrome/" in ua
+        assert "Mozilla/5.0" in ua
+        assert "Accept-Language" in opts["http_headers"]
+
+    def test_ua_override(self, monkeypatch):
+        monkeypatch.setenv("VIDEONOTE_YTDLP_UA", "TestUA/1.0")
+        dl, _ = _make_dl()
+        opts = _capture_opts(dl)
+        assert opts["http_headers"]["User-Agent"] == "TestUA/1.0"
+        # 覆盖不改其它默认头
+        assert "Accept-Language" in opts["http_headers"]

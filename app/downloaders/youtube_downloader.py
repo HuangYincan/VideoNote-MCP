@@ -31,35 +31,61 @@ def _apply_proxy(ydl_opts: dict) -> dict:
     return ydl_opts
 
 
+# 浏览器样请求头（2026-08-19）：YouTube 对非浏览器 UA 的请求更容易触发人机验证/反爬，
+# 显式用 Chrome UA + 常规 Accept/Accept-Language 降低触发概率。UA 可用
+# VIDEONOTE_YTDLP_UA 环境变量覆盖（如换 Firefox 或其他版本 Chrome）。
+_DEFAULT_HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+
+
+def _apply_browser_headers(ydl_opts: dict) -> dict:
+    """给 yt-dlp 请求套浏览器样 headers，降低 YouTube 人机验证/反爬触发概率。"""
+    ua = os.environ.get("VIDEONOTE_YTDLP_UA") or _DEFAULT_HTTP_HEADERS["User-Agent"]
+    headers = dict(_DEFAULT_HTTP_HEADERS)
+    headers["User-Agent"] = ua
+    # yt-dlp 已有 http_headers 时（如 extractor 注入）合并而不是覆盖
+    ydl_opts['http_headers'] = {**ydl_opts.get('http_headers', {}), **headers}
+    return ydl_opts
+
+
+def cookie_string_to_netscape(cookie: str) -> Optional[str]:
+    """Cookie 字符串（name=value; ...）→ Netscape 格式临时文件路径（yt-dlp cookiefile 用）。
+
+    CLI `videonote cookie set` / `login youtube` 的验证与下载器共用同一写入逻辑。
+    """
+    if not cookie:
+        return None
+    lines = ["# Netscape HTTP Cookie File\n"]
+    for pair in cookie.split("; "):
+        if "=" in pair:
+            key, value = pair.split("=", 1)
+            lines.append(f".youtube.com\tTRUE\t/\tFALSE\t0\t{key}\t{value}\n")
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
+    tmp.writelines(lines)
+    tmp.close()
+    try:
+        os.chmod(tmp.name, 0o600)
+    except OSError:
+        pass
+    return tmp.name
+
+
 class YoutubeDownloader(Downloader, ABC):
     def __init__(self):
         super().__init__()
         # YouTube Cookie（docs/05 #34）：经 setup ③「平台 Cookie」填 youtube，
-        # 或 `videonote cookie from-browser youtube <browser>` 直接读浏览器登录态；
+        # 或 `videonote login youtube --browser safari` 直接读浏览器登录态；
         # 高清/年龄限制/地区限制视频需要登录态，匿名时照常降级
         self._cookie_mgr = CookieConfigManager()
         self._cookie = self._cookie_mgr.get('youtube')
         self._browser = self._cookie_mgr.get_browser('youtube')
-        self._cookiefile = self._write_netscape_cookie_file()
-
-    def _write_netscape_cookie_file(self) -> Optional[str]:
-        """将 Cookie 写入 Netscape 格式临时文件，返回文件路径（供 yt-dlp cookiefile 使用）。"""
-        if not self._cookie:
-            return None
-        lines = ["# Netscape HTTP Cookie File\n"]
-        for pair in self._cookie.split("; "):
-            if "=" in pair:
-                key, value = pair.split("=", 1)
-                lines.append(f".youtube.com\tTRUE\t/\tFALSE\t0\t{key}\t{value}\n")
-        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
-        tmp.writelines(lines)
-        tmp.close()
-        try:
-            os.chmod(tmp.name, 0o600)
-        except OSError:
-            pass
-        logger.info("已生成 YouTube Netscape Cookie 文件（条目: %d）", len(lines) - 1)
-        return tmp.name
+        self._cookiefile = cookie_string_to_netscape(self._cookie)
 
     def _cleanup_cookie_file(self) -> None:
         path = getattr(self, "_cookiefile", None)
@@ -110,6 +136,7 @@ class YoutubeDownloader(Downloader, ABC):
             ydl_opts['skip_download'] = True
 
         _apply_proxy(ydl_opts)
+        _apply_browser_headers(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
             video_id = info.get("id")
@@ -175,6 +202,7 @@ class YoutubeDownloader(Downloader, ABC):
             ydl_opts['cookiefile'] = self._cookiefile
 
         _apply_proxy(ydl_opts)
+        _apply_browser_headers(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ytdlp_retry(ydl.extract_info, video_url, download=True)
             video_id = info.get("id")
