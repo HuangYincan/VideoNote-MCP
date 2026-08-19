@@ -1167,6 +1167,49 @@ class WriteStatusStartedAtTest(unittest.TestCase):
         self.assertEqual(resp["message"], "任务排队中")  # 内存快照而非误导文案
 
 
+class CleanupAllDryRunTest(unittest.TestCase):
+    """#137：cleanup_all dry_run 预览——破坏性最强的工具，执行前先预览。"""
+
+    def test_dry_run_deletes_nothing(self):
+        # 造任务产物 + 假 running 任务：dry_run 全部列出但不拒绝、不删
+        old = dict(server._task_futures)
+        with server._tasks_lock:
+            server._task_futures.clear()
+            from concurrent.futures import Future
+
+            f = Future()  # 未 set_result → 进行中
+            server._task_futures["live-1"] = f
+        try:
+            resp = json.loads(server.cleanup_all(dry_run=True))
+        finally:
+            with server._tasks_lock:
+                server._task_futures.clear()
+                server._task_futures.update(old)
+        self.assertTrue(resp["ok"])
+        self.assertTrue(resp["dry_run"])
+        self.assertEqual(resp["running"], 1)
+        self.assertEqual(resp["running_task_ids"], ["live-1"])
+        # 默认保留 config/models，清理不含它们
+        self.assertIn("note_results/", resp["would_clean"])
+        self.assertNotIn("config/", resp["would_clean"])
+        self.assertIn("config/", resp["would_keep"])
+        self.assertIn("models/", resp["would_keep"])
+        self.assertTrue(any(k.startswith("logs/") for k in resp["would_keep"]))
+
+    def test_dry_run_respects_include_flags(self):
+        resp = json.loads(server.cleanup_all(include_config=True, include_models=True, dry_run=True))
+        self.assertIn("config/（LLM key / cookie / 转写设置）", resp["would_clean"])
+        self.assertIn("models/（已下载模型）", resp["would_clean"])
+        self.assertNotIn("config/", resp["would_keep"])
+        self.assertNotIn("models/", resp["would_keep"])
+
+    def test_dry_run_without_include_keeps_kept_lists(self):
+        resp = json.loads(server.cleanup_all(dry_run=True))
+        # would_clean 恒含任务产物，would_keep 恒含 logs（#121 C3）
+        self.assertIn("video_tasks 全局索引", resp["would_clean"])
+        self.assertIn("logs/（运行日志，刻意不清）", resp["would_keep"])
+
+
 class CleanupRunningTaskGuardTest(unittest.TestCase):
     """cleanup_note / cleanup_all 对运行中（或排队中）任务拒绝清理——直接删会破坏
     下载器/转写器正在写的目录，任务中途失败或产生残留状态（#111）。"""

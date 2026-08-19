@@ -1297,13 +1297,18 @@ def cleanup_note(task_id: str, include_note: bool = False, dry_run: bool = False
 
 
 @mcp.tool()
-def cleanup_all(include_config: bool = False, include_models: bool = False) -> str:
+def cleanup_all(include_config: bool = False, include_models: bool = False, dry_run: bool = False) -> str:
     """全局清理（类似恢复出厂）：清空 note_results / static/screenshots / note_cache 的任务产物。
 
     - include_config=False（默认）：保留 config/（LLM key / cookie / 转写设置）；
       include_config=True 时连 config/ 一起清；
     - include_models=False（默认）：保留 models/（已下载模型可复用，重下成本高）；
       include_models=True 时连 models/ 一起清。
+    - dry_run=True：**只预览**将清理/保留的目录与运行中任务，不删任何东西
+      （#137 行为安全：破坏性最强的工具，执行前先预览）。返回 {ok, dry_run: true,
+      running, running_task_ids, would_clean: [...], would_keep: [...], note}。
+      dry_run 不拒绝运行中任务（预览无副作用），但 running 非空时执行会被拒——
+      Agent 据此先 cancel_note 或等终态。
     - **logs/ 不清**（#121 C3）：MCP 进程持有 mcp_stderr.log 打开 fd，unlink 后日志进
       已删除 inode——文件消失、磁盘不回收；日志也不属任务产物。
     同步清空全局任务索引 video_tasks（任务目录删了，索引记录一并清——否则
@@ -1318,6 +1323,32 @@ def cleanup_all(include_config: bool = False, include_models: bool = False) -> s
     """
     with _tasks_lock:
         running = [tid for tid, f in _task_futures.items() if not f.done()]
+    if dry_run:
+        would_clean = [
+            "note_results/", "static/screenshots/", "static/cover/", "covers/",
+            "note_cache/", "video_tasks 全局索引",
+        ]
+        if include_config:
+            would_clean.append("config/（LLM key / cookie / 转写设置）")
+        if include_models:
+            would_clean.append("models/（已下载模型）")
+        would_keep = ["logs/（运行日志，刻意不清）"]
+        if not include_config:
+            would_keep.append("config/")
+        if not include_models:
+            would_keep.append("models/")
+        return json.dumps(
+            {
+                "ok": True,
+                "dry_run": True,
+                "running": len(running),
+                "running_task_ids": running,
+                "would_clean": would_clean,
+                "would_keep": would_keep,
+                "note": "dry_run 未删除任何文件；确认后去掉 dry_run 执行",
+            },
+            ensure_ascii=False,
+        )
     if running:
         return json.dumps(
             {

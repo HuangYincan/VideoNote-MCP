@@ -704,3 +704,10 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **get_task_files 并入 cleanup_note(dry_run)**：「先查后清」两工具合一——dry_run=True 只列出不删。
 - **参数策略 docstring**：generate_note / batch_generate_notes 引导「除 url 外全可选，套 setup 默认」。
 - **661 passed + ruff F/I-clean**；SKILL/commands/docs/README 中英全同步。
+
+## Wave H 批 26（2026-08-19 · cleanup_all dry_run 预览 #137，661→664 tests）
+
+用户持续目标第三轮（行为维度）。
+
+- **cleanup_all(dry_run=True)**：预览将清理/保留目录与运行中任务（would_clean/would_keep），不删任何东西——`include_config`/`include_models` 的不可逆风险先预览再执行。
+- **664 passed + ruff F/I-clean**；tools.md / docs/04 / commands 同步「先 dry_run 再执行」引导。
