@@ -73,6 +73,31 @@ jobs:
               sys.exit(1)
           print("✅ wheel 内容完整（%d 个文件）" % len(names))
           EOF
+      # 依赖漂移护栏（v0.1.7 事故）：本地/CI 测试读 uv.lock（锁 1.x），但 wheel 发布后
+      # uvx 按 pyproject 解析最新——mcp 2.0 移除 server.fastmcp 致启动即崩（ModuleNotFoundError）。
+      # 这里对构建出的 wheel 做一次真实 MCP 握手，过不了就不发。
+      - name: MCP handshake smoke on built wheel
+        run: |
+          uv run --with "$(ls dist/*.whl | head -1)" python - <<'PYEOF'
+          import asyncio, glob
+          from mcp import ClientSession, StdioServerParameters, stdio_client
+
+          WHEEL = glob.glob("dist/*.whl")[0]
+
+          async def main():
+              params = StdioServerParameters(
+                  command="uv",
+                  args=["run", "--with", WHEEL, "python", "-m", "videonote_mcp.server"],
+              )
+              async with stdio_client(params) as (r, w):
+                  async with ClientSession(r, w) as s:
+                      info = await s.initialize()
+                      tools = await s.list_tools()
+                      assert len(tools.tools) >= 16, f"tools={len(tools.tools)}"
+                      print(f"✅ 握手 OK: {info.serverInfo.name} {info.serverInfo.version}, tools={len(tools.tools)}")
+
+          asyncio.run(main())
+          PYEOF
       - name: Create release for tag
         uses: softprops/action-gh-release@v3
         with:
