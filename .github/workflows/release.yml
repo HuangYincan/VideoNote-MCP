@@ -77,3 +77,20 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: release
+    permissions:
+      # Trusted publishing（OIDC）：GitHub Actions 直接以 PyPI 项目身份发布，
+      # 无需 API token 进仓库。前置：PyPI 项目 videonote 的 Publishing 里
+      # 添加 trusted publisher（owner=HuangYincan，repo=VideoNote-MCP，workflow=release.yml）。
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - name: Build wheel and sdist
+        run: uv build
+      - name: Publish to PyPI
+        run: uv publish

@@ -494,8 +494,7 @@ def _wizard_transcriber(inq) -> None:
                             file=sys.stdout,
                         )
                         print(
-                            f"{_DIM}`uv tool install --from git+https://github.com/HuangYincan/VideoNote-MCP videonote "
-                            f"--with pyannote.audio --with torch`，或用 `uvx --from ... --with pyannote.audio --with torch` 运行。{_RESET}",
+                            f"{_DIM}`uv tool install --with pyannote.audio --with torch videonote`，或用 `uvx --with pyannote.audio --with torch videonote` 运行。{_RESET}",
                             file=sys.stdout,
                         )
                     hf = inq.secret(message="HuggingFace token（HF_TOKEN，留空跳过）", keybindings=_KB).execute()
@@ -533,8 +532,8 @@ def _wizard_transcriber(inq) -> None:
                     if mlx_missing:
                         print(
                             f"{_YELLOW}⚠ 当前环境未装 mlx-whisper（可选依赖）。{_RESET}"
-                            f"{_DIM}想用 mlx：`uv tool install --from git+https://github.com/HuangYincan/VideoNote-MCP videonote --with mlx-whisper`，"
-                            f"或用 `uvx --from ... --with mlx-whisper` 运行。{_RESET}",
+                            f"{_DIM}想用 mlx：`uv tool install --with mlx-whisper videonote`，"
+                            f"或用 `uvx --with mlx-whisper videonote` 运行。{_RESET}",
                             file=sys.stdout,
                         )
                         if inq.confirm(message="改用 fast-whisper（当前环境可用）？", default=True, keybindings=_KB).execute():
@@ -585,8 +584,7 @@ def _wizard_transcriber(inq) -> None:
                             file=sys.stdout,
                         )
                         print(
-                            f"{_DIM}`uv tool install --from git+https://github.com/HuangYincan/VideoNote-MCP videonote "
-                            f"--with funasr --with torch`，或用 `uvx --from ... --with funasr --with torch` 运行。{_RESET}",
+                            f"{_DIM}`uv tool install --with funasr --with torch videonote`，或用 `uvx --with funasr --with torch videonote` 运行。{_RESET}",
                             file=sys.stdout,
                         )
     except KeyboardInterrupt:
@@ -1365,8 +1363,7 @@ def _transcriber_cli(argv) -> None:
                     file=sys.stdout,
                 )
                 print(
-                    "  `uv tool install --from git+https://github.com/HuangYincan/VideoNote-MCP videonote "
-                    "--with pyannote.audio --with torch`，或用 `uvx --from ... --with pyannote.audio --with torch` 运行。",
+                    "  `uv tool install --with pyannote.audio --with torch videonote`，或用 `uvx --with pyannote.audio --with torch videonote` 运行。",
                     file=sys.stdout,
                 )
                 print(

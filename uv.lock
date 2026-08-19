@@ -4020,8 +4020,8 @@ wheels = [
 ]
 
 [[package]]
-name = "videonote-mcp"
-version = "0.1.5"
+name = "videonote"
+version = "0.1.7"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
