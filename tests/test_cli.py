@@ -177,6 +177,92 @@ class TestTranscriberCli:
         assert "说话人分离: 关" in _cli_out(capsys)
 
 
+class TestProxyCli:
+    def test_set_and_list(self, capsys):
+        cli._proxy_cli(["set", "http://127.0.0.1:7897"])
+        assert "代理已启用: http://127.0.0.1:7897" in _cli_out(capsys)
+        capsys.readouterr()
+        cli._proxy_cli(["list"])
+        out = _cli_out(capsys)
+        assert "http://127.0.0.1:7897" in out
+        assert "配置文件启用" in out
+
+    def test_list_masks_credentials(self, capsys):
+        # 代理 URL 可带 user:pass@：list 只留 host，不落凭据（与 _apply_proxy 日志同口径）
+        cli._proxy_cli(["set", "http://user:secret@127.0.0.1:7897"])
+        capsys.readouterr()
+        cli._proxy_cli(["list"])
+        out = _cli_out(capsys)
+        assert "user:secret" not in out
+        assert "http://127.0.0.1:7897" in out
+
+    def test_off_falls_back_to_env(self, capsys, monkeypatch):
+        cli._proxy_cli(["set", "http://127.0.0.1:7897"])
+        capsys.readouterr()
+        cli._proxy_cli(["off"])
+        assert "代理已关闭" in _cli_out(capsys)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.0.0.1:8080")
+        capsys.readouterr()
+        cli._proxy_cli(["list"])
+        out = _cli_out(capsys)
+        assert "http://10.0.0.1:8080" in out
+        assert "环境变量" in out
+
+    def test_set_missing_url(self):
+        with pytest.raises(SystemExit) as ei:
+            cli._proxy_cli(["set"])
+        assert ei.value.code == 2
+
+
+class TestCookieCli:
+    def test_set_and_list_masks_value(self, capsys):
+        cli._cookie_cli(["set", "youtube", "SID=abc; LOGIN_INFO=xyz"])
+        out = _cli_out(capsys)
+        assert "已保存 youtube 的 Cookie" in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        out = _cli_out(capsys)
+        assert "youtube" in out
+        assert "已配置" in out
+        assert "abc" not in out  # 不显示明文
+        assert "xyz" not in out
+
+    def test_from_browser_and_list(self, capsys):
+        cli._cookie_cli(["from-browser", "youtube", "safari"])
+        out = _cli_out(capsys)
+        assert "youtube 将直接读取 safari 的登录态" in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        out = _cli_out(capsys)
+        assert "youtube: 浏览器（safari）" in out
+
+    def test_from_browser_keeps_manual_cookie(self, capsys):
+        # set 与 from-browser 互不覆盖（#C2）
+        cli._cookie_cli(["set", "youtube", "SID=abc"])
+        capsys.readouterr()
+        cli._cookie_cli(["from-browser", "youtube", "chrome"])
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        out = _cli_out(capsys)
+        assert "浏览器（chrome）" in out
+        assert "手动 cookie" in out
+
+    def test_clear(self, capsys):
+        cli._cookie_cli(["set", "youtube", "SID=abc"])
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "youtube"])
+        out = _cli_out(capsys)
+        assert "已清除 youtube" in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        assert "未配置" in _cli_out(capsys)
+
+    def test_invalid_platform(self):
+        with pytest.raises(SystemExit) as ei:
+            cli._cookie_cli(["set", "vimeo", "x=1"])
+        assert ei.value.code == 2
+
+
 class TestExportCli:
     def test_export_list_formats(self, capsys):
         cli._export_cli(["list"])

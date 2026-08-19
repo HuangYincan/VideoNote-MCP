@@ -40,10 +40,33 @@ class CookieConfigManager:
                 return val.get("cookie")
             return val if isinstance(val, str) else None
 
+    def get_browser(self, platform: str) -> Optional[str]:
+        """已配置的 cookiesfrombrowser 来源（safari/chrome/...）；None 未配置。"""
+        with self._lock:
+            val = self._read().get(platform)
+            if isinstance(val, dict):
+                return val.get("browser") or None
+            return None
+
     def set(self, platform: str, cookie: str):
         with self._lock:
             data = self._read()
+            # 保留已配置的 browser（set_browser 与 set 互不覆盖，#C2）
+            browser = data[platform].get("browser") if isinstance(data.get(platform), dict) else None
             data[platform] = {"cookie": cookie}
+            if browser:
+                data[platform]["browser"] = browser
+            self._write(data)
+
+    def set_browser(self, platform: str, browser: str):
+        """配置 cookiesfrombrowser 来源；保留已存的手动 cookie（下载器优先用 browser）。"""
+        with self._lock:
+            data = self._read()
+            entry = data.get(platform)
+            if not isinstance(entry, dict):
+                entry = {"cookie": entry if isinstance(entry, str) else ""}
+            entry["browser"] = browser
+            data[platform] = entry
             self._write(data)
 
     def delete(self, platform: str):

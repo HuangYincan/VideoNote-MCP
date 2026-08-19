@@ -34,10 +34,12 @@ def _apply_proxy(ydl_opts: dict) -> dict:
 class YoutubeDownloader(Downloader, ABC):
     def __init__(self):
         super().__init__()
-        # YouTube Cookie（docs/05 #34）：经 setup ③「平台 Cookie」填 youtube；
+        # YouTube Cookie（docs/05 #34）：经 setup ③「平台 Cookie」填 youtube，
+        # 或 `videonote cookie from-browser youtube <browser>` 直接读浏览器登录态；
         # 高清/年龄限制/地区限制视频需要登录态，匿名时照常降级
         self._cookie_mgr = CookieConfigManager()
         self._cookie = self._cookie_mgr.get('youtube')
+        self._browser = self._cookie_mgr.get_browser('youtube')
         self._cookiefile = self._write_netscape_cookie_file()
 
     def _write_netscape_cookie_file(self) -> Optional[str]:
@@ -97,7 +99,11 @@ class YoutubeDownloader(Downloader, ABC):
             'quiet': False,
             'progress_hooks': [ytdlp_cancel_hook(cancel_event)],
         }
-        if self._cookiefile:
+        if self._browser:
+            # cookiesfrombrowser 优先：直接读浏览器登录态（`videonote cookie from-browser`），
+            # 无需手动导出 cookie 字符串；读取失败由 yt-dlp 报错并降级
+            ydl_opts['cookiesfrombrowser'] = (self._browser,)
+        elif self._cookiefile:
             ydl_opts['cookiefile'] = self._cookiefile
 
         if skip_download:
@@ -161,7 +167,11 @@ class YoutubeDownloader(Downloader, ABC):
             'merge_output_format': 'mp4',  # 确保合并成 mp4
             'progress_hooks': [ytdlp_cancel_hook(cancel_event)],
         }
-        if self._cookiefile:
+        if self._browser:
+            # cookiesfrombrowser 优先：直接读浏览器登录态（`videonote cookie from-browser`），
+            # 无需手动导出 cookie 字符串；读取失败由 yt-dlp 报错并降级
+            ydl_opts['cookiesfrombrowser'] = (self._browser,)
+        elif self._cookiefile:
             ydl_opts['cookiefile'] = self._cookiefile
 
         _apply_proxy(ydl_opts)
