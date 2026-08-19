@@ -214,6 +214,55 @@ class TestProxyCli:
         assert ei.value.code == 2
 
 
+class TestCookieCli:
+    def test_set_and_list_masks_value(self, capsys):
+        cli._cookie_cli(["set", "youtube", "SID=abc; LOGIN_INFO=xyz"])
+        out = _cli_out(capsys)
+        assert "已保存 youtube 的 Cookie" in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        out = _cli_out(capsys)
+        assert "youtube" in out
+        assert "已配置" in out
+        assert "abc" not in out  # 不显示明文
+        assert "xyz" not in out
+
+    def test_from_browser_and_list(self, capsys):
+        cli._cookie_cli(["from-browser", "youtube", "safari"])
+        out = _cli_out(capsys)
+        assert "youtube 将直接读取 safari 的登录态" in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        out = _cli_out(capsys)
+        assert "youtube: 浏览器（safari）" in out
+
+    def test_from_browser_keeps_manual_cookie(self, capsys):
+        # set 与 from-browser 互不覆盖（#C2）
+        cli._cookie_cli(["set", "youtube", "SID=abc"])
+        capsys.readouterr()
+        cli._cookie_cli(["from-browser", "youtube", "chrome"])
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        out = _cli_out(capsys)
+        assert "浏览器（chrome）" in out
+        assert "手动 cookie" in out
+
+    def test_clear(self, capsys):
+        cli._cookie_cli(["set", "youtube", "SID=abc"])
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "youtube"])
+        out = _cli_out(capsys)
+        assert "已清除 youtube" in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        assert "未配置" in _cli_out(capsys)
+
+    def test_invalid_platform(self):
+        with pytest.raises(SystemExit) as ei:
+            cli._cookie_cli(["set", "vimeo", "x=1"])
+        assert ei.value.code == 2
+
+
 class TestExportCli:
     def test_export_list_formats(self, capsys):
         cli._export_cli(["list"])

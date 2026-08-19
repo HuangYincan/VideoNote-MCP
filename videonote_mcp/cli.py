@@ -1416,6 +1416,62 @@ def _proxy_cli(argv) -> None:
         print("✅ 代理已关闭（回退环境变量）", file=sys.stdout)
 
 
+_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou")
+
+
+def _cookie_cli(argv) -> None:
+    """`videonote cookie ...`：在终端管理平台 Cookie。
+
+    YouTube 等需登录态的视频（高清/年龄限制/地区限制）需要 Cookie：
+    - `from-browser`：直接读 Safari/Chrome 的登录态（yt-dlp cookiesfrombrowser），最省事
+    - `set`：手动粘贴浏览器复制出来的完整 Cookie 字符串
+    B 站推荐 `videonote login bilibili` 扫码登录（AI 字幕需要 SESSDATA）。
+    """
+    parser = argparse.ArgumentParser(
+        prog="videonote cookie",
+        description="平台 Cookie 配置（youtube 等需登录态内容）",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list", help="查看各平台 Cookie 状态（不显示明文）")
+    p_set = sub.add_parser("set", help="手动粘贴 Cookie 字符串（name=value; ...）")
+    p_set.add_argument("platform", choices=_COOKIE_PLATFORMS)
+    p_set.add_argument("cookie", help="完整 Cookie 字符串")
+    p_fb = sub.add_parser("from-browser", help="直接读浏览器登录态（无需手动导出）")
+    p_fb.add_argument("platform", choices=_COOKIE_PLATFORMS)
+    p_fb.add_argument("browser", choices=("safari", "chrome", "edge", "firefox"), help="从哪个浏览器读登录态")
+    p_clear = sub.add_parser("clear", help="清除某平台的 Cookie 配置")
+    p_clear.add_argument("platform", choices=_COOKIE_PLATFORMS)
+
+    opts = parser.parse_args(argv)
+    from app.services.cookie_manager import CookieConfigManager
+
+    mgr = CookieConfigManager()
+    if opts.cmd == "list":
+        data = mgr.list_all()
+        if not data:
+            print("平台 Cookie: 未配置", file=sys.stdout)
+            return
+        for platform in sorted(data):
+            cookie = data[platform]
+            browser = mgr.get_browser(platform)
+            if browser:
+                suffix = f" + 手动 cookie（{len(cookie)} 字符）" if cookie else ""
+                print(f"{platform}: 浏览器（{browser}）{suffix}", file=sys.stdout)
+            elif cookie:
+                print(f"{platform}: 已配置（{len(cookie)} 字符，不显示明文）", file=sys.stdout)
+    elif opts.cmd == "set":
+        mgr.set(opts.platform, opts.cookie)
+        print(f"✅ 已保存 {opts.platform} 的 Cookie", file=sys.stdout)
+    elif opts.cmd == "from-browser":
+        mgr.set_browser(opts.platform, opts.browser)
+        print(f"✅ {opts.platform} 将直接读取 {opts.browser} 的登录态", file=sys.stdout)
+        print("  （yt-dlp cookiesfrombrowser；读取失败时自动降级匿名）", file=sys.stdout)
+    elif opts.cmd == "clear":
+        mgr.delete(opts.platform)
+        print(f"✅ 已清除 {opts.platform} 的 Cookie 配置", file=sys.stdout)
+
+
 def _login_cli(argv, exit_on_fail: bool = True) -> None:
     """`videonote login [bilibili]`：扫码登录 B 站，自动获取并保存 SESSDATA（AI 字幕用）。
 
@@ -1667,7 +1723,7 @@ def _export_cli(argv) -> None:
 
 def main() -> None:
     """入口：providers / setup / transcriber / login / export 走轻量 CLI；**无参数**时才是 MCP server（stdio）。"""
-    known = ("providers", "setup", "transcriber", "login", "export", "proxy")
+    known = ("providers", "setup", "transcriber", "login", "export", "proxy", "cookie")
     if len(sys.argv) > 1 and sys.argv[1] in known:
         cmd = sys.argv[1]
         if cmd == "providers":
@@ -1680,6 +1736,8 @@ def main() -> None:
             _export_cli(sys.argv[2:])
         elif cmd == "proxy":
             _proxy_cli(sys.argv[2:])
+        elif cmd == "cookie":
+            _cookie_cli(sys.argv[2:])
         else:
             _transcriber_cli(sys.argv[2:])
         return
