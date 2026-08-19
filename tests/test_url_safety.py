@@ -50,10 +50,12 @@ class TestIsPublicHttpUrlLiteralIp:
             "http://198.18.0.1/x",      # fake-ip 代理段起点
             "http://198.18.5.33/x",     # fake-ip（Clash 默认）
             "http://198.19.255.255/x",  # fake-ip 段终点
+            "https://[fdfe::1]/x",      # fake-ip v6 段（Clash/Surge 默认 fdfe::/16）
+            "https://[fdfe:dcba:9876::68]/x",  # 实测解析出的 IPv6 fake-ip
         ],
     )
     def test_fake_ip_proxy_range_allowed(self, url):
-        """198.18.0.0/15（RFC 2544）：Clash/Surge fake-ip 代理的 DNS 返回段，
+        """fake-ip 代理段（198.18.0.0/15 + fdfe::/16）：Clash/Surge 的 DNS 返回段，
         流量经代理转发公网，is_global=False 会误杀（2026-08-19 实测）。"""
         assert is_public_http_url(url) is True
 
@@ -86,13 +88,26 @@ class TestIsPublicHttpUrlHostname:
             assert is_public_http_url("http://internal.example.com/x") is False
 
     def test_host_resolves_to_fake_ip_allowed(self):
-        """域名解析到 fake-ip 段（198.18.0.0/15）不拦截——代理转发公网。"""
+        """域名解析到 fake-ip 段（IPv6 fdfe::/16 + IPv4 198.18.0.0/15 双栈，
+        模拟 Clash/Surge 真实 getaddrinfo 顺序）不拦截——代理转发公网。"""
 
         def _fake_ip(*_a, **_k):
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.1", 0))]
+            return [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fdfe:dcba:9876::68", 0, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.102", 0)),
+            ]
 
         with mock.patch("socket.getaddrinfo", side_effect=_fake_ip):
             assert is_public_http_url("http://example.com/v") is True
+
+    def test_host_resolves_to_non_fake_ula_blocked(self):
+        """fc00::/7 的其他 ULA 段（非 fdfe::/16）仍拦截——fake-ip 放行不扩大化。"""
+
+        def _ula(*_a, **_k):
+            return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fc00::1", 0, 0, 0))]
+
+        with mock.patch("socket.getaddrinfo", side_effect=_ula):
+            assert is_public_http_url("http://internal.example.com/v") is False
 
     def test_host_resolves_to_public_allowed(self):
         assert is_public_http_url("http://example.com/v") is True  # conftest 桩成 8.8.8.8
