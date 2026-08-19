@@ -119,7 +119,7 @@ flowchart LR
 | Stage | Responsibility | Typical tools |
 |------|------|----------|
 | [0 🔄 End-to-end Pipeline](#0--end-to-end-pipeline) | One link → one note, runs the whole pipeline automatically | `generate_note` / `get_task_status` |
-| [1 📥 Download and Platform Parsing](#1--download-and-platform-parsing) | Detect platform and download audio/video; 1800+ sites + local files | `validate_url` / `inspect_video` |
+| [1 📥 Download and Platform Parsing](#1--download-and-platform-parsing) | Detect platform and download audio/video; 1800+ sites + local files | `inspect_video` |
 | [2 🎙 Speech-to-Text (ASR)](#2--speech-to-text-asr) | Audio track → text; local / cloud engines | inside `generate_note` |
 | [3 🖼️ Frame Understanding (Sampling)](#3--frame-understanding-sampling) | Sample frames at an interval; multimodal LLM "sees" the video | `video_understanding` parameter |
 | [4 💬 Danmaku and Comments](#4--danmaku-and-comments) | Fetch Bilibili danmaku and comment viewpoints | `include_comments` parameter |
@@ -144,11 +144,10 @@ End-to-end mode takes a single link: `generate_note` runs the whole pipeline asy
 
 # 1 📥 Download and Platform Parsing
 
-`validate_url` detects which platform a link belongs to (bilibili / youtube / douyin / tiktok / kuaishou / local); URLs outside the built-in 6 platforms return `platform:"generic"` and automatically fall back to **yt-dlp generic extraction** (1800+ sites). `inspect_video` splits Bilibili multi-P / YouTube playlists into per-episode URLs you can feed to `generate_note` (no download). Platform cookies go through `! videonote login bilibili` / `! videonote setup` — **do not** pass them via MCP. Platform subtitles (incl. Bilibili AI subtitles) are preferred inside `generate_note`; there is no standalone subtitle tool.
+`inspect_video` detects the platform (bilibili / youtube / douyin / tiktok / kuaishou / local; URLs outside the built-in 6 platforms return `platform:"generic"` and fall back to **yt-dlp generic extraction**, 1800+ sites), checks link validity (invalid links get an explicit reason), and splits Bilibili multi-P / YouTube playlists into per-episode URLs you can feed to `generate_note` (no download). Platform cookies go through `! videonote login bilibili` / `! videonote setup` — **do not** pass them via MCP. Platform subtitles (incl. Bilibili AI subtitles) are preferred inside `generate_note`; there is no standalone subtitle tool.
 
 | Tool | Description | Type |
 |------|------|------|
-| `validate_url` | Detect link platform; generic → yt-dlp generic extraction (1800+ sites) | MCP tool |
 | `inspect_video` | List multi-P / playlist entries as standalone URLs | MCP tool |
 
 # 2 🎙 Speech-to-Text (ASR)
@@ -202,7 +201,7 @@ Mechanical formats use `export_transcript` (srt / vtt / json) — deterministic 
 
 # 8 🗂️ Task Management and Cleanup
 
-One folder per task `note_results/{task_id}/`: `raw/` (downloaded media) + `gen/` (transcript/note/frames/exports) + control files; a **global task index** lives in the SQLite `video_tasks` table (with semantic titles). `list_tasks` enumerates all tasks (identify by semantic title), `get_task_files` inspects a task before cleanup, `cleanup_note` / `cleanup_all` do per-task / global cleanup (config & models kept by default), and `health_check` verifies FFmpeg / database / whisper readiness.
+One folder per task `note_results/{task_id}/`: `raw/` (downloaded media) + `gen/` (transcript/note/frames/exports) + control files; a **global task index** lives in the SQLite `video_tasks` table (with semantic titles). `list_tasks` enumerates all tasks (identify by semantic title), `cleanup_note(dry_run=True)` inspects a task before cleanup, `cleanup_note` / `cleanup_all` do per-task / global cleanup (config & models kept by default), and `health_check` verifies FFmpeg / database / whisper readiness.
 
 ```mermaid
 flowchart TB
@@ -225,7 +224,6 @@ flowchart TB
 | Tool | Description | Type |
 |------|------|------|
 | `list_tasks` | List all tasks (global index, with semantic titles) | MCP tool |
-| `get_task_files` | Inspect a task's files on disk (inspect before cleanup) | MCP tool |
 | `cleanup_note` / `cleanup_all` | Per-task cleanup / global cleanup (factory reset) | MCP tool |
 | `health_check` | FFmpeg / database / whisper readiness | MCP tool |
 

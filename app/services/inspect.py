@@ -51,7 +51,7 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
         if plat == "local":
             # file:// URI 先规整（#133 B2）：#130 A5 用裸 Path(raw) 漏了 file://——
             # inspect 曾是全工具面唯一不认 file:// 的本地入口（#105/#107 系列输入
-            # 规整的漏网点），同一文件 validate_url/generate_note 可用、inspect
+            # 规整的漏网点），同一文件 generate_note 可用、inspect
             # 却报「本地文件不存在」。entries[].url 透传规整后的路径。
             from videonote_mcp.server import _coerce_local_path
 

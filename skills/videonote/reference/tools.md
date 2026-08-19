@@ -113,9 +113,6 @@
 - `limit` / `offset` 可选：分页（缺省全量；任务多时用 `list_tasks(limit=20)` + 递增 offset 翻页）。
 - Agent 据此枚举任务、按**语义标题**识别，无需预先知道 task_id。
 
-### `get_task_files(task_id)`
-- **先查后清**：列出该任务在磁盘上相关的文件/目录，返回 `{task_id, manifest_paths, existing, meta}`。
-- `existing` 含任务文件夹 `raw/` `gen/` 下的真实文件；`meta` 含语义标题/简介。
 
 ### `cleanup_note(task_id, include_note=False)`
 - 删某任务生成的**中间产物**。
@@ -142,7 +139,7 @@
 
 - `health_check()` —— `server_version` / ffmpeg / db / 队列 / keyed_providers / `skill_refresh`。
 - `preflight(url?, platform?, provider_id?, need_provider=true)` —— 提交前体检：ffmpeg / 磁盘剩余 / 转写器就绪 / 供应商 key+模型 / 队列，url 非空时预解析时长。`ok=false` 时先修 detail 再提交，避免长任务半路失败。`prepare_note_material` 流程不需要 LLM，传 `need_provider=false` 跳过供应商 key/模型检查（#125 C9）。
-- `validate_url(url)` —— 识别平台（bilibili/youtube/douyin/tiktok/kuaishou/local 共 6 种）。内置平台之外返回 `{supported: true, platform: "generic"}`（yt-dlp 通用提取，覆盖 1800+ 站点）；仅当 yt-dlp 也失败时 Agent 接手解析。
+- `inspect_video(url, platform?)` —— 识别平台 + 检查链接 + 拆多集（#136 并入原 validate_url）。内置平台之外 `platform:"generic"` 走 yt-dlp 通用提取（覆盖 1800+ 站点）；链接无效（空/本地缺失/内网/解析失败）→ `{ok:false, platform?, error}`。
 ## 配置要点
 
 | 场景 | 操作 |
@@ -162,5 +159,5 @@
 | 音频预处理（setup ②） | `transcriber preprocess on/off` 或 setup ② 勾选；16kHz 归一 + 超长分块（默认关，零依赖） |
 | 说话人分离（setup ②） | `transcriber diarization on/off` 或 setup ② 勾选；pyannote 可选重依赖 + HF_TOKEN + 模型授权 |
 | 切中文转写（funasr） | `set_transcriber("funasr")`；需 `uvx --with funasr --with torch`（重依赖可选），模型自动下载 |
-| 其他平台（非内置 6 平台） | `validate_url` 返回 `platform:"generic"` → 自动走 yt-dlp 通用提取（覆盖 1800+ 站点） |
+| 其他平台（非内置 6 平台） | `inspect_video` 返回 `platform:"generic"` → 自动走 yt-dlp 通用提取（覆盖 1800+ 站点） |
 | AGENT 直接生成 | `prepare_note_material(video_url, ...)` → 轮询 SUCCESS → 读素材包 → **AGENT 自己写笔记**（不调用配置 LLM） |

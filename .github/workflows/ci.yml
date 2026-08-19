@@ -43,9 +43,9 @@ jobs:
                       expected = [
                           "batch_generate_notes", "cancel_note", "cleanup_all", "cleanup_note",
                           "diarize_media", "export_transcript", "generate_note", "get_config",
-                          "get_task_files", "get_task_status", "get_task_transcript",
-                          "health_check", "inspect_video", "list_tasks", "merge_audio",
-                          "preflight", "prepare_note_material", "validate_url",
+                          "get_task_status", "get_task_transcript", "health_check",
+                          "inspect_video", "list_tasks", "merge_audio", "preflight",
+                          "prepare_note_material",
                       ]
                       assert names == expected, f"工具名单漂移: {names}"
                       print(f"tools/list OK: {len(names)} tools (名单精确匹配)")

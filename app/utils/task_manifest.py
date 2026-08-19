@@ -130,7 +130,7 @@ def get_task_paths(task_id: str) -> List[str]:
 
 
 def get_task_meta(task_id: str) -> dict:
-    """读 manifest 的 meta 键（get_task_files 响应契约字段）；不存在返回 {}。
+    """读 manifest 的 meta 键（cleanup_note dry_run 响应契约字段）；不存在返回 {}。
 
     写端 record_task_meta 已删（#134 死代码）——生产不再写 meta，此读函数
     保留仅为 list_task_files 的响应形状稳定。

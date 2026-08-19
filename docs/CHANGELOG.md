@@ -695,3 +695,12 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **连带**：步骤任务链 + `_coerce_transcript` + 7 死符号删除；`_index_step_task` 误删恢复。
 - **测试**：−79 + 5（GetConfigTest）= **662 passed + ruff F/I-clean**。
 - **文档全同步**：ci.yml 名单、SKILL、commands、docs/02/04/00、README 中英。
+
+## Wave H 批 25（2026-08-19 · 工具聚合 #136，18→16 工具，662→661 tests）
+
+用户持续目标（六维评估：行为/简洁性/完备性/参数/目的/使用指南）第二轮。
+
+- **validate_url 并入 inspect_video**：inspect 已覆盖全部检查（SSRF/local/file:///平台识别），合并后一次调用 = 识别平台 + 检查链接 + 拆多集。
+- **get_task_files 并入 cleanup_note(dry_run)**：「先查后清」两工具合一——dry_run=True 只列出不删。
+- **参数策略 docstring**：generate_note / batch_generate_notes 引导「除 url 外全可选，套 setup 默认」。
+- **661 passed + ruff F/I-clean**；SKILL/commands/docs/README 中英全同步。

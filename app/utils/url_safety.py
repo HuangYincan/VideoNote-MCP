@@ -1,7 +1,7 @@
 """URL 安全校验 —— SSRF 防护与日志脱敏（docs/05 第 16 轮扫描 A1 / A4 / A5）。
 
 SSRF 背景：yt-dlp 通用提取器（GenericIE）接受任意 URL，被恶意/被注入的 agent
-可借 `generate_note` / `validate_url` / `inspect_video` 访问内网服务、环回地址、
+可借 `generate_note` / `inspect_video` 访问内网服务、环回地址、
 云厂商元数据端点（169.254.169.254）等。本模块在把 URL 交给下载器前校验
 scheme 与目标主机，拦截指向私网/环回/链路本地/保留地址的请求。
 

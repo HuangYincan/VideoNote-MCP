@@ -121,7 +121,7 @@ flowchart LR
 | 阶段 | 职责 | 典型工具 |
 |------|------|----------|
 | [0 🔄 端到端全流程](#0--端到端全流程) | 一条链接 → 一篇笔记，全自动跑完整条流水线 | `generate_note` / `get_task_status` |
-| [1 📥 下载与平台解析](#1--下载与平台解析) | 识别平台并下载音/视频，覆盖 1800+ 站点与本地文件 | `validate_url` / `inspect_video` |
+| [1 📥 下载与平台解析](#1--下载与平台解析) | 识别平台并下载音/视频，覆盖 1800+ 站点与本地文件 | `inspect_video` |
 | [2 🎙 语音转写（ASR）](#2--语音转写asr) | 音轨转文字，本地 / 云端多引擎可选 | `generate_note` 内部完成 |
 | [3 🖼️ 视频画面理解（抽帧）](#3--视频画面理解抽帧) | 按间隔抽帧，多模态 LLM「看」画面 | `video_understanding` 参数 |
 | [4 💬 弹幕与评论](#4--弹幕与评论) | 抓取 B 站弹幕与评论区观点 | `include_comments` 参数 |
@@ -146,11 +146,10 @@ flowchart LR
 
 # 1 📥 下载与平台解析
 
-`validate_url` 判断链接属于哪个平台（bilibili / youtube / douyin / tiktok / kuaishou / local）；内置 6 平台之外返回 `platform:"generic"`，自动走 **yt-dlp 通用提取**覆盖 1800+ 站点。`inspect_video` 把 B 站分 P / YouTube 播放列表拆成每集可独立提交的 url（不下载）。平台 Cookie 走 `! videonote login bilibili` / `! videonote setup`，**不要**经 MCP 传入。平台字幕（含 B 站 AI 字幕）由 `generate_note` 内部优先使用，无独立工具。
+`inspect_video` 识别平台（bilibili / youtube / douyin / tiktok / kuaishou / local；内置 6 平台之外返回 `platform:"generic"` 自动走 **yt-dlp 通用提取**覆盖 1800+ 站点）+ 检查链接有效性（无效直接给原因）+ 把 B 站分 P / YouTube 播放列表拆成每集可独立提交的 url（不下载）。平台 Cookie 走 `! videonote login bilibili` / `! videonote setup`，**不要**经 MCP 传入。平台字幕（含 B 站 AI 字幕）由 `generate_note` 内部优先使用，无独立工具。
 
 | 工具 | 说明 | 类型 |
 |------|------|------|
-| `validate_url` | 识别链接平台；generic 走 yt-dlp 通用提取（1800+ 站点） | MCP 工具 |
 | `inspect_video` | 解析分 P / 播放列表，返回每集可 `generate_note` 的 url | MCP 工具 |
 
 # 2 🎙 语音转写（ASR）
@@ -204,7 +203,7 @@ flowchart LR
 
 # 8 🗂️ 任务管理与清理
 
-每任务一个文件夹 `note_results/{task_id}/`：`raw/`（下载媒体）+ `gen/`（转写/笔记/帧/导出）+ 控制文件；**全局任务索引**在 SQLite `video_tasks` 表（含语义标题）。`list_tasks` 枚举全部任务（按语义标题识别）、`get_task_files` 先查后清、`cleanup_note` / `cleanup_all` 按任务 / 全局清理（默认保留配置与模型）、`health_check` 检查 FFmpeg / 数据库 / whisper 就绪。
+每任务一个文件夹 `note_results/{task_id}/`：`raw/`（下载媒体）+ `gen/`（转写/笔记/帧/导出）+ 控制文件；**全局任务索引**在 SQLite `video_tasks` 表（含语义标题）。`list_tasks` 枚举全部任务（按语义标题识别）、`cleanup_note(dry_run=True)` 先查后清、`cleanup_note` / `cleanup_all` 按任务 / 全局清理（默认保留配置与模型）、`health_check` 检查 FFmpeg / 数据库 / whisper 就绪。
 
 ```mermaid
 flowchart TB
@@ -227,7 +226,6 @@ flowchart TB
 | 工具 | 说明 | 类型 |
 |------|------|------|
 | `list_tasks` | 列出全部任务（全局索引，带语义标题） | MCP 工具 |
-| `get_task_files` | 查看单任务占用文件（清理前先查） | MCP 工具 |
 | `cleanup_note` / `cleanup_all` | 按任务清理 / 全局清理（恢复出厂） | MCP 工具 |
 | `health_check` | FFmpeg / 数据库 / whisper 就绪状态 | MCP 工具 |
 

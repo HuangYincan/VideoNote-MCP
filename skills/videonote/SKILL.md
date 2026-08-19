@@ -11,8 +11,8 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 
 1. 没有 `mcp__videonote__*` → 停，让用户重启会话 / `/reload-plugins`。不要用 CLI 代替 MCP。
 2. `health_check`：缺 ffmpeg 先让用户装。`keyed_providers=0` 且用户要 AI 笔记 → 让用户 `! videonote providers set`（key 不进对话）。
-3. `validate_url(url)`。
-4. 像合集 / 没带 `?p=` 的 B 站长链 / `list=` / `playlist` → `inspect_video(url)`。
+3. `inspect_video(url)`（识别平台 + 检查链接 + 拆多集；链接无效会直接给原因）。
+4. `kind=multi`（合集 / 分 P / 播放列表）→ 一条 `batch_generate_notes` 全出笔记。
    - `kind=single`：一条 url。
    - `kind=multi`：每条 `entries[].url` 当独立视频。用户没说「只要第 N 集」就处理全部（太多先报 `total`，问要不要只跑 `current_p`）。
      要全出笔记 → 一条 `batch_generate_notes(url)` 服务端逐个排队（省去逐条 subagent，见规则 2）。
@@ -35,7 +35,7 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 ## 工作流（默认 = 配置 LLM）
 
 ```
-health_check → validate_url → (必要时 inspect_video / preflight) → generate_note
+health_check → (必要时 inspect_video / preflight) → generate_note
     → get_task_status 直到终态 → 呈现 markdown
 ```
 

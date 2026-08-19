@@ -95,7 +95,7 @@ def detect_platform(url: str) -> str:
 def handoff_result(url: str, reason: str = "") -> dict:
     """构建「yt-dlp 也无法解析 → 交给 Agent 接手」的结构化结果。
 
-    供 server 层（validate_url / generate_note / prepare_note_material）在 generic
+    供 server 层（inspect_video / generate_note / prepare_note_material）在 generic
     下载失败（登录墙 / JS 渲染难题）时返回。Agent 读到 `handoff: True` 就知道要
     自行解析：用 WebFetch / 浏览器读取页面提取视频源，或手动处理登录后以本地文件调用。
     """

@@ -1450,48 +1450,55 @@ class ListTasksForwardTest(unittest.TestCase):
         m_list.assert_called_once_with(limit=None, offset=0)
 
 
-class ValidateUrlSsrfTest(unittest.TestCase):
-    """docs/05 第 16 轮 A1：validate_url 对私网/元数据 URL 明确拒绝（下载器边界也会拦）。"""
+class InspectVideoSsrfTest(unittest.TestCase):
+    """docs/05 第 16 轮 A1（#136 由 validate_url 并入 inspect_video）：
+    inspect_video 对私网/元数据 URL 明确拒绝（下载器边界也会拦）。"""
 
     def test_literal_metadata_ip_rejected(self):
-        resp = json.loads(server.validate_url("http://169.254.169.254/latest/meta-data/"))
-        self.assertFalse(resp["supported"])
+        resp = json.loads(server.inspect_video("http://169.254.169.254/latest/meta-data/"))
+        self.assertFalse(resp["ok"])
         self.assertEqual(resp["platform"], "generic")
-        self.assertIn("SSRF", resp["reason"])
+        self.assertIn("SSRF", resp["error"])
 
     def test_loopback_rejected(self):
-        resp = json.loads(server.validate_url("http://127.0.0.1:8080/video"))
-        self.assertFalse(resp["supported"])
-        self.assertIn("SSRF", resp["reason"])
+        resp = json.loads(server.inspect_video("http://127.0.0.1:8080/video"))
+        self.assertFalse(resp["ok"])
+        self.assertIn("SSRF", resp["error"])
 
     def test_localhost_hostname_rejected_when_resolves_private(self):
         # conftest 默认把 DNS 桩成公网；此用例显式让该主机判为非公网
         with mock.patch("app.utils.url_safety._host_is_public", return_value=False):
-            resp = json.loads(server.validate_url("http://localhost:8080/video"))
-        self.assertFalse(resp["supported"])
-        self.assertIn("SSRF", resp["reason"])
+            resp = json.loads(server.inspect_video("http://localhost:8080/video"))
+        self.assertFalse(resp["ok"])
+        self.assertIn("SSRF", resp["error"])
 
     def test_public_platform_url_accepted(self):
-        # conftest DNS → 公网；bilibili 命中内置平台
-        resp = json.loads(server.validate_url("https://www.bilibili.com/video/BV1vc411b7Wa"))
-        self.assertTrue(resp["supported"])
+        # conftest DNS → 公网；bilibili 命中内置平台——inspect 会调 view API 确认
+        # 分 P/标题（网络），mock 掉；platform 识别在请求前完成
+        with mock.patch(
+            "app.services.inspect._inspect_bilibili",
+            return_value={"ok": True, "platform": "bilibili", "kind": "single",
+                          "title": "t", "video_id": "BV1vc411b7Wa", "total": 1,
+                          "truncated": False,
+                          "entries": [{"p": 1, "title": "t", "duration": None,
+                                       "url": "https://www.bilibili.com/video/BV1vc411b7Wa",
+                                       "video_id": "BV1vc411b7Wa"}]},
+        ):
+            resp = json.loads(server.inspect_video("https://www.bilibili.com/video/BV1vc411b7Wa"))
+        self.assertTrue(resp["ok"])
         self.assertEqual(resp["platform"], "bilibili")
-
-    def test_generic_public_url_accepted(self):
-        resp = json.loads(server.validate_url("https://example.com/video"))
-        self.assertTrue(resp["supported"])
-        self.assertEqual(resp["platform"], "generic")
+        self.assertEqual(resp["kind"], "single")
 
     def test_local_existing_file_accepted(self):
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
             path = f.name
         try:
-            resp = json.loads(server.validate_url(f"file://{path}"))
+            resp = json.loads(server.inspect_video(f"file://{path}"))
         finally:
             Path(path).unlink(missing_ok=True)
-        self.assertTrue(resp["supported"])
+        self.assertTrue(resp["ok"])
         self.assertEqual(resp["platform"], "local")
-
+        self.assertEqual(resp["kind"], "single")
 
 class GetConfigTest(unittest.TestCase):
     """#135：配置只读合并工具 get_config（合并 read_app_config / get_transcriber_config / test_provider）。

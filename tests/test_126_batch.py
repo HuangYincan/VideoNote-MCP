@@ -203,24 +203,25 @@ class CliExportFileUriTest(unittest.TestCase):
         self.assertFalse(list(Path(self.out).glob("transcript.*")))
 
 
-# ---------------- C9：validate_url 本地路径存在性前置校验 ----------------
+# ---------------- C9：inspect_video 本地路径存在性前置校验（#136 由 validate_url 并入） ----------------
 
-class ValidateUrlLocalTest(unittest.TestCase):
-    """C9：本地路径不存在 → supported:false + 明确 reason（SKILL 流程少一轮无效往返）。"""
+class InspectVideoLocalTest(unittest.TestCase):
+    """C9：本地路径不存在 → ok:false + 明确 error（SKILL 流程少一轮无效往返）。"""
 
     def test_missing_local_file_rejected(self):
-        resp = json.loads(server.validate_url("/nonexistent/vn_test/missing.mp4"))
-        self.assertFalse(resp["supported"])
+        resp = json.loads(server.inspect_video("/nonexistent/vn_test/missing.mp4"))
+        self.assertFalse(resp["ok"])
         self.assertEqual(resp["platform"], "local")
-        self.assertIn("本地文件不存在", resp["reason"])
+        self.assertIn("本地文件不存在", resp["error"])
 
     def test_existing_local_file_accepted(self):
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
             path = f.name
         try:
-            resp = json.loads(server.validate_url(path))
-            self.assertTrue(resp["supported"])
+            resp = json.loads(server.inspect_video(path))
+            self.assertTrue(resp["ok"])
             self.assertEqual(resp["platform"], "local")
+            self.assertEqual(resp["kind"], "single")
         finally:
             os.unlink(path)
 
@@ -660,35 +661,39 @@ class ExportGenPriorityTest(unittest.TestCase):
             shutil.rmtree(tdir, ignore_errors=True)
 
 
-# ---------------- #127 A5：validate_url 失败形状对称 ----------------
+# ---------------- #127 A5：inspect_video 失败形状（#136 由 validate_url 并入） ----------------
 
-class ValidateUrlShapeTest(unittest.TestCase):
-    """#127 A5：ValueError 分支与本地缺失分支都带 platform 键。"""
+class InspectVideoShapeTest(unittest.TestCase):
+    """#127 A5：失败分支形状对称——空 url / 本地缺失都带可判读字段。"""
 
-    def test_empty_url_valueerror_has_platform(self):
-        resp = json.loads(server.validate_url(""))
-        self.assertFalse(resp["supported"])
-        self.assertEqual(resp["platform"], "unknown")
-        self.assertTrue(resp["reason"])
+    def test_empty_url_rejected(self):
+        resp = json.loads(server.inspect_video(""))
+        self.assertFalse(resp["ok"])
+        self.assertTrue(resp["error"])
 
     def test_local_missing_has_platform(self):
-        resp = json.loads(server.validate_url("/nonexistent/nope_12345.mp4"))
-        self.assertFalse(resp["supported"])
+        resp = json.loads(server.inspect_video("/nonexistent/nope_12345.mp4"))
+        self.assertFalse(resp["ok"])
         self.assertEqual(resp["platform"], "local")
 
 
-# ---------------- #127 A7：get_task_files 带 ok ----------------
+# ---------------- #127 A7 / #136：cleanup_note dry_run（并入 get_task_files） ----------------
 
-class GetTaskFilesOkTest(unittest.TestCase):
-    """#127 A7：成功路径带 ok:true，与 cleanup/export/get_task_transcript 同形状。"""
+class CleanupNoteDryRunTest(unittest.TestCase):
+    """#127 A7 / #136：dry_run=True 只列出不删——ok 形状与 manifest/existing/meta 齐备，磁盘不变。"""
 
-    def test_success_has_ok(self):
+    def test_dry_run_lists_and_does_not_delete(self):
         tid = "c1files_ok01"
         tdir = _make_task(tid)
         try:
-            resp = json.loads(server.get_task_files(tid))
+            resp = json.loads(server.cleanup_note(tid, dry_run=True))
             self.assertTrue(resp["ok"])
             self.assertEqual(resp["task_id"], tid)
+            self.assertTrue(resp["dry_run"])
+            self.assertTrue(resp["existing"])
+            # 不删任何东西：任务文件夹原样保留
+            self.assertTrue(tdir.exists())
+            self.assertTrue((tdir / "gen" / "transcript.json").exists())
         finally:
             shutil.rmtree(tdir, ignore_errors=True)
 

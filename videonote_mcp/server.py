@@ -1255,30 +1255,15 @@ def list_tasks(limit: Optional[int] = None, offset: int = 0) -> str:
 
 
 @mcp.tool()
-def get_task_files(task_id: str) -> str:
-    """列出某任务在磁盘上生成的相关文件/目录（manifest 记录 + 任务文件夹扫描）。
-
-    返回 {task_id, manifest_paths, existing, meta}：
-      - manifest_paths：manifest 记录的路径（可能已不存在）；
-      - existing：真实存在的文件/目录列表（manifest 解析 + 任务文件夹扫描并集）；
-      - meta：任务语义元数据（title/summary 等，无则空对象）。
-    清理前先用它查看该任务占了哪些存储。
-    """
-    task_id = _validate_task_id(task_id)
-    data = list_task_files(task_id)
-    # 与 cleanup/export/get_task_transcript 同形状（#127 A7）：Agent 统一按 ok 判读
-    if isinstance(data, dict) and "ok" not in data:
-        data["ok"] = True
-    return json.dumps(data, ensure_ascii=False)
-
-
-@mcp.tool()
-def cleanup_note(task_id: str, include_note: bool = False) -> str:
+def cleanup_note(task_id: str, include_note: bool = False, dry_run: bool = False) -> str:
     """清理某个任务生成的中间产物（下载的视频/音频、转写、截图、临时文件、dl 目录等）。
 
     - include_note=False（默认）：保留最终笔记（note.md / note_dir / 便携笔记目录）；
     - include_note=True：连最终笔记一起删（含 manifest），并同步删除全局索引
       video_tasks 里该任务的记录（否则 list_tasks 出现 note_dir 悬空的任务）。
+    - dry_run=True：**只列出**该任务占用的文件（{ok, task_id, manifest_paths, existing,
+      meta, dry_run: true}），不删任何东西——清理前先 dry_run 查看（原 get_task_files
+      工具，#136 合并进本工具）。
 
     只删除 manifest 记录 / note_results/{task_id}* / dl_{task_id} 前缀的文件，
     且 resolve 校验在数据目录内（防路径穿越）。返回 {deleted, missing, errors, note_kept,
@@ -1289,6 +1274,12 @@ def cleanup_note(task_id: str, include_note: bool = False) -> str:
     下载器/转写器正在写的目录，任务会中途失败或产生残留状态。先 cancel_note 或等终态。
     """
     task_id = _validate_task_id(task_id)
+    if dry_run:
+        data = list_task_files(task_id)
+        if isinstance(data, dict) and "ok" not in data:
+            data["ok"] = True
+        data["dry_run"] = True
+        return json.dumps(data, ensure_ascii=False)
     with _tasks_lock:
         future = _task_futures.get(task_id)
         if future is not None and not future.done():
@@ -1485,48 +1476,6 @@ def _skill_refresh_advice() -> str:
     return base
 
 
-@mcp.tool()
-def validate_url(url: str) -> str:
-    """判断视频链接属于哪个平台，以及是否受支持。
-
-    内置平台：bilibili（含 b23.tv）、youtube（含 youtu.be）、douyin、tiktok、kuaishou、本地文件路径。
-    其他 URL 返回 platform: "generic"（会尝试 yt-dlp 通用提取，覆盖 1800+ 站点）。
-    仅当 generic 下载失败时才需要 Agent 接手解析（handoff 语义，docs 审计 H6）。
-    """
-    try:
-        platform = _detect_platform(url)
-    except ValueError as e:
-        # 失败分支与本地缺失分支同形状（都带 platform，#127 A5）：Agent 统一按 r["platform"] 判读
-        return json.dumps({"supported": False, "platform": "unknown", "reason": str(e)}, ensure_ascii=False)
-    if platform == "local":
-        # 本地路径存在性前置校验：validate_url 给绿灯后 generate_note 却拒绝，
-        # SKILL 流程（validate_url → generate_note）多一轮无效往返（#126 C9）
-        if not _local_video_exists(url):
-            return json.dumps(
-                {"supported": False, "platform": "local", "reason": "本地文件不存在"},
-                ensure_ascii=False,
-            )
-        reason = "识别为 local"
-    else:
-        # SSRF 防护（docs/05 第 16 轮 A1）：下载器边界也会拦，这里提前给 Agent 明确拒绝
-        try:
-            assert_public_http_url(url)
-        except ValueError as e:
-            return json.dumps(
-                {"supported": False, "platform": platform, "reason": str(e)},
-                ensure_ascii=False,
-            )
-        reason = (
-            "识别为 generic：将尝试 yt-dlp 通用提取（可能需登录/代理）"
-            if platform == "generic"
-            else f"识别为 {platform}"
-        )
-    return json.dumps(
-        {"supported": True, "platform": platform, "reason": reason},
-        ensure_ascii=False,
-    )
-
-
 _PREFLIGHT_MIN_DISK_GB = 1.0
 
 
@@ -1687,9 +1636,15 @@ def preflight(
 
 @mcp.tool()
 def inspect_video(url: str, platform: Optional[str] = None) -> str:
-    """解析视频链接，列出可独立生成笔记的条目（B 站分 P / YouTube 播放列表 / 单集）。
+    """解析视频链接：识别平台 + 检查链接有效性 + 列出可独立生成笔记的条目。
 
-    **只解析、不下载、不提交任务。** 多集时 entries[].url 可直接喂给
+    **只解析、不下载、不提交任务。** 提交前先用它确认链接（原 validate_url 的
+    角色，#136 合并）：空 url / 本地文件不存在 / 内网 SSRF / 平台解析失败 →
+    {ok: false, platform?, error}——generate_note 内部也会校验，这里提前给原因。
+    generic（未知站点）会走 yt-dlp 展开确认（较慢，几秒）。
+
+    单视频 {ok, platform, kind: single, title, video_id, total, entries}；
+    多集（B 站分 P / YouTube 播放列表）kind: multi，entries[].url 可直接喂给
     `generate_note` / `prepare_note_material`；一个链接内的多集（分 P/播放列表）
     用一条 `batch_generate_notes` 全出笔记（#125 C4，与 #110 batch 口径一致）；
     互相独立的链接才各自开 subagent。
@@ -1782,6 +1737,9 @@ def batch_generate_notes(
     notes_dir: Optional[str] = None,
 ) -> str:
     """对播放列表/合集/分 P 链接批量提交笔记任务（服务端逐个排队，遵守并发门禁）。
+
+    参数策略：除 video_url 外全部可选——不传即套 setup ③ 配置的默认
+    （与 generate_note 同款；仅需覆盖时显式传）。
 
     - video_url: 必填，B 站分 P / YouTube 播放列表等可展开为多集的链接；
     - max_entries: 最多提交条数（默认 10，防 200 集播放列表一次全排；超出截断并标记 truncated）；

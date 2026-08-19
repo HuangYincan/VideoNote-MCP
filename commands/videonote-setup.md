@@ -60,7 +60,7 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 ## 6. 数据管理（可选）
 
 - **`list_tasks`** 列全部任务（按语义标题识别）。
-- 清理单任务：**`get_task_files(task_id)`** 先看占用的文件 → **`cleanup_note(task_id, include_note?)`**。
+- 清理单任务：**`cleanup_note(task_id, include_note?, dry_run=True)`** 先看占用的文件 → `dry_run=False` 再删。
 - 全局清理：**`cleanup_all(include_config?, include_models?)`**（默认保留配置与模型）。
 
 ---
