@@ -55,3 +55,13 @@ jobs:
         run: uv run videonote providers list
       - name: Unit tests
         run: uv run pytest -q
+
+  # 汇总 job：main 分支保护规则要求 context "Smoke test"（矩阵 job 名带
+  # Python 版本，规则早于矩阵化配置）。needs 矩阵全部通过才绿，
+  # 任一失败即失败（fail-fast: false 保证三个版本都跑完）。
+  smoke-summary:
+    name: Smoke test
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Smoke tests passed (Python 3.11/3.12/3.13)"
