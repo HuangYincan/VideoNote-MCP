@@ -46,8 +46,18 @@ def sanitize_url(url: Optional[str]) -> str:
     return f"{parts.scheme}://{host}{parts.path or '/'}"
 
 
+# fake-ip 代理（Clash/Surge/Stash 等 macOS 常用）把 DNS 解析结果返回
+# 198.18.0.0/15（RFC 2544 benchmarking 段，公网不可路由，真实内网不使用），
+# 流量由代理转发到公网——is_global 判 False 会误杀所有 URL（2026-08-19
+# 用户实测：本机代理下 generate_note/inspect_video 全部被 SSRF 防护拦截）。
+# 放行该段不削弱防护目标：内网/环回/元数据端点（169.254.169.254）仍全拦。
+_FAKE_IP_PROXY_NET = ipaddress.ip_network("198.18.0.0/15")
+
+
 def _ip_is_global(ip: ipaddress._BaseAddress) -> bool:
     """IPv4/IPv6 统一判公网。is_global 聚合了 private/loopback/link_local/reserved/unspecified/multicast。"""
+    if ip.version == 4 and ip in _FAKE_IP_PROXY_NET:
+        return True
     try:
         return bool(ip.is_global)
     except Exception:  # noqa: BLE001 —— 个别保留区间 is_global 可能抛错，保守拦截

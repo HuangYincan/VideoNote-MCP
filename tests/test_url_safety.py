@@ -44,6 +44,19 @@ class TestIsPublicHttpUrlLiteralIp:
     def test_public_ip_allowed(self, url):
         assert is_public_http_url(url) is True
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://198.18.0.1/x",      # fake-ip 代理段起点
+            "http://198.18.5.33/x",     # fake-ip（Clash 默认）
+            "http://198.19.255.255/x",  # fake-ip 段终点
+        ],
+    )
+    def test_fake_ip_proxy_range_allowed(self, url):
+        """198.18.0.0/15（RFC 2544）：Clash/Surge fake-ip 代理的 DNS 返回段，
+        流量经代理转发公网，is_global=False 会误杀（2026-08-19 实测）。"""
+        assert is_public_http_url(url) is True
+
 
 class TestIsPublicHttpUrlScheme:
     @pytest.mark.parametrize(
@@ -71,6 +84,15 @@ class TestIsPublicHttpUrlHostname:
 
         with mock.patch("socket.getaddrinfo", side_effect=_private):
             assert is_public_http_url("http://internal.example.com/x") is False
+
+    def test_host_resolves_to_fake_ip_allowed(self):
+        """域名解析到 fake-ip 段（198.18.0.0/15）不拦截——代理转发公网。"""
+
+        def _fake_ip(*_a, **_k):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.1", 0))]
+
+        with mock.patch("socket.getaddrinfo", side_effect=_fake_ip):
+            assert is_public_http_url("http://example.com/v") is True
 
     def test_host_resolves_to_public_allowed(self):
         assert is_public_http_url("http://example.com/v") is True  # conftest 桩成 8.8.8.8
