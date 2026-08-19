@@ -177,6 +177,43 @@ class TestTranscriberCli:
         assert "说话人分离: 关" in _cli_out(capsys)
 
 
+class TestProxyCli:
+    def test_set_and_list(self, capsys):
+        cli._proxy_cli(["set", "http://127.0.0.1:7897"])
+        assert "代理已启用: http://127.0.0.1:7897" in _cli_out(capsys)
+        capsys.readouterr()
+        cli._proxy_cli(["list"])
+        out = _cli_out(capsys)
+        assert "http://127.0.0.1:7897" in out
+        assert "配置文件启用" in out
+
+    def test_list_masks_credentials(self, capsys):
+        # 代理 URL 可带 user:pass@：list 只留 host，不落凭据（与 _apply_proxy 日志同口径）
+        cli._proxy_cli(["set", "http://user:secret@127.0.0.1:7897"])
+        capsys.readouterr()
+        cli._proxy_cli(["list"])
+        out = _cli_out(capsys)
+        assert "user:secret" not in out
+        assert "http://127.0.0.1:7897" in out
+
+    def test_off_falls_back_to_env(self, capsys, monkeypatch):
+        cli._proxy_cli(["set", "http://127.0.0.1:7897"])
+        capsys.readouterr()
+        cli._proxy_cli(["off"])
+        assert "代理已关闭" in _cli_out(capsys)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.0.0.1:8080")
+        capsys.readouterr()
+        cli._proxy_cli(["list"])
+        out = _cli_out(capsys)
+        assert "http://10.0.0.1:8080" in out
+        assert "环境变量" in out
+
+    def test_set_missing_url(self):
+        with pytest.raises(SystemExit) as ei:
+            cli._proxy_cli(["set"])
+        assert ei.value.code == 2
+
+
 class TestExportCli:
     def test_export_list_formats(self, capsys):
         cli._export_cli(["list"])

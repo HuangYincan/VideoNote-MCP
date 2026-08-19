@@ -48,6 +48,7 @@ from app.db.init_db import init_db
 from app.db.model_dao import get_model_by_provider_and_name, insert_model
 from app.db.provider_dao import seed_default_providers
 from app.services.provider import ProviderService
+from app.services.proxy_config_manager import ProxyConfigManager
 from app.services.transcriber_config_manager import TranscriberConfigManager
 
 init_db()
@@ -1372,6 +1373,49 @@ def _transcriber_cli(argv) -> None:
                 )
 
 
+def _proxy_cli(argv) -> None:
+    """`videonote proxy ...`：在终端管理全局代理。
+
+    作用范围：LLM API + 转写 API（Groq 等）+ yt-dlp 视频下载（youtube/generic 下载器
+    都经 _apply_proxy 透传）。优先级：配置文件 enabled=true 的 url > 环境变量
+    HTTPS_PROXY/HTTP_PROXY/ALL_PROXY。fake-ip 代理（Clash/Surge）环境下不配代理，
+    yt-dlp 会直连解析出的保留段地址而失败。
+    """
+    parser = argparse.ArgumentParser(
+        prog="videonote proxy",
+        description="全局代理配置（LLM/转写/yt-dlp 下载共用；优先于环境变量）",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list", help="查看当前代理状态与来源")
+    p_set = sub.add_parser("set", help="启用并设置代理 URL（如 http://127.0.0.1:7897）")
+    p_set.add_argument("url", help="代理 URL（http://host:port；可带 user:pass@）")
+    sub.add_parser("off", help="关闭代理（回退环境变量）")
+
+    opts = parser.parse_args(argv)
+    mgr = ProxyConfigManager()
+    if opts.cmd == "list":
+        cfg = mgr.get_config()
+        env = next(
+            (os.environ.get(k) for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy") if os.environ.get(k)),
+            None,
+        )
+        if cfg["enabled"] and cfg["url"]:
+            from app.utils.url_safety import sanitize_url
+
+            print(f"代理: {sanitize_url(cfg['url'])}（配置文件启用）", file=sys.stdout)
+        elif env:
+            print(f"代理: {env}（环境变量）", file=sys.stdout)
+        else:
+            print("代理: 未配置（yt-dlp 下载直连；fake-ip 代理环境下会失败）", file=sys.stdout)
+    elif opts.cmd == "set":
+        mgr.update_config(True, opts.url)
+        print(f"✅ 代理已启用: {opts.url}", file=sys.stdout)
+    elif opts.cmd == "off":
+        mgr.update_config(False)
+        print("✅ 代理已关闭（回退环境变量）", file=sys.stdout)
+
+
 def _login_cli(argv, exit_on_fail: bool = True) -> None:
     """`videonote login [bilibili]`：扫码登录 B 站，自动获取并保存 SESSDATA（AI 字幕用）。
 
@@ -1623,7 +1667,7 @@ def _export_cli(argv) -> None:
 
 def main() -> None:
     """入口：providers / setup / transcriber / login / export 走轻量 CLI；**无参数**时才是 MCP server（stdio）。"""
-    known = ("providers", "setup", "transcriber", "login", "export")
+    known = ("providers", "setup", "transcriber", "login", "export", "proxy")
     if len(sys.argv) > 1 and sys.argv[1] in known:
         cmd = sys.argv[1]
         if cmd == "providers":
@@ -1634,6 +1678,8 @@ def main() -> None:
             _login_cli(sys.argv[2:])
         elif cmd == "export":
             _export_cli(sys.argv[2:])
+        elif cmd == "proxy":
+            _proxy_cli(sys.argv[2:])
         else:
             _transcriber_cli(sys.argv[2:])
         return
