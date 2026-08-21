@@ -1,6 +1,6 @@
 {
   "name": "videonote",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "Generate AI Markdown notes from video links (Bilibili/YouTube/Douyin/Kuaishou/local)",
   "author": {
     "name": "HuangYincan",
@@ -13,7 +13,7 @@
     "videonote": {
       "command": "uvx",
       "args": [
-        "videonote"
+        "videonote@latest"
       ],
       "env": {
         "VIDEONOTE_DEFAULT_STYLE": "${user_config.default_style}",

@@ -34,7 +34,7 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
 ## 快速开始
 
 ```bash
-# 1) 一条命令装好 Skill + MCP（插件 marketplace，uvx 自动更新）
+# 1) 一条命令装好 Skill + MCP（插件 marketplace；MCP 启动命令 uvx videonote@latest 自动取 PyPI 最新版）
 claude plugin marketplace add HuangYincan/VideoNote-MCP
 claude plugin install videonote@videonote
 

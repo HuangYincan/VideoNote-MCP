@@ -1629,7 +1629,8 @@ def health_check(
 def _skill_refresh_advice() -> str:
     """插件/Skill 刷新提示（docs/05 #24）：server 与插件版本不一致时点名提示。"""
     base = (
-        "MCP（uvx）跟 git HEAD；Skill/插件不自动更新。"
+        "MCP（启动命令 uvx videonote@latest）每次会话启动自动取 PyPI 最新版；"
+        "Skill/插件不自动更新。"
         "工作流对不上时：`claude plugin disable videonote@videonote` "
         "然后 `claude plugin install videonote@videonote`，再开新会话。"
     )
