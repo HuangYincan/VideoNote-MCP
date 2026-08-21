@@ -18,7 +18,7 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
 
 仓库：[HuangYincan/VideoNote-MCP](https://github.com/HuangYincan/VideoNote-MCP)。
 
-既可端到端使用（一条链接 → 一篇笔记），也可解耦：每一阶段都是独立 MCP 工具，按需取用。无需启动任何后端服务。
+既可端到端使用（一条链接 → 一篇笔记），也可解耦：生成、素材、任务、媒体处理等工具按需取用。无需启动任何后端服务。
 
 <p align="center">
   <a href="https://github.com/HuangYincan/VideoNote-MCP"><img src="https://img.shields.io/github/stars/HuangYincan/VideoNote-MCP?logo=github" alt="GitHub stars"></a>
@@ -99,11 +99,11 @@ claude plugin install videonote@videonote
 
 <img src="assets/pipeline.svg" alt="VideoNote-Mcp 流水线地图" width="100%"/>
 
-实线为主流程：一条 `generate_note` 链接端到端跑通；虚线为可选能力（视频理解 / 弹幕评论 / Agent 生成），每阶段都是独立 MCP 工具，可解耦取用。各阶段细节（平台支持、引擎、参数）见 [docs/02-架构设计.md](docs/02-架构设计.md)。
+实线为主流程：一条 `generate_note` 链接端到端跑通；虚线为可选能力（视频理解 / 弹幕评论 / Agent 生成），按需取用。各阶段细节（平台支持、引擎、参数）见 [docs/02-架构设计.md](docs/02-架构设计.md)。
 
 ## 任务管理
 
-每任务一个文件夹 `note_results/{task_id}/`：`raw/`（下载媒体）+ `gen/`（转写/笔记/帧/导出）+ 控制文件；**全局任务索引**在 SQLite `video_tasks` 表（含语义标题）。`list_tasks` 枚举全部任务（按语义标题识别）、`cleanup_note(dry_run=True)` 先查后清、`cleanup_note` / `cleanup_all` 按任务 / 全局清理（默认保留配置与模型）、`health_check` 检查 FFmpeg / 数据库 / whisper 就绪。
+每任务一个文件夹 `note_results/{task_id}/`：`raw/`（下载媒体）+ `gen/`（转写/笔记/帧/导出）+ 控制文件；**全局任务索引**在 SQLite `video_tasks` 表（含语义标题）。`list_tasks` 枚举全部任务（按语义标题识别）、`cleanup(task_id, dry_run=True)` 先查后清、`cleanup` 按任务 / 全局清理（默认保留配置与模型）、`health_check` 检查 FFmpeg / 数据库 / whisper 就绪。
 
 ```mermaid
 flowchart TB
@@ -126,7 +126,7 @@ flowchart TB
 | 工具 | 说明 | 类型 |
 |------|------|------|
 | `list_tasks` | 列出全部任务（全局索引，带语义标题） | MCP 工具 |
-| `cleanup_note` / `cleanup_all` | 按任务清理 / 全局清理（恢复出厂） | MCP 工具 |
+| `cleanup` | 按任务清理（传 `task_id`）/ 全局清理（恢复出厂，不传） | MCP 工具 |
 | `health_check` | FFmpeg / 数据库 / whisper 就绪状态 | MCP 工具 |
 
 ---
@@ -134,7 +134,7 @@ flowchart TB
 ## 最佳实践
 
 - **学习备考**：端到端 + 视频理解 + 基于字幕的后续优化，把课程讲透。
-- **会议纪要**：`merge_audio` 合并分段录音 → `diarize_media` 说话人分离 → `meeting_minutes` 风格。
+- **会议纪要**：`process_media(action="merge")` 合并分段录音 → `process_media(action="diarize")` 说话人分离 → `meeting_minutes` 风格。
 - **讲座精读**：端到端生成后，agent 基于完整字幕精修、按章节补齐细节。
 - **视频赏析**：开启弹幕 + 评论整合，笔记含「观众观点」章节。
 - **端到端**：一条链接用 `generate_note`（下载/转写/总结/评论全流程内部完成）；只准备素材用 `prepare_note_material`。

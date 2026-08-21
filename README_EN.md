@@ -18,7 +18,7 @@ VideoNote-Mcp packages the whole "video link → multi-format notes" pipeline in
 
 Repository: [HuangYincan/VideoNote-MCP](https://github.com/HuangYincan/VideoNote-MCP).
 
-It works **end-to-end (one link → one note)** and is **also decoupled**: every pipeline stage is an independent MCP tool, so you can pick and choose. No backend required.
+It works **end-to-end (one link → one note)** and is **also decoupled**: pick and choose among generation, material, task and media-processing tools. No backend required.
 
 <p align="center">
   <a href="https://github.com/HuangYincan/VideoNote-MCP"><img src="https://img.shields.io/github/stars/HuangYincan/VideoNote-MCP?logo=github" alt="GitHub stars"></a>
@@ -98,11 +98,11 @@ Full run record: [`examples/note-generation-example/README.md`](examples/note-ge
 
 <img src="assets/pipeline-en.svg" alt="VideoNote-Mcp pipeline map" width="100%"/>
 
-Solid lines are the main flow: one `generate_note` link runs the whole pipeline end-to-end. Dashed lines are optional capabilities (video understanding / danmaku + comments / Agent-generated), and every stage is an independent MCP tool you can use decoupled. Stage details (platform support, engines, parameters) live in [docs/02-架构设计.md](docs/02-架构设计.md).
+Solid lines are the main flow: one `generate_note` link runs the whole pipeline end-to-end. Dashed lines are optional capabilities (video understanding / danmaku + comments / Agent-generated) you can opt into. Stage details (platform support, engines, parameters) live in [docs/02-架构设计.md](docs/02-架构设计.md).
 
 ## Task Management
 
-One folder per task `note_results/{task_id}/`: `raw/` (downloaded media) + `gen/` (transcript/note/frames/exports) + control files; a **global task index** lives in the SQLite `video_tasks` table (with semantic titles). `list_tasks` enumerates all tasks (identify by semantic title), `cleanup_note(dry_run=True)` inspects a task before cleanup, `cleanup_note` / `cleanup_all` do per-task / global cleanup (config & models kept by default), and `health_check` verifies FFmpeg / database / whisper readiness.
+One folder per task `note_results/{task_id}/`: `raw/` (downloaded media) + `gen/` (transcript/note/frames/exports) + control files; a **global task index** lives in the SQLite `video_tasks` table (with semantic titles). `list_tasks` enumerates all tasks (identify by semantic title), `cleanup(task_id, dry_run=True)` inspects a task before cleanup, `cleanup` does per-task / global cleanup (config & models kept by default), and `health_check` verifies FFmpeg / database / whisper readiness.
 
 ```mermaid
 flowchart TB
@@ -125,7 +125,7 @@ flowchart TB
 | Tool | Description | Type |
 |------|------|------|
 | `list_tasks` | List all tasks (global index, with semantic titles) | MCP tool |
-| `cleanup_note` / `cleanup_all` | Per-task cleanup / global cleanup (factory reset) | MCP tool |
+| `cleanup` | Per-task cleanup (with `task_id`) / global cleanup (factory reset, without) | MCP tool |
 | `health_check` | FFmpeg / database / whisper readiness | MCP tool |
 
 ---
@@ -133,10 +133,10 @@ flowchart TB
 ## Best Practices
 
 - **Study & exam prep**: end-to-end + video understanding + transcript-based follow-up refinement.
-- **Meeting minutes**: `merge_audio` to join recorded segments → `diarize_media` for speakers → `meeting_minutes` style.
+- **Meeting minutes**: `process_media(action="merge")` to join recorded segments → `process_media(action="diarize")` for speakers → `meeting_minutes` style.
 - **Deep-reading a lecture**: after end-to-end generation, the agent refines from the full transcript, filling in section by section.
 - **Video appreciation**: enable danmaku + comment integration for an "Audience viewpoints" section.
-- **End-to-end vs decoupled**: use `generate_note` for a single link; use standalone tools in any combination when you only want one step (transcribe / frames / summarize / comments).
+- **End-to-end vs decoupled**: use `generate_note` for a single link; use `prepare_note_material` for material-only and `process_media` for media operations (merge / diarize / export) when you only want part of the pipeline.
 - **Real example**: full run records for both cases live in [`examples`](examples).
 
 ## How to Contribute

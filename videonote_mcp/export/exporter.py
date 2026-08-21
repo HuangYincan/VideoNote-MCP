@@ -6,7 +6,7 @@
   - out_dir: 输出目录，缺省 NOTE_OUTPUT_DIR/{task_id}/（task_id 为空时用时间戳名）。
 
 返回 `{fmt: file://绝对路径}`（失败格式不在结果里，错误在 errors dict）。
-落盘后把产物路径记入 task manifest（供 cleanup_note 清理）。
+落盘后把产物路径记入 task manifest（供 MCP cleanup 工具清理）。
 """
 from __future__ import annotations
 

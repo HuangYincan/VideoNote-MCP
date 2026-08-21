@@ -39,13 +39,12 @@ jobs:
                       tools = await session.list_tools()
                       names = sorted(t.name for t in tools.tools)
                       # 名单断言（docs/05 #70）：数量断言放过名字漂移（get_task_status 曾
-                      # 丢失装饰器仍 38 全绿），必须精确匹配。改名/增删工具时同步这里。
+                      # 丢失装饰器仍 38 全绿），必须精确匹配。改名/增删工具时同步这里
+                      # （#135/#136/#138：16 → 10，任务/清理/媒体/体检四组合并）。
                       expected = [
-                          "batch_generate_notes", "cancel_note", "cleanup_all", "cleanup_note",
-                          "diarize_media", "export_transcript", "generate_note", "get_config",
-                          "get_task_status", "get_task_transcript", "health_check",
-                          "inspect_video", "list_tasks", "merge_audio", "preflight",
-                          "prepare_note_material",
+                          "batch_generate_notes", "cleanup", "generate_note", "get_config",
+                          "health_check", "inspect_video", "list_tasks",
+                          "prepare_note_material", "process_media", "task",
                       ]
                       assert names == expected, f"工具名单漂移: {names}"
                       print(f"tools/list OK: {len(names)} tools (名单精确匹配)")

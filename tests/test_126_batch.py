@@ -68,7 +68,7 @@ class ExportTranscriptGateTest(unittest.TestCase):
         shutil.rmtree(self.tdir, ignore_errors=True)
 
     def test_success_task_exports(self):
-        resp = json.loads(server.export_transcript(self.tid, formats=["srt"]))
+        resp = json.loads(server.process_media(action="export", task_id=self.tid, formats=["srt"]))
         self.assertTrue(resp["ok"])
         srt = resp["formats"]["srt"]
         self.assertTrue(Path(srt.removeprefix("file://")).exists())
@@ -79,7 +79,7 @@ class ExportTranscriptGateTest(unittest.TestCase):
             json.dumps({"status": "FAILED", "message": "失败"}, ensure_ascii=False),
             encoding="utf-8",
         )
-        resp = json.loads(server.export_transcript(self.tid, formats=["srt"]))
+        resp = json.loads(server.process_media(action="export", task_id=self.tid, formats=["srt"]))
         self.assertFalse(resp["ok"])
         self.assertIn("任务未成功", resp["error"])
 
@@ -88,7 +88,7 @@ class ExportTranscriptGateTest(unittest.TestCase):
             json.dumps({"status": "TRANSCRIBING", "message": "转写中"}, ensure_ascii=False),
             encoding="utf-8",
         )
-        resp = json.loads(server.export_transcript(self.tid, formats=["srt"]))
+        resp = json.loads(server.process_media(action="export", task_id=self.tid, formats=["srt"]))
         self.assertFalse(resp["ok"])
         self.assertIn("TRANSCRIBING", resp["error"])
 
@@ -105,7 +105,7 @@ class CleanupAllOkTest(unittest.TestCase):
         marker.mkdir(exist_ok=True)
         (marker / "video.mp4").write_bytes(b"x")
         try:
-            resp = json.loads(server.cleanup_all())
+            resp = json.loads(server.cleanup())
             self.assertTrue(resp["ok"])
             self.assertIn("note_results", resp["cleaned"])
             self.assertFalse(marker.exists())
@@ -654,7 +654,7 @@ class ExportGenPriorityTest(unittest.TestCase):
         )
         try:
             out_dir = tdir / "export_out"
-            resp = json.loads(server.export_transcript(tid, formats=["srt"], out_dir=str(out_dir)))
+            resp = json.loads(server.process_media(action="export", task_id=tid, formats=["srt"], out_dir=str(out_dir)))
             self.assertTrue(resp["ok"])
             self.assertIn("来自 gen", (out_dir / "transcript.srt").read_text(encoding="utf-8"))
         finally:
@@ -686,7 +686,7 @@ class CleanupNoteDryRunTest(unittest.TestCase):
         tid = "c1files_ok01"
         tdir = _make_task(tid)
         try:
-            resp = json.loads(server.cleanup_note(tid, dry_run=True))
+            resp = json.loads(server.cleanup(tid, dry_run=True))
             self.assertTrue(resp["ok"])
             self.assertEqual(resp["task_id"], tid)
             self.assertTrue(resp["dry_run"])
@@ -708,11 +708,11 @@ class TranscriptSliceSeparatorTest(unittest.TestCase):
         tid = "c1slice_sep01"
         tdir = _make_task(tid)
         try:
-            resp = json.loads(server.get_task_transcript(tid, segment_range="0-1"))
+            resp = json.loads(server.task(tid, action="transcript", segment_range="0-1"))
             self.assertTrue(resp["ok"])
             self.assertEqual(resp["full_text"], "第一句")
             # 全量与切片同分隔符：全量是「第一句 第二句」（空格分隔），切片 0-1 只含前段
-            full = json.loads(server.get_task_transcript(tid, segment_range="all"))
+            full = json.loads(server.task(tid, action="transcript", segment_range="all"))
             self.assertEqual(full["full_text"], "第一句 第二句")
         finally:
             shutil.rmtree(tdir, ignore_errors=True)

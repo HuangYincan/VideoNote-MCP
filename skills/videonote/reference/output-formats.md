@@ -1,22 +1,22 @@
 # 输出格式参考 —— 从 MD 底稿到任意格式
 
 > 本文件是 SKILL 的参考（非核心）。**分工**：确定性机械格式（SRT/VTT/JSON）由 MCP 工具
-> `export_transcript` 直接产出；创意/自定义格式（思维导图/闪卡/LaTeX/typst/用户模板）
+> `process_media(action="export")` 直接产出；创意/自定义格式（思维导图/闪卡/LaTeX/typst/用户模板）
 > 由 **Agent 把 MD 底稿当信息源自行生成**。这样 MCP 保持精简，输出格式无限扩展。
 
 ## 信息源：拿到底稿
 
-任务成功后（`get_task_status` 返回 `SUCCESS`）：
+任务成功后（`task(task_id)` 返回 `SUCCESS`）：
 
-1. **`cleanup_note(task_id, dry_run=True)`** —— 列出任务产物，找到 `gen/note.md`（MD 底稿）与 `gen/transcript.json`（转写）。
-2. **`result.markdown`**（MD 底稿）—— 在 `get_task_status` 的轻量结果里直接有，或读 `gen/note.md`；需要转写时用 **`get_task_transcript(task_id)`**（`full_text` 全文 + `segments` 时间轴，可按段切片）。
+1. **`cleanup(task_id, dry_run=True)`** —— 列出任务产物，找到 `gen/note.md`（MD 底稿）与 `gen/transcript.json`（转写）。
+2. **`result.markdown`**（MD 底稿）—— 在 `task(action="status")` 的轻量结果里直接有，或读 `gen/note.md`；需要转写时用 **`task(task_id, action="transcript")`**（`full_text` 全文 + `segments` 时间轴，可按段切片）。
 3. 便携笔记：`result.note_dir` 指向 `note.md` 所在目录（默认 `{task_id}/gen/`）；若生成时指定了 `notes_dir`，额外有 `result.portable_note_dir` 指向便携副本目录（`<notes_dir>/<标题>/`）。
 
 底稿 = **转换的信息源**。所有格式转换都以它为依据，不再重新下载/转写。
 
 ## 机械格式（调 MCP 工具，不自己写）
 
-`export_transcript(task_id, formats=["srt","vtt","json"], out_dir?)`
+`process_media(action="export", task_id=..., formats=["srt","vtt","json"], out_dir?)`
 
 - 确定性渲染（时间轴换算），**不耗 LLM、不耗 token**，结果可离线核对。
 - 返回 `{task_id, formats: {fmt: "file://绝对路径"}}`，直接 Read 即可用。
@@ -25,7 +25,7 @@
 
 ## 创意格式（Agent 基于底稿生成）
 
-原则：读 `result.markdown` 底稿（`get_task_status` 轻量结果 / `gen/note.md`）→ 按目标格式重写为对应文件 → 交付路径。
+原则：读 `result.markdown` 底稿（`task(action="status")` 轻量结果 / `gen/note.md`）→ 按目标格式重写为对应文件 → 交付路径。
 
 ### 思维导图（Mermaid）
 1. 读 MD 底稿，提炼层级大纲（标题 → 子要点 → 细节）。
@@ -53,5 +53,5 @@
 
 ## 输出落盘位置
 
-- 机械格式：`export_transcript` 写到 `note_results/{task_id}/`（`out_dir` 可覆盖），并记入 manifest（可被 `cleanup_note` 清理）。
+- 机械格式：`process_media(action="export")` 写到 `note_results/{task_id}/`（`out_dir` 可覆盖），并记入 manifest（可被 `cleanup` 清理）。
 - Agent 手写格式：写到 `note_dir`（若有）或当前工作目录，交付路径给用户。

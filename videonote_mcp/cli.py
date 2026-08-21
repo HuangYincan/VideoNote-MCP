@@ -801,7 +801,7 @@ _TERMINAL_STATUSES = ("SUCCESS", "FAILED", "CANCELLED")
 def _list_running_tasks() -> List[str]:
     """返回状态仍为「进行中」的任务（读 note_results/{task_id}/status.json）。
 
-    MCP 侧 cleanup_note/cleanup_all 用进程内 _task_futures 守卫；CLI 是独立进程
+    MCP 侧 cleanup 工具（单任务/全局）用进程内 _task_futures 守卫；CLI 是独立进程
     拿不到，改以磁盘 status.json 为准（独立步骤任务也写它，比 video_tasks 表全）。
     进程被杀会残留中间状态——调用方须二次确认后才能清理（交互式 CLI 允许用户
     判断后强清，与 MCP 的硬拒绝区别于此）。
@@ -846,7 +846,7 @@ def _wizard_data_cleanup_one(inq) -> None:
 
     files = list_task_files(tid)
     print(f"{_DIM}该任务占用：{len(files.get('existing', []))} 个文件/目录{_RESET}", file=sys.stdout)
-    # 运行中任务守卫（#122 A6，与 MCP cleanup_note 的拒绝行为对齐）：
+    # 运行中任务守卫（#122 A6，与 MCP cleanup 单任务模式的拒绝行为对齐）：
     # 直接清理会删掉下载器/转写器正在写的目录。CLI 看不到 MCP 内存状态，
     # 以磁盘 status.json 为准；非终态要求用户显式确认（可能被 MCP 进程占用）。
     _task_status = ""
@@ -903,7 +903,7 @@ def _wizard_data_cleanup_all(inq) -> None:
         f"logs/ 保留（运行日志不属任务产物）。{_RESET}",
         file=sys.stdout,
     )
-    # 运行中任务守卫（#122 A6，与 MCP cleanup_all 的拒绝行为对齐）：全局清空会把
+    # 运行中任务守卫（#122 A6，与 MCP cleanup 全局模式的拒绝行为对齐）：全局清空会把
     # 运行中任务的目录一并删掉。CLI 看不到 MCP 内存状态，以磁盘 status.json 为准。
     running = _list_running_tasks()
     if running:

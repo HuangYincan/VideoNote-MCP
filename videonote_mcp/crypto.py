@@ -2,7 +2,7 @@
 
 密钥文件存 `VIDEONOTE_CONFIG_DIR/fernet.key`（0600），与 app_config.json 同目录。
 卸载/升级不动 config/ → key 随配置保留，已加密数据升级后仍可解（设计红线：绝不丢配置；
-只有显式 `cleanup_all --include-config` 才清掉 key）。
+只有显式 `cleanup(include_config=True)`（全局清理）才清掉 key）。
 
 密文统一带 `enc:` 前缀：
 - `decrypt_value` 对无前缀的值原样返回 —— 明文兼容迁移：历史明文照常工作，

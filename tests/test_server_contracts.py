@@ -101,7 +101,7 @@ class AbsolutizeImagesTest(unittest.TestCase):
 
 class TaskStatusNotFoundTest(unittest.TestCase):
     def test_unknown_task_is_not_found(self):
-        resp = json.loads(server.get_task_status("deadbeef0001"))
+        resp = json.loads(server.task("deadbeef0001"))
         self.assertEqual(resp["status"], "NOT_FOUND")
         self.assertEqual(resp["stage"], "不存在")
         self.assertIsNone(resp["elapsed_secs"])
@@ -140,7 +140,7 @@ class DefaultProviderTest(unittest.TestCase):
 class SecretsRefusedTest(unittest.TestCase):
     def test_diarize_media_rejects_hf_token(self):
         with self.assertRaises(ValueError) as ctx:
-            server.diarize_media("/tmp/x.wav", hf_token="hf_xxx")
+            server.process_media(action="diarize", audio_file="/tmp/x.wav", hf_token="hf_xxx")
         self.assertIn("不能经 MCP", str(ctx.exception))
 
 
@@ -191,7 +191,7 @@ class NoteDirContractTest(unittest.TestCase):
         with mock.patch.object(server, "NoteGenerator") as m_gen:
             m_gen.return_value.generate.return_value = self._fake_result()
             server._run_note_task(tid)
-        resp = json.loads(server.get_task_status(tid))
+        resp = json.loads(server.task(tid))
         self.assertEqual(
             resp["result"]["note_dir"],
             str(server.NOTE_OUTPUT_DIR / tid / "gen"),
@@ -213,7 +213,7 @@ class NoteDirContractTest(unittest.TestCase):
             with mock.patch.object(server, "NoteGenerator") as m_gen:
                 m_gen.return_value.generate.return_value = self._fake_result()
                 server._run_note_task(tid)
-            resp = json.loads(server.get_task_status(tid))
+            resp = json.loads(server.task(tid))
             self.assertEqual(resp["result"]["portable_note_dir"], str(portable))
             self.assertEqual(
                 resp["result"]["note_dir"],
@@ -320,7 +320,7 @@ class ExportEmptyFormatsTest(unittest.TestCase):
             },
         )
         with self.assertRaises(ValueError) as cm:
-            server.export_transcript(tid, formats=[])
+            server.process_media(action="export", task_id=tid, formats=[])
         self.assertIn("空列表", str(cm.exception))
 
     def test_omitted_formats_still_defaults(self):
@@ -341,7 +341,7 @@ class ExportEmptyFormatsTest(unittest.TestCase):
             server.NOTE_OUTPUT_DIR / tid / "status.json", {"status": "SUCCESS"}
         )
         try:
-            resp = json.loads(server.export_transcript(tid))
+            resp = json.loads(server.process_media(action="export", task_id=tid))
             self.assertTrue(resp["ok"])
             self.assertIn("srt", resp["formats"])
         finally:
@@ -364,7 +364,7 @@ class ResultReadErrorTest(unittest.TestCase):
         task_dir.mkdir(parents=True, exist_ok=True)
         (task_dir / "result.json").write_text("{not-json", encoding="utf-8")
         server._write_status(tid, "SUCCESS", message="完成")
-        resp = json.loads(server.get_task_status(tid))
+        resp = json.loads(server.task(tid))
         self.assertEqual(resp["status"], "SUCCESS")
         self.assertIsNone(resp["result"])
         self.assertIn("result_error", resp)
@@ -378,7 +378,7 @@ class ResultReadErrorTest(unittest.TestCase):
         )
         try:
             server._write_status(tid, "SUCCESS", message="完成")
-            resp = json.loads(server.get_task_status(tid))
+            resp = json.loads(server.task(tid))
             self.assertNotIn("result_error", resp)
             self.assertEqual(resp["result"]["kind"], "transcript")
         finally:
@@ -407,7 +407,7 @@ class PreflightNeedProviderTest(unittest.TestCase):
     def test_default_includes_provider_check(self):
         with mock.patch.object(server, "_preflight_provider", return_value=(False, "无已填 key 的供应商")) as m_p:
             with self._mock_base_checks()[0], self._mock_base_checks()[1], self._mock_base_checks()[2]:
-                data = json.loads(server.preflight())
+                data = json.loads(server.health_check())
         m_p.assert_called_once()
         names = {c["name"] for c in data["checks"]}
         self.assertIn("provider", names)
@@ -416,7 +416,7 @@ class PreflightNeedProviderTest(unittest.TestCase):
     def test_need_provider_false_skips_provider_check(self):
         with mock.patch.object(server, "_preflight_provider") as m_p:
             with self._mock_base_checks()[0], self._mock_base_checks()[1], self._mock_base_checks()[2]:
-                data = json.loads(server.preflight(need_provider=False))
+                data = json.loads(server.health_check(need_provider=False))
         m_p.assert_not_called()
         names = {c["name"] for c in data["checks"]}
         self.assertNotIn("provider", names)
@@ -445,7 +445,7 @@ class PreflightTest(unittest.TestCase):
                     server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
                 ):
                     with mock.patch.object(server, "_preflight_provider", return_value=(True, "openai（key 已填，默认模型 gpt-4o）")):
-                        data = json.loads(server.preflight())
+                        data = json.loads(server.health_check())
         self.assertTrue(data["ok"])
         by_name = {c["name"]: c for c in data["checks"]}
         self.assertTrue(by_name["ffmpeg"]["ok"])
@@ -453,7 +453,8 @@ class PreflightTest(unittest.TestCase):
         self.assertTrue(by_name["transcriber"]["ok"])
         self.assertTrue(by_name["provider"]["ok"])
         self.assertIn("0/3", by_name["queue"]["detail"])
-        self.assertIsNone(data["duration_secs"])
+        # 未传 url：不出现 duration_secs 键（#138 合并后仅在 url 非空时附带）
+        self.assertNotIn("duration_secs", data)
 
     def test_ffmpeg_missing_and_low_disk_fail(self):
         with mock.patch.object(server.shutil, "which", return_value=None):
@@ -464,7 +465,7 @@ class PreflightTest(unittest.TestCase):
                     server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
                 ):
                     with mock.patch.object(server, "_preflight_provider", return_value=(True, "ok")):
-                        data = json.loads(server.preflight())
+                        data = json.loads(server.health_check())
         self.assertFalse(data["ok"])
         by_name = {c["name"]: c for c in data["checks"]}
         self.assertFalse(by_name["ffmpeg"]["ok"])
@@ -481,7 +482,7 @@ class PreflightTest(unittest.TestCase):
                     return_value=self._ready(ready=False, reason="whisper-small 未下载"),
                 ):
                     with mock.patch.object(server, "_preflight_provider", return_value=(True, "ok")):
-                        data = json.loads(server.preflight())
+                        data = json.loads(server.health_check())
         self.assertFalse(data["ok"])
         detail = {c["name"]: c for c in data["checks"]}["transcriber"]["detail"]
         self.assertIn("未下载", detail)
@@ -535,7 +536,7 @@ class PreflightTest(unittest.TestCase):
                         with mock.patch(
                             "app.services.inspect.inspect_video", return_value={"ok": False, "error": "需要登录"}
                         ):
-                            data = json.loads(server.preflight(url="https://www.bilibili.com/video/BV1xx411c7mD"))
+                            data = json.loads(server.health_check(url="https://www.bilibili.com/video/BV1xx411c7mD"))
         self.assertTrue(data["ok"])
         detail = {c["name"]: c for c in data["checks"]}["duration"]["detail"]
         self.assertIn("无法预解析", detail)
@@ -552,7 +553,7 @@ class PreflightTest(unittest.TestCase):
                             "app.services.inspect.inspect_video",
                             return_value={"ok": True, "kind": "single", "entries": [{"duration": 754}]},
                         ):
-                            data = json.loads(server.preflight(url="https://x"))
+                            data = json.loads(server.health_check(url="https://x"))
         self.assertEqual(data["duration_secs"], 754)
         detail = {c["name"]: c for c in data["checks"]}["duration"]["detail"]
         self.assertEqual(detail, "12:34")
@@ -578,7 +579,7 @@ class PreflightTest(unittest.TestCase):
                         server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
                     ):
                         with mock.patch.object(server, "_preflight_provider", return_value=(True, "ok")):
-                            data = json.loads(server.preflight())
+                            data = json.loads(server.health_check())
             by_name = {c["name"]: c for c in data["checks"]}
             self.assertTrue(by_name["queue"]["ok"])
             self.assertIn("3 排队", by_name["queue"]["detail"])
@@ -605,7 +606,7 @@ class PreflightTest(unittest.TestCase):
                         server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
                     ):
                         with mock.patch.object(server, "_preflight_provider", return_value=(True, "ok")):
-                            data = json.loads(server.preflight())
+                            data = json.loads(server.health_check())
             by_name = {c["name"]: c for c in data["checks"]}
             self.assertFalse(by_name["queue"]["ok"])
             self.assertIn("已满", by_name["queue"]["detail"])
@@ -771,7 +772,7 @@ class ExportFormatsWhitelistTest(unittest.TestCase):
         tid = self._task_with_transcript()
         try:
             with self.assertRaises(ValueError) as cm:
-                server.export_transcript(tid, formats=["pdf"])
+                server.process_media(action="export", task_id=tid, formats=["pdf"])
             self.assertIn("srt", str(cm.exception))
         finally:
             shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
@@ -781,7 +782,7 @@ class ExportFormatsWhitelistTest(unittest.TestCase):
         tid = self._task_with_transcript()
         try:
             with self.assertRaises(ValueError) as cm:
-                server.export_transcript(tid, formats=["srt", "pdf"])
+                server.process_media(action="export", task_id=tid, formats=["srt", "pdf"])
             self.assertIn("pdf", str(cm.exception))
         finally:
             shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
@@ -790,7 +791,7 @@ class ExportFormatsWhitelistTest(unittest.TestCase):
         tid = self._task_with_transcript()
         try:
             with self.assertRaises(ValueError) as cm:
-                server.export_transcript(tid, formats="srt")
+                server.process_media(action="export", task_id=tid, formats="srt")
             self.assertIn("formats 必须是字符串列表", str(cm.exception))
         finally:
             shutil.rmtree(server.NOTE_OUTPUT_DIR / tid, ignore_errors=True)
@@ -798,7 +799,7 @@ class ExportFormatsWhitelistTest(unittest.TestCase):
     def test_valid_formats_export(self):
         tid = self._task_with_transcript()
         try:
-            resp = json.loads(server.export_transcript(tid, formats=["srt"]))
+            resp = json.loads(server.process_media(action="export", task_id=tid, formats=["srt"]))
             self.assertTrue(resp["ok"])
             self.assertIn("srt", resp["formats"])
         finally:
@@ -811,7 +812,7 @@ class ExportFormatsWhitelistTest(unittest.TestCase):
             with mock.patch.object(server, "get_app_config", return_value={}), mock.patch.dict(
                 "os.environ", {"VIDEONOTE_DEFAULT_EXPORT_FORMATS": '["srt"]'}, clear=False
             ):
-                resp = json.loads(server.export_transcript(tid))
+                resp = json.loads(server.process_media(action="export", task_id=tid))
             self.assertTrue(resp["ok"])
             self.assertIn("srt", resp["formats"])
         finally:
@@ -830,7 +831,7 @@ class MergeAudioFileUriTest(unittest.TestCase):
             with mock.patch(
                 "app.services.merge.merge_audio", return_value=str(Path(td) / "merged.wav")
             ) as m:
-                resp = json.loads(server.merge_audio([a.as_uri(), b.as_uri()], out_dir=td))
+                resp = json.loads(server.process_media(action="merge", files=[a.as_uri(), b.as_uri()], out_dir=td))
             self.assertTrue(resp["ok"])
             self.assertEqual(m.call_args.args[0], [str(a), str(b)])
 
@@ -843,7 +844,7 @@ class MergeAudioFileUriTest(unittest.TestCase):
             with mock.patch(
                 "app.services.merge.merge_audio", return_value=str(Path(td) / "merged.wav")
             ) as m:
-                resp = json.loads(server.merge_audio([str(a), str(b)], out_dir=td))
+                resp = json.loads(server.process_media(action="merge", files=[str(a), str(b)], out_dir=td))
             self.assertTrue(resp["ok"])
             self.assertEqual(m.call_args.args[0], [str(a), str(b)])
 
@@ -856,7 +857,7 @@ class MergeAudioInputValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             b = Path(td) / "b.mp3"
             b.write_bytes(b"x")
-            resp = json.loads(server.merge_audio([td, str(b)]))
+            resp = json.loads(server.process_media(action="merge", files=[td, str(b)]))
         self.assertFalse(resp["ok"])
         self.assertIn("不是文件", resp["error"])
         self.assertNotIn("ffmpeg", resp["error"])
@@ -865,7 +866,7 @@ class MergeAudioInputValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             b = Path(td) / "b.mp3"
             b.write_bytes(b"x")
-            resp = json.loads(server.merge_audio([str(Path(td) / "nope.mp3"), str(b)]))
+            resp = json.loads(server.process_media(action="merge", files=[str(Path(td) / "nope.mp3"), str(b)]))
         self.assertFalse(resp["ok"])
         self.assertIn("不存在", resp["error"])
 
@@ -874,7 +875,7 @@ class MergeAudioInputValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             b = Path(td) / "b.mp3"
             b.write_bytes(b"x")
-            resp = json.loads(server.merge_audio([Path(td).as_uri(), str(b)]))
+            resp = json.loads(server.process_media(action="merge", files=[Path(td).as_uri(), str(b)]))
         self.assertFalse(resp["ok"])
         self.assertIn("不是文件", resp["error"])
 
@@ -915,12 +916,12 @@ class DiarizeMediaIsFileTest(unittest.TestCase):
 
     def test_directory_input_rejected_as_missing_file(self):
         with tempfile.TemporaryDirectory() as td:
-            resp = json.loads(server.diarize_media(td))
+            resp = json.loads(server.process_media(action="diarize", audio_file=td))
         self.assertFalse(resp["ok"])
         self.assertIn("本地文件不存在", resp["error"])
 
     def test_missing_file_rejected(self):
-        resp = json.loads(server.diarize_media("/nonexistent/audio.mp3"))
+        resp = json.loads(server.process_media(action="diarize", audio_file="/nonexistent/audio.mp3"))
         self.assertFalse(resp["ok"])
         self.assertIn("本地文件不存在", resp["error"])
 
@@ -964,7 +965,7 @@ class OutputDirFileUriTest(unittest.TestCase):
             with mock.patch(
                 "app.services.merge.merge_audio", return_value=str(Path(td) / "merged.wav")
             ) as m:
-                resp = json.loads(server.merge_audio([str(a), str(b)], out_dir=out_dir.as_uri()))
+                resp = json.loads(server.process_media(action="merge", files=[str(a), str(b)], out_dir=out_dir.as_uri()))
             self.assertTrue(resp["ok"])
             self.assertEqual(m.call_args.kwargs["out_dir"], str(out_dir))
 
@@ -973,7 +974,7 @@ class OutputDirFileUriTest(unittest.TestCase):
         td = tempfile.mkdtemp(prefix="vn_out_uri_")
         try:
             out_dir = Path(td) / "sub dir"
-            resp = json.loads(server.export_transcript(tid, formats=["srt"], out_dir=out_dir.as_uri()))
+            resp = json.loads(server.process_media(action="export", task_id=tid, formats=["srt"], out_dir=out_dir.as_uri()))
             self.assertTrue(resp["ok"])
             # 输出落在规整后的目录（export 文件名是 transcript.srt），而不是 CWD 下字面 file: 目录
             self.assertTrue((out_dir / "transcript.srt").exists())
@@ -997,7 +998,7 @@ class DefaultExportFormatsJunkTest(unittest.TestCase):
             ), mock.patch.dict(
                 "os.environ", {"VIDEONOTE_DEFAULT_EXPORT_FORMATS": '["vtt"]'}, clear=False
             ), mock.patch.object(config_mod.logger, "warning") as w:
-                resp = json.loads(server.export_transcript(tid))
+                resp = json.loads(server.process_media(action="export", task_id=tid))
             self.assertTrue(resp["ok"])
             self.assertIn("vtt", resp["formats"])
             self.assertTrue(any("不是列表" in str(c) for c in w.call_args_list))
@@ -1011,7 +1012,7 @@ class DefaultExportFormatsJunkTest(unittest.TestCase):
             with mock.patch.object(
                 config_mod, "get_app_config", return_value={"default_export_formats": {"a": "b"}}
             ), mock.patch.dict("os.environ", {"VIDEONOTE_DEFAULT_EXPORT_FORMATS": ""}, clear=False):
-                resp = json.loads(server.export_transcript(tid))
+                resp = json.loads(server.process_media(action="export", task_id=tid))
             self.assertTrue(resp["ok"])
             self.assertIn("srt", resp["formats"])
         finally:
@@ -1162,7 +1163,7 @@ class WriteStatusStartedAtTest(unittest.TestCase):
         # 状态文件损坏（写一半）曾误报「状态文件读取失败」PENDING——回退最近一次写盘快照
         server._write_status(self.tid, "PENDING", message="任务排队中")
         (self.task_dir / "status.json").write_text("{", encoding="utf-8")
-        resp = json.loads(server.get_task_status(self.tid))
+        resp = json.loads(server.task(self.tid))
         self.assertEqual(resp["status"], "PENDING")
         self.assertEqual(resp["message"], "任务排队中")  # 内存快照而非误导文案
 
@@ -1180,7 +1181,7 @@ class CleanupAllDryRunTest(unittest.TestCase):
             f = Future()  # 未 set_result → 进行中
             server._task_futures["live-1"] = f
         try:
-            resp = json.loads(server.cleanup_all(dry_run=True))
+            resp = json.loads(server.cleanup(dry_run=True))
         finally:
             with server._tasks_lock:
                 server._task_futures.clear()
@@ -1197,14 +1198,14 @@ class CleanupAllDryRunTest(unittest.TestCase):
         self.assertTrue(any(k.startswith("logs/") for k in resp["would_keep"]))
 
     def test_dry_run_respects_include_flags(self):
-        resp = json.loads(server.cleanup_all(include_config=True, include_models=True, dry_run=True))
+        resp = json.loads(server.cleanup(include_config=True, include_models=True, dry_run=True))
         self.assertIn("config/（LLM key / cookie / 转写设置）", resp["would_clean"])
         self.assertIn("models/（已下载模型）", resp["would_clean"])
         self.assertNotIn("config/", resp["would_keep"])
         self.assertNotIn("models/", resp["would_keep"])
 
     def test_dry_run_without_include_keeps_kept_lists(self):
-        resp = json.loads(server.cleanup_all(dry_run=True))
+        resp = json.loads(server.cleanup(dry_run=True))
         # would_clean 恒含任务产物，would_keep 恒含 logs（#121 C3）
         self.assertIn("video_tasks 全局索引", resp["would_clean"])
         self.assertIn("logs/（运行日志，刻意不清）", resp["would_keep"])
@@ -1242,9 +1243,9 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
         old = self._inject({"live-1": self._fresh_future()})
         try:
             with mock.patch.object(server, "cleanup_task_files") as m:
-                resp = json.loads(server.cleanup_note("live-1"))
+                resp = json.loads(server.cleanup("live-1"))
             self.assertFalse(resp["ok"])
-            self.assertIn("cancel_note", resp["error"])
+            self.assertIn("task(action='cancel')", resp["error"])
             m.assert_not_called()
         finally:
             self._restore(old)
@@ -1257,7 +1258,7 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
                 return_value={"task_id": "done-1", "include_note": False,
                               "note_kept": True, "deleted": [], "missing": [], "errors": []},
             ) as m:
-                resp = json.loads(server.cleanup_note("done-1"))
+                resp = json.loads(server.cleanup("done-1"))
             self.assertTrue(resp["note_kept"])  # 正常清理形状，未被拦截
             m.assert_called_once_with("done-1", include_note=False)
         finally:
@@ -1267,10 +1268,10 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
         old = self._inject({"live-1": self._fresh_future(), "live-2": self._fresh_future()})
         try:
             with mock.patch.object(server, "cleanup_all_files") as m:
-                resp = json.loads(server.cleanup_all())
+                resp = json.loads(server.cleanup())
             self.assertFalse(resp["ok"])
             self.assertEqual(resp["running"], 2)
-            self.assertIn("cancel_note", resp["error"])
+            self.assertIn("task(action='cancel')", resp["error"])
             m.assert_not_called()
         finally:
             self._restore(old)
@@ -1280,7 +1281,7 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
         try:
             with mock.patch.object(server, "cleanup_all_files",
                                    return_value={"cleaned": [], "kept": []}) as m:
-                resp = json.loads(server.cleanup_all())
+                resp = json.loads(server.cleanup())
             self.assertTrue(resp["ok"])  # 成功路径带 ok:true，与拒绝路径 {ok:false} 对称（#126 C2）
             m.assert_called_once_with(include_config=False, include_models=False)
         finally:
@@ -1292,7 +1293,7 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
         try:
             with mock.patch.object(server, "cleanup_all_files") as m, \
                  mock.patch.object(server.dl_state, "downloading_keys", return_value=["small", "mlx-tiny"]):
-                resp = json.loads(server.cleanup_all(include_models=True))
+                resp = json.loads(server.cleanup(include_models=True))
             self.assertFalse(resp["ok"])
             self.assertEqual(resp["downloading_models"], ["small", "mlx-tiny"])
             self.assertIn("正在后台下载", resp["error"])
@@ -1307,7 +1308,7 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
             with mock.patch.object(server, "cleanup_all_files",
                                    return_value={"cleaned": [], "kept": []}) as m, \
                  mock.patch.object(server.dl_state, "downloading_keys", return_value=[]):
-                resp = json.loads(server.cleanup_all(include_models=True))
+                resp = json.loads(server.cleanup(include_models=True))
             self.assertTrue(resp["ok"])  # 成功路径带 ok:true（#126 C2）
             m.assert_called_once_with(include_config=False, include_models=True)
         finally:
@@ -1332,19 +1333,19 @@ class TranscriptUnavailableReasonTest(unittest.TestCase):
 
     def test_export_running_task_advises_waiting(self):
         self._status("tx0001", "DOWNLOADING")
-        resp = json.loads(server.export_transcript("tx0001"))
+        resp = json.loads(server.process_media(action="export", task_id="tx0001"))
         self.assertIn("仍在运行", resp["error"])
         self.assertIn("DOWNLOADING", resp["error"])
-        self.assertIn("get_task_status", resp["error"])
+        self.assertIn("task(action='status')", resp["error"])
 
     def test_export_failed_task_reports_failure(self):
         self._status("tx0002", "FAILED")
-        resp = json.loads(server.export_transcript("tx0002"))
+        resp = json.loads(server.process_media(action="export", task_id="tx0002"))
         self.assertFalse(resp["ok"])  # 失败形状与成功路径对齐（#121 C4）
         self.assertIn("未成功（FAILED）", resp["error"])
 
     def test_export_missing_task_reports_unreadable(self):
-        resp = json.loads(server.export_transcript("tx0003"))
+        resp = json.loads(server.process_media(action="export", task_id="tx0003"))
         self.assertIn("不可读", resp["error"])
 
     def test_resource_running_task_advises_waiting(self):
@@ -1355,7 +1356,7 @@ class TranscriptUnavailableReasonTest(unittest.TestCase):
 
     def test_get_task_transcript_running_task(self):
         self._status("tx0005", "SUMMARIZING")
-        resp = json.loads(server.get_task_transcript("tx0005"))
+        resp = json.loads(server.task("tx0005", action="transcript"))
         self.assertFalse(resp["ok"])
         self.assertIn("仍在运行", resp["message"])
 
@@ -1368,7 +1369,7 @@ class TranscriptUnavailableReasonTest(unittest.TestCase):
                         "segments": [{"start": 0, "end": 1, "text": "x"}]}),
             encoding="utf-8",
         )
-        resp = json.loads(server.get_task_transcript("tx0006", segment_range="bogus"))
+        resp = json.loads(server.task("tx0006", action="transcript", segment_range="bogus"))
         self.assertFalse(resp["ok"])
         self.assertEqual(resp["status"], "SUCCESS")
         self.assertIn("segment_range 非法", resp["message"])
@@ -1376,7 +1377,7 @@ class TranscriptUnavailableReasonTest(unittest.TestCase):
     def test_no_transcript_reports_real_status(self):
         """无转写时 status 字段也用真实状态而非 UNKNOWN。"""
         self._status("tx0007", "FAILED")
-        resp = json.loads(server.get_task_transcript("tx0007"))
+        resp = json.loads(server.task("tx0007", action="transcript"))
         self.assertFalse(resp["ok"])
         self.assertEqual(resp["status"], "FAILED")
 
