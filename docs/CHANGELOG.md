@@ -711,3 +711,11 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 
 - **cleanup_all(dry_run=True)**：预览将清理/保留目录与运行中任务（would_clean/would_keep），不删任何东西——`include_config`/`include_models` 的不可逆风险先预览再执行。
 - **664 passed + ruff F/I-clean**；tools.md / docs/04 / commands 同步「先 dry_run 再执行」引导。
+
+## Wave I 批 27（2026-08-22 · 工具精简 16→10 #138，692→708 tests）
+
+用户持续目标第四轮（工具精简：16 → 10 工具）。
+
+- **四组合并 + 扩展**（commit e02296d）：`task` 收编 get_task_status / get_task_transcript / cancel_note；`cleanup` 收编 cleanup_note / cleanup_all；`process_media` 收编 export_transcript / merge_audio / diarize_media；`health_check` 扩展收编 preflight。
+- **不丢功能**：分段转写 / dry_run 先查后清 / need_provider / hf_token 蜜罐 / 运行中拒绝全保留。
+- **708 passed + ruff F/I-clean**（692 + 16：契约测试迁移 + 新增 test_138_batch.py 16 tests）；CI 名单 16 → 10。
