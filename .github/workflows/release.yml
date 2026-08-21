@@ -93,7 +93,8 @@ jobs:
                   async with ClientSession(r, w) as s:
                       info = await s.initialize()
                       tools = await s.list_tools()
-                      assert len(tools.tools) >= 16, f"tools={len(tools.tools)}"
+                      # 只验握手与工具可枚举：工具名单的精确断言在 ci.yml smoke job
+                      #（#138 起不设数量下限——每次工具精简都要同步这里，且与精确名单重复）
                       print(f"✅ 握手 OK: {info.serverInfo.name} {info.serverInfo.version}, tools={len(tools.tools)}")
 
           asyncio.run(main())
