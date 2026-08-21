@@ -34,7 +34,7 @@ It works **end-to-end (one link → one note)** and is **also decoupled**: pick 
 ## Quick Start
 
 ```bash
-# 1) One command installs both Skill + MCP (plugin marketplace, uvx auto-updates)
+# 1) One command installs both Skill + MCP (plugin marketplace; MCP command `uvx videonote@latest` auto-fetches the latest PyPI release on each session start)
 claude plugin marketplace add HuangYincan/VideoNote-MCP
 claude plugin install videonote@videonote
 
