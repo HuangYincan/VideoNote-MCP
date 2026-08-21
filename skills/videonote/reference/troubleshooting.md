@@ -16,17 +16,17 @@
 | 整合评论/弹幕时评论拿不到 | 未配 B 站 SESSDATA —— 引导用户 `videonote login bilibili`；抓取失败**不阻断**笔记生成（跳过该部分） |
 | 其他平台（非内置 6 平台） | `inspect_video` 返回 `platform:"generic"` → 自动走 **yt-dlp 通用提取**（覆盖 1800+ 站点）；若也失败任务报错 → Agent 接手：WebFetch/浏览器解析视频源后 `generate_note(video_url="/绝对/路径/x.mp4", platform="local")` |
 | generic 下载报需登录/JS 渲染 | 该站点 yt-dlp 无法直接提取 —— Agent 用 WebFetch/浏览器处理登录/验证，或让用户 `videonote setup` 向导里配「平台 Cookie」后重试 |
-| `diarize_media` 报需安装 pyannote / 缺 HF_TOKEN | 引导用户 `transcriber diarization on`（给安装指引 + 存 HF_TOKEN）；pyannote 模型需先在 huggingface.co 同意授权 |
+| `process_media(action="diarize")` 报需安装 pyannote / 缺 HF_TOKEN | 引导用户 `transcriber diarization on`（给安装指引 + 存 HF_TOKEN）；pyannote 模型需先在 huggingface.co 同意授权 |
 | 转写输出异常（开预处理后） | 预处理默认关；若开了又出问题，`! videonote transcriber preprocess off` 关闭对比 |
 | 视频下载 403 / 需会员 | 让用户 `videonote setup` 向导里配「平台 Cookie」（MCP 工具不收 cookie，见安全红线） |
-| `generate_note` 报「已有 N 个进行中任务（上限 M）」 | 并发已达上限 —— 等其中一些完成（或 `cancel_note` 取消）再提交；合集/多集用 `batch_generate_notes`（服务端排队），互相独立的链接用 subagent 并行 |
+| `generate_note` 报「已有 N 个进行中任务（上限 M）」 | 并发已达上限 —— 等其中一些完成（或 `task(task_id, action="cancel")` 取消）再提交；合集/多集用 `batch_generate_notes`（服务端排队），互相独立的链接用 subagent 并行 |
 
 ## 并发与多会话
 
 - 每个会话独立起一个 MCP server 进程，任务按 `task_id` 隔离 —— **多个会话可并行生成不同视频的笔记**。
-- **本会话内并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：`generate_note` 在超出上限时会**拒绝**（防止无界排队）。**合集 / 分 P / 播放列表**：一条 `batch_generate_notes` 服务端逐个排队（超出 worker 数的排队等待）。**互相独立的多个链接**：每个 url 一个 **subagent**（generate_note → get_task_status 轮询 → 汇报），主 agent 汇总。**主 agent 自己不要在同一回合连续调用多个 `generate_note`**。
+- **本会话内并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：`generate_note` 在超出上限时会**拒绝**（防止无界排队）。**合集 / 分 P / 播放列表**：一条 `batch_generate_notes` 服务端逐个排队（超出 worker 数的排队等待）。**互相独立的多个链接**：每个 url 一个 **subagent**（generate_note → `task(task_id)` 轮询 → 汇报），主 agent 汇总。**主 agent 自己不要在同一回合连续调用多个 `generate_note`**。
 - **真正并行**：开多个会话。
-- **轮询**：用轻量 `get_task_status(task_id)` 快照轮询。
+- **轮询**：用轻量 `task(task_id)`（默认 action="status"）快照轮询。
 - 提交前把计划告诉用户（如「我会依次提交 p10/p11/p12，每个完成后提交下一个」）。
 - 资源：whisper/MLX 转写吃 CPU/内存，太多会话并行会卡顿；所有会话共用同一 SQLite，极端并发偶发写冲突。
 

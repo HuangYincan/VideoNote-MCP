@@ -1,19 +1,20 @@
-"""get_task_status 轻量化 + get_task_transcript 工具的验证。
+"""task 工具（status/transcript/cancel 三分支，#138 合并自 get_task_status /
+get_task_transcript / cancel_note）的验证。
 
-背景：`get_task_status` 曾在 SUCCESS 时把 result.json 里的**完整转写**原样返回，
+背景：`task(action="status")` 曾在 SUCCESS 时把 result.json 里的**完整转写**原样返回，
 转写含 full_text + 逐段 segments（时间轴），一次工具调用可灌入数万~数十万 token，
 直接把 Agent context 撑爆（长视频实测 transcript.json ~280KB/个）。
 
 覆盖点：
-1. get_task_status 默认（include_transcript=False）返回**轻量**结果：有
+1. task(task_id) 默认（action="status"）返回**轻量**结果：有
    markdown/note_dir/title，不含 transcript/comments_danmaku；
-2. get_task_status(include_transcript=True) 返回全量转写，且剥掉 raw 字段
+2. task(task_id, action="transcript", segment_range="all") 返回全量转写，且剥掉 raw 字段
    （原始 API 响应可能很大）；
 3. material 模式同样默认轻量（frames/paths 保留，transcript/comments 需显式取）；
-4. 新增 get_task_transcript(task_id)：读 gen/transcript.json，返回完整转写；
-5. get_task_transcript(segment_range="0-2")：按段切片 + full_text 拼接 + meta 统计；
+4. task(action="transcript")：读 gen/transcript.json，返回完整转写；
+5. task(action="transcript", segment_range="0-2")：按段切片 + full_text 拼接 + meta 统计；
 6. 越界/未完成任务：ok:false 或钳制到合法区间；
-7. wait_for_note 透传 include_transcript。
+7. task(action="cancel") 的排队/运行中/终态措辞。
 """
 import json
 import shutil
@@ -87,7 +88,7 @@ class StatusLightTest(unittest.TestCase):
         shutil.rmtree(self.task_dir, ignore_errors=True)
 
     def test_default_is_light(self):
-        resp = json.loads(server.get_task_status(self.task_id))
+        resp = json.loads(server.task(self.task_id))
         self.assertEqual(resp["status"], "SUCCESS")
         result = resp["result"]
         # 轻量必带：markdown / note_dir / title
@@ -98,21 +99,20 @@ class StatusLightTest(unittest.TestCase):
         self.assertNotIn("transcript", result)
         self.assertNotIn("comments_danmaku", result)
 
-    def test_include_transcript_returns_full_and_strips_raw(self):
-        resp = json.loads(server.get_task_status(self.task_id, include_transcript=True))
-        result = resp["result"]
-        self.assertIn("transcript", result)
-        tr = result["transcript"]
-        self.assertEqual(tr["full_text"], "第一句\n第二句\n第三句")
-        self.assertEqual(len(tr["segments"]), 3)
+    def test_full_transcript_via_transcript_action(self):
+        """include_transcript 参数已移除（#138）：全量转写走 action="transcript" + "all"。"""
+        resp = json.loads(server.task(self.task_id, action="transcript", segment_range="all"))
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["full_text"], "第一句\n第二句\n第三句")
+        self.assertEqual(len(resp["segments"]), 3)
         # raw（原始 API 响应）即便要全量也不该返回
-        self.assertNotIn("raw", tr)
+        self.assertNotIn("raw", resp)
 
     def test_material_default_light_but_frames_kept(self):
         mid = "material0001"
         _make_success_task(mid, material=True)
         try:
-            resp = json.loads(server.get_task_status(mid))
+            resp = json.loads(server.task(mid))
             result = resp["result"]
             self.assertEqual(result["kind"], "material")
             # 路径类轻量字段保留（Agent 需要它们去 Read 图/找文件）
@@ -123,10 +123,10 @@ class StatusLightTest(unittest.TestCase):
             self.assertIn("transcript", result)
             self.assertIn("comments_danmaku", result)
             self.assertNotIn("raw", result["transcript"])
-            # 显式要则给
-            full = json.loads(server.get_task_status(mid, include_transcript=True))
-            self.assertIn("transcript", full["result"])
-            self.assertIn("comments_danmaku", full["result"])
+            # 显式取全量转写：action="transcript" + "all"（include_transcript 已移除，#138）
+            full = json.loads(server.task(mid, action="transcript", segment_range="all"))
+            self.assertIn("full_text", full)
+            self.assertIn("segments", full)
         finally:
             shutil.rmtree(server.NOTE_OUTPUT_DIR / mid, ignore_errors=True)
 
@@ -140,7 +140,7 @@ class GetTranscriptTest(unittest.TestCase):
         shutil.rmtree(self.task_dir, ignore_errors=True)
 
     def test_full(self):
-        data = json.loads(server.get_task_transcript(self.task_id, "all"))
+        data = json.loads(server.task(self.task_id, action="transcript", segment_range="all"))
         self.assertTrue(data["ok"])
         self.assertEqual(data["language"], "zh")
         self.assertEqual(data["full_text"], "第一句\n第二句\n第三句")
@@ -164,19 +164,19 @@ class GetTranscriptTest(unittest.TestCase):
             encoding="utf-8",
         )
         try:
-            data = json.loads(server.get_task_transcript(tid))
+            data = json.loads(server.task(tid, action="transcript"))
             self.assertTrue(data["ok"])
             self.assertEqual(data["meta"]["total_segments"], 80)
             self.assertEqual(data["meta"]["returned_segments"], 50)
             self.assertTrue(data["meta"]["truncated"])
-            full = json.loads(server.get_task_transcript(tid, "all"))
+            full = json.loads(server.task(tid, action="transcript", segment_range="all"))
             self.assertEqual(full["meta"]["returned_segments"], 80)
             self.assertFalse(full["meta"]["truncated"])
         finally:
             shutil.rmtree(tdir, ignore_errors=True)
 
     def test_slice(self):
-        data = json.loads(server.get_task_transcript(self.task_id, "0-2"))
+        data = json.loads(server.task(self.task_id, action="transcript", segment_range="0-2"))
         self.assertTrue(data["ok"])
         self.assertEqual([s["text"] for s in data["segments"]], ["第一句", "第二句"])
         # 切片与全量 full_text（缓存，空格分隔）同一分隔符（#127 A8）
@@ -185,15 +185,15 @@ class GetTranscriptTest(unittest.TestCase):
         self.assertEqual(data["meta"]["returned_segments"], 2)
 
     def test_slice_open_end_and_single(self):
-        d1 = json.loads(server.get_task_transcript(self.task_id, "1-"))
+        d1 = json.loads(server.task(self.task_id, action="transcript", segment_range="1-"))
         self.assertEqual([s["text"] for s in d1["segments"]], ["第二句", "第三句"])
-        d2 = json.loads(server.get_task_transcript(self.task_id, "-2"))
+        d2 = json.loads(server.task(self.task_id, action="transcript", segment_range="-2"))
         self.assertEqual([s["text"] for s in d2["segments"]], ["第一句", "第二句"])
-        d3 = json.loads(server.get_task_transcript(self.task_id, "2"))
+        d3 = json.loads(server.task(self.task_id, action="transcript", segment_range="2"))
         self.assertEqual([s["text"] for s in d3["segments"]], ["第三句"])
 
     def test_out_of_range_clamped(self):
-        data = json.loads(server.get_task_transcript(self.task_id, "50-100"))
+        data = json.loads(server.task(self.task_id, action="transcript", segment_range="50-100"))
         self.assertTrue(data["ok"])
         self.assertEqual(data["segments"], [])
         self.assertEqual(data["full_text"], "")
@@ -209,7 +209,7 @@ class GetTranscriptTest(unittest.TestCase):
             encoding="utf-8",
         )
         try:
-            data = json.loads(server.get_task_transcript(pid))
+            data = json.loads(server.task(pid, action="transcript"))
             self.assertFalse(data["ok"])
             self.assertEqual(data["status"], "PENDING")
         finally:
@@ -226,7 +226,7 @@ class StageElapsedTest(unittest.TestCase):
             encoding="utf-8",
         )
         try:
-            resp = json.loads(server.get_task_status(tid))
+            resp = json.loads(server.task(tid))
             self.assertEqual(resp["status"], "TRANSCRIBING")
             self.assertEqual(resp["stage"], "转写中")
             self.assertGreaterEqual(resp["elapsed_secs"], 124)
@@ -239,7 +239,7 @@ class StageElapsedTest(unittest.TestCase):
         tdir.mkdir(parents=True, exist_ok=True)
         (tdir / "status.json").write_text(json.dumps({"status": "PENDING", "message": "排队中"}), encoding="utf-8")
         try:
-            resp = json.loads(server.get_task_status(tid))
+            resp = json.loads(server.task(tid))
             self.assertEqual(resp["stage"], "排队中")
             self.assertIsNone(resp["elapsed_secs"])
         finally:
@@ -275,7 +275,7 @@ class CancelRaceTest(unittest.TestCase):
             server._task_futures[self.task_id] = queued
             server._task_events[self.task_id] = ev
         try:
-            resp = json.loads(server.cancel_note(self.task_id))
+            resp = json.loads(server.task(self.task_id, action="cancel"))
         finally:
             with server._tasks_lock:
                 server._task_futures.pop(self.task_id, None)
@@ -303,7 +303,7 @@ class CancelRaceTest(unittest.TestCase):
             server._task_futures[self.task_id] = running
             server._task_events[self.task_id] = ev
         try:
-            resp = json.loads(server.cancel_note(self.task_id))
+            resp = json.loads(server.task(self.task_id, action="cancel"))
         finally:
             with server._tasks_lock:
                 server._task_futures.pop(self.task_id, None)
@@ -348,20 +348,20 @@ class CancelTerminalWordingTest(unittest.TestCase):
 
     def test_failed_terminal_message(self):
         self._set_status("FAILED")
-        resp = json.loads(server.cancel_note(self.task_id))
+        resp = json.loads(server.task(self.task_id, action="cancel"))
         self.assertEqual(resp["status"], "DONE")
         self.assertIn("失败", resp["message"])
         self.assertNotIn("完成", resp["message"])
 
     def test_cancelled_terminal_message(self):
         self._set_status("CANCELLED")
-        resp = json.loads(server.cancel_note(self.task_id))
+        resp = json.loads(server.task(self.task_id, action="cancel"))
         self.assertEqual(resp["status"], "DONE")
         self.assertIn("已取消", resp["message"])
 
     def test_success_terminal_message(self):
         self._set_status("SUCCESS")
-        resp = json.loads(server.cancel_note(self.task_id))
+        resp = json.loads(server.task(self.task_id, action="cancel"))
         self.assertEqual(resp["status"], "DONE")
         self.assertIn("已完成", resp["message"])
 

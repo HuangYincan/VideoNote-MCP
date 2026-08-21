@@ -215,7 +215,7 @@ class ExporterTest(unittest.TestCase):
                 "videonote_mcp.export.exporter.write_text_atomic",
                 side_effect=OSError("disk full"),
             ):
-                data = json.loads(srv.export_transcript(tid, formats=["srt", "json"]))
+                data = json.loads(srv.process_media(action="export", task_id=tid, formats=["srt", "json"]))
         finally:
             import shutil as _sh
 
@@ -247,7 +247,7 @@ class ExporterTest(unittest.TestCase):
             json.dumps({"status": "SUCCESS"}, ensure_ascii=False), encoding="utf-8"
         )
         try:
-            data = json.loads(srv.export_transcript(tid, formats=["srt"]))
+            data = json.loads(srv.process_media(action="export", task_id=tid, formats=["srt"]))
         finally:
             import shutil as _sh
 

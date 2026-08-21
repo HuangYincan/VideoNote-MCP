@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 600" font-family="system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#6C5CE7"/>
+    </marker>
+    <marker id="arrowD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#8B84E8"/>
+    </marker>
+  </defs>
+
+  <!-- legend -->
+  <line x1="868" y1="48" x2="900" y2="48" stroke="#6C5CE7" stroke-width="2"/>
+  <text x="908" y="52" font-size="11.5" fill="#666">主流程 · 端到端</text>
+  <line x1="1004" y1="48" x2="1036" y2="48" stroke="#8B84E8" stroke-width="2" stroke-dasharray="5 4"/>
+  <text x="1044" y="52" font-size="11.5" fill="#666">可选能力</text>
+  <line x1="1115" y1="48" x2="1147" y2="48" stroke="#D97757" stroke-width="2" stroke-dasharray="5 4"/>
+  <text x="1155" y="52" font-size="11.5" fill="#666">Agent 生成</text>
+
+  <!-- optional stages -->
+  <rect x="450" y="108" width="196" height="54" rx="14" fill="#FBFAFF" stroke="#8B84E8" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="548" y="132" font-size="14" font-weight="600" fill="#2B2B3A" text-anchor="middle">画面理解（多模态）</text>
+  <text x="548" y="150" font-size="9" fill="#8A8A9A" text-anchor="middle">video_understanding · 关键帧网格</text>
+
+  <rect x="677" y="108" width="152" height="54" rx="14" fill="#FBFAFF" stroke="#8B84E8" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="753" y="132" font-size="14" font-weight="600" fill="#2B2B3A" text-anchor="middle">弹幕与评论</text>
+  <text x="753" y="150" font-size="9.5" fill="#8A8A9A" text-anchor="middle">include_comments</text>
+
+  <path d="M548 162 V188 H700 V210" fill="none" stroke="#8B84E8" stroke-width="1.8" stroke-dasharray="6 5" marker-end="url(#arrowD)"/>
+  <path d="M753 162 V210" fill="none" stroke="#8B84E8" stroke-width="1.8" stroke-dasharray="6 5" marker-end="url(#arrowD)"/>
+
+  <!-- main flow -->
+  <rect x="24" y="210" width="180" height="80" rx="16" fill="#6C5CE7"/>
+  <text x="114" y="240" font-size="15" font-weight="600" fill="#FFFFFF" text-anchor="middle">视频链接</text>
+  <text x="114" y="264" font-size="9" fill="#EFECFF" text-anchor="middle">Bilibili / Youtube / 任意站点 / 本地</text>
+
+  <rect x="223" y="210" width="196" height="80" rx="14" fill="#FFFFFF" stroke="#D8D3F4" stroke-width="1.5"/>
+  <text x="321" y="240" font-size="15" font-weight="600" fill="#2B2B3A" text-anchor="middle">下载与平台字幕</text>
+  <text x="321" y="262" font-size="10.5" fill="#8A8A9A" text-anchor="middle">inspect_video · yt-dlp</text>
+  <text x="321" y="282" font-size="9.5" fill="#8A8A9A" text-anchor="middle">覆盖 1800+ 站点 · 本地文件</text>
+
+  <rect x="450" y="210" width="196" height="80" rx="14" fill="#FFFFFF" stroke="#D8D3F4" stroke-width="1.5"/>
+  <text x="548" y="240" font-size="15" font-weight="600" fill="#2B2B3A" text-anchor="middle">转写（ASR）</text>
+  <text x="548" y="262" font-size="10.5" fill="#8A8A9A" text-anchor="middle">平台字幕优先 · 无字幕才转写</text>
+  <text x="548" y="282" font-size="9" fill="#8A8A9A" text-anchor="middle">fast-whisper · mlx · groq · funasr</text>
+
+  <rect x="677" y="210" width="172" height="80" rx="14" fill="#F1EFFD" stroke="#6C5CE7" stroke-width="1.5"/>
+  <text x="763" y="240" font-size="15" font-weight="600" fill="#2B2B3A" text-anchor="middle">素材包</text>
+  <text x="763" y="262" font-size="9" fill="#8A8A9A" text-anchor="middle">转写 · 帧 · 评论</text>
+  <text x="763" y="282" font-size="9.5" fill="#8A8A9A" text-anchor="middle">prepare_note_material</text>
+
+  <rect x="880" y="210" width="180" height="80" rx="14" fill="#FFFFFF" stroke="#D8D3F4" stroke-width="1.5"/>
+  <text x="970" y="240" font-size="15" font-weight="600" fill="#2B2B3A" text-anchor="middle">AI 总结</text>
+  <text x="970" y="262" font-size="10" fill="#8A8A9A" text-anchor="middle">9 种风格 · 便携笔记</text>
+  <text x="970" y="282" font-size="9.5" fill="#8A8A9A" text-anchor="middle">generate_note · agent_direct</text>
+
+  <path d="M204 250 H223" fill="none" stroke="#6C5CE7" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M419 250 H450" fill="none" stroke="#6C5CE7" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M646 250 H677" fill="none" stroke="#6C5CE7" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M849 250 H880" fill="none" stroke="#6C5CE7" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M1060 250 H1080" fill="none" stroke="#6C5CE7" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M1080 153 V399" fill="none" stroke="#C9C4F0" stroke-width="2"/>
+  <path d="M1080 153 H1100 M1080 235 H1100 M1080 317 H1100 M1080 399 H1100" fill="none" stroke="#C9C4F0" stroke-width="2"/>
+
+  <!-- outputs -->
+  <rect x="1100" y="120" width="156" height="66" rx="12" fill="#FFFFFF" stroke="#E3E0F5" stroke-width="1.5"/>
+  <text x="1178" y="146" font-size="14" font-weight="600" fill="#2B2B3A" text-anchor="middle">便携笔记</text>
+  <text x="1178" y="166" font-size="10" fill="#8A8A9A" text-anchor="middle">note.md + Assets/ 截图</text>
+
+  <rect x="1100" y="202" width="156" height="66" rx="12" fill="#FFFFFF" stroke="#E3E0F5" stroke-width="1.5"/>
+  <text x="1178" y="228" font-size="14" font-weight="600" fill="#2B2B3A" text-anchor="middle">字幕导出</text>
+  <text x="1178" y="248" font-size="10" fill="#8A8A9A" text-anchor="middle">SRT · VTT · JSON</text>
+
+  <rect x="1100" y="284" width="156" height="66" rx="12" fill="#FFFCFA" stroke="#D97757" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="1178" y="310" font-size="14" font-weight="600" fill="#2B2B3A" text-anchor="middle">创意格式</text>
+  <text x="1178" y="330" font-size="10" fill="#8A8A9A" text-anchor="middle">LaTeX · typst · 思维导图</text>
+
+  <rect x="1100" y="366" width="156" height="66" rx="12" fill="#FFFCFA" stroke="#D97757" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="1178" y="392" font-size="14" font-weight="600" fill="#2B2B3A" text-anchor="middle">精修保留原稿</text>
+  <text x="1178" y="412" font-size="10" fill="#8A8A9A" text-anchor="middle">note.md · 原稿对照</text>
+
+  <!-- task management strip -->
+  <rect x="24" y="480" width="1232" height="116" rx="18" fill="#F8F7FE" stroke="#E7E4F8" stroke-width="1.5"/>
+  <text x="48" y="512" font-size="15" font-weight="600" fill="#3B3477">任务管理</text>
+  <text x="124" y="512" font-size="12" fill="#8A8A9A">全局索引 · 每任务一目录</text>
+
+  <rect x="48" y="534" width="150" height="30" rx="15" fill="#ECE9FA" stroke="#D8D3F4"/>
+  <text x="123" y="553" font-size="11" fill="#4A44A8" text-anchor="middle"><tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace">get_task_status</tspan><tspan> · 轮询</tspan></text>
+  <rect x="210" y="534" width="126" height="30" rx="15" fill="#ECE9FA" stroke="#D8D3F4"/>
+  <text x="273" y="553" font-size="11" fill="#4A44A8" text-anchor="middle"><tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace">cancel_note</tspan><tspan> · 取消</tspan></text>
+  <rect x="348" y="534" width="120" height="30" rx="15" fill="#ECE9FA" stroke="#D8D3F4"/>
+  <text x="408" y="553" font-size="11" fill="#4A44A8" text-anchor="middle"><tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace">list_tasks</tspan><tspan> · 枚举</tspan></text>
+  <rect x="480" y="534" width="200" height="30" rx="15" fill="#ECE9FA" stroke="#D8D3F4"/>
+  <text x="580" y="553" font-size="11" fill="#4A44A8" text-anchor="middle"><tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace">cleanup_note / cleanup_all</tspan><tspan> · 清理</tspan></text>
+  <rect x="692" y="534" width="132" height="30" rx="15" fill="#ECE9FA" stroke="#D8D3F4"/>
+  <text x="758" y="553" font-size="11" fill="#4A44A8" text-anchor="middle"><tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace">health_check</tspan><tspan> · 体检</tspan></text>
+
+  <text x="48" y="586" font-size="11" fill="#8A8A9A">默认最多 3 个并行（可改） · cancel 协作式取消 · cleanup 支持 dry_run 预览</text>
+  <text x="1256" y="586" font-size="11" fill="#8A8A9A" text-anchor="end">批量：batch_generate_notes · 外置：notes_dir</text>
+</svg>

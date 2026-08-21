@@ -40,6 +40,7 @@
 - `validate_url` → 识别为 bilibili
 - `prepare_note_material(video_url, video_understanding=True, video_interval=6, grid_size=[3,3], include_comments=True)` → `task_id`
 - 轮询 `get_task_status` → `SUCCESS`,拿到:331 段转写(≈4.4k 字)、13 张帧图、弹幕汇总 + 20 条热评
+  > 注：历史案例实录，工具名为当时所用；#138 工具精简 16→10 后任务轮询入口为 `task`（get_task_status / get_task_transcript / cancel_note 合并）。
 
 ### 3. 外部资料抓取
 - `WebFetch` arXiv 摘要 → 拿到 V4-Pro/Flash 规格与效率数据
