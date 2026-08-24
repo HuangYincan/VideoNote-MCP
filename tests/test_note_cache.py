@@ -336,7 +336,7 @@ class GenerateIntegrationTest(unittest.TestCase):
         }, ensure_ascii=False))
         gen = self._gen()
         downloader = _fake_downloader("abcDEF12345")
-        with mock.patch.object(gen, "_get_downloader", return_value=downloader):
+        with mock.patch("app.services.note._new_downloader", return_value=downloader):
             with mock.patch("app.services.note.get_transcriber") as init_tr:
                 result = gen.generate(
                     video_url=self.YT_URL, platform="youtube",
@@ -357,7 +357,7 @@ class GenerateIntegrationTest(unittest.TestCase):
             "language": "zh", "full_text": "fresh",
             "segments": [{"start": 0, "end": 1, "text": "fresh"}],
         }
-        with mock.patch.object(gen, "_get_downloader", return_value=downloader):
+        with mock.patch("app.services.note._new_downloader", return_value=downloader):
             with mock.patch("app.services.note.get_transcriber") as init_tr:
                 # 无字幕视频：generate 主路径已试过 downloader.download_subtitles（None），
                 # _get_transcript 走 skip_subtitle=True → pipeline.fetch_subtitles 不得再调
@@ -395,7 +395,7 @@ class GenerateIntegrationTest(unittest.TestCase):
             "language": "zh", "full_text": "fresh",
             "segments": [{"start": 0, "end": 1, "text": "fresh"}],
         }
-        with mock.patch.object(gen, "_get_downloader", return_value=downloader):
+        with mock.patch("app.services.note._new_downloader", return_value=downloader):
             with mock.patch("app.services.note.get_transcriber", return_value=fake_transcriber) as gt:
                 with mock.patch.object(
                     note_pipeline, "fetch_subtitles",
@@ -421,13 +421,20 @@ class GenerateIntegrationTest(unittest.TestCase):
             with mock.patch.object(
                 note_pipeline, "fetch_subtitles",
                 side_effect=AssertionError("skip_subtitle=True 时不应调字幕 API"),
-            ), mock.patch.object(gen, "_transcribe_audio", return_value=None) as m_tr:
+            ), mock.patch("app.services.note.get_transcriber", return_value=mock.Mock()) as gt, \
+               mock.patch.object(note_pipeline, "transcribe_audio", return_value={
+                   "language": "zh", "full_text": "fresh",
+                   "segments": [{"start": 0, "end": 1, "text": "fresh"}],
+               }) as m_tr:
                 out = gen._get_transcript(
                     downloader, "https://example.com/v", "/no/audio", cache_file,
                     TaskStatus.TRANSCRIBING, "t1", skip_subtitle=True,
                 )
-        self.assertIsNone(out)
+        # mock 下沉到依赖层（#139 C1）：真实 _transcribe_audio + _init_transcriber 绑定链跑通
+        gt.assert_called_once()
         m_tr.assert_called_once()
+        self.assertIsNotNone(out)
+        self.assertEqual(out.full_text, "fresh")
 
     def test_miss_promotes_media_and_hit_copies_audio(self):
         # run1 完整下载（真实音频文件）→ promote 出媒体缓存；run2 命中 → audio_path 指向
@@ -445,7 +452,7 @@ class GenerateIntegrationTest(unittest.TestCase):
                 "segments": [{"start": 0, "end": 1, "text": "fresh"}],
             }
             gen = self._gen()
-            with mock.patch.object(gen, "_get_downloader", return_value=downloader):
+            with mock.patch("app.services.note._new_downloader", return_value=downloader):
                 with mock.patch("app.services.note.get_transcriber"):
                     with mock.patch.object(note_pipeline, "fetch_subtitles", return_value=None):
                         with mock.patch.object(note_pipeline, "transcribe_audio", return_value=transcript_dict):
@@ -457,7 +464,7 @@ class GenerateIntegrationTest(unittest.TestCase):
             self.assertTrue((media_dir / "abcDEF12345.mp3").exists())
 
             gen2 = self._gen()
-            with mock.patch.object(gen2, "_get_downloader", return_value=downloader):
+            with mock.patch("app.services.note._new_downloader", return_value=downloader):
                 with mock.patch("app.services.note.get_transcriber"):
                     result2 = gen2.generate(
                         video_url=self.YT_URL, platform="youtube",

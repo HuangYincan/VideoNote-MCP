@@ -44,12 +44,12 @@ def _captured_prompts(gpt, segments, title="测试视频"):
     source = GPTSource(title=title, segment=segments, tags="", checkpoint_key=None)
     captured = []
 
-    def capture(messages):
-        captured.append(messages[0]["content"])
+    def capture(**kwargs):
+        captured.append(kwargs["messages"][0]["content"])
         return mock.Mock(choices=[mock.Mock(
             message=mock.Mock(content="## 结果"), finish_reason="stop")])
 
-    with mock.patch.object(gpt, "_chat_completion_create", side_effect=capture):
+    with mock.patch.object(gpt.client.chat.completions, "create", side_effect=capture):
         gpt.summarize(source)
     return captured
 
@@ -125,14 +125,16 @@ class TestOutlineInjection:
                 title="t", segment=_long_segments(4), tags="", checkpoint_key="ck")
             captured = []
 
-            def capture(messages):
-                captured.append(messages[0]["content"])
+            def capture(**kwargs):
+                captured.append(kwargs["messages"][0]["content"])
                 return mock.Mock(choices=[mock.Mock(
                     message=mock.Mock(content="## 第二章\n内容"), finish_reason="stop")])
 
+            # _load_checkpoint 保留方法级 mock（checkpoint 内容与签名哈希耦合，下沉成本高）；
+            # 其绑定由 test_binding_guard 守卫 5（descriptor 断言）覆盖（docs/05 #139 C1）
             with mock.patch.object(gpt, "_load_checkpoint",
                                    return_value={"partials": ["## 第一章\n内容"], "phase": "summarize"}), \
-                 mock.patch.object(gpt, "_chat_completion_create", side_effect=capture):
+                 mock.patch.object(gpt.client.chat.completions, "create", side_effect=capture):
                 result = gpt.summarize(source)
 
             assert "第二章" in result  # merge 产物（capture 固定返回该值）

@@ -93,16 +93,49 @@ class BcutBackoffTest(unittest.TestCase):
     """必剪轮询指数退避 1→2→4→5s 封顶；HTTP 调用带 timeout。"""
 
     def test_poll_backoff_sequence(self):
-        from app.transcriber.bcut import BcutTranscriber
+        from app.transcriber.bcut import (
+            API_COMMIT_UPLOAD,
+            API_CREATE_TASK,
+            API_REQ_UPLOAD,
+            BcutTranscriber,
+        )
 
         t = BcutTranscriber()
         states = iter([{"state": 0}, {"state": 0}, {"state": 0}, {"state": 4, "result": json.dumps({"utterances": []})}])
         sleeps = []
-        with mock.patch.object(t, "_upload"), \
-             mock.patch.object(t, "_create_task"), \
-             mock.patch.object(t, "_query_result", side_effect=lambda: next(states)), \
-             mock.patch("app.transcriber.bcut.time.sleep", side_effect=lambda s: sleeps.append(s)):
-            t.transcript("/tmp/fake.mp3")
+
+        def _resp(data, headers=None):
+            resp = mock.Mock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {"code": 0, "data": data}
+            resp.headers = headers if headers is not None else {}
+            return resp
+
+        def _post(url, *a, **k):
+            if url == API_REQ_UPLOAD:
+                return _resp({
+                    "size": 100, "in_boss_key": "k", "resource_id": "r",
+                    "upload_id": "u", "upload_urls": ["https://upload.example/p1"],
+                    "per_size": 1024,
+                })
+            if url == API_COMMIT_UPLOAD:
+                return _resp({"download_url": "https://dl.example/a.mp3"})
+            if url == API_CREATE_TASK:
+                return _resp({"task_id": "t1"})
+            raise AssertionError(f"未知 POST: {url}")
+
+        def _get(*a, **k):
+            return _resp(next(states))
+
+        with tempfile.TemporaryDirectory() as td:
+            fake = Path(td) / "fake.mp3"
+            fake.write_bytes(b"x" * 100)
+            # mock 下沉到 session 层（#139 C1）：真实走 _upload/_create_task/_query_result 绑定链
+            with mock.patch.object(t.session, "post", side_effect=_post), \
+                 mock.patch.object(t.session, "put", return_value=_resp(None, headers={"Etag": '"e1"'})), \
+                 mock.patch.object(t.session, "get", side_effect=_get), \
+                 mock.patch("app.transcriber.bcut.time.sleep", side_effect=lambda s: sleeps.append(s)):
+                t.transcript(str(fake))
         # i=0,1,2 → 1,2,4；第 4 次循环命中 state=4 直接 break
         self.assertEqual(sleeps, [1, 2, 4])
 
@@ -135,7 +168,7 @@ class GenericCookieTest(unittest.TestCase):
             ydl.extract_info.return_value = {"id": "vid1", "title": "t", "duration": 1, "ext": "m4a"}
             return ydl
 
-        with mock.patch.object(mod.CookieConfigManager, "get", return_value=cookie), \
+        with mock.patch("app.services.cookie_manager.read_json", return_value={"generic": cookie}), \
              mock.patch.object(mod, "get_data_dir", return_value=tempfile.gettempdir()), \
              mock.patch.object(mod.yt_dlp, "YoutubeDL", side_effect=_fake_ydl):
             mod.GenericDownloader().download("https://example-site.com/video")
@@ -158,7 +191,7 @@ class GenericCookieTest(unittest.TestCase):
     def test_no_cookie_file_left_on_disk(self):
         import app.downloaders.generic_downloader as mod
 
-        with mock.patch.object(mod.CookieConfigManager, "get", return_value="sessionid=abc123"), \
+        with mock.patch("app.services.cookie_manager.read_json", return_value={"generic": "sessionid=abc123"}), \
              mock.patch.object(mod, "get_data_dir", return_value=tempfile.gettempdir()):
             dl = mod.GenericDownloader()
             self.assertEqual(dl._get_cookie(), "sessionid=abc123")

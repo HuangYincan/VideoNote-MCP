@@ -45,7 +45,7 @@ class QuotaErrorTest(unittest.TestCase):
     def test_quota_failure_single_attempt(self):
         gpt = _gpt()
         with mock.patch.object(
-            gpt, "_do_create", side_effect=RuntimeError("insufficient_user_quota")
+            gpt.client.chat.completions, "create", side_effect=RuntimeError("insufficient_user_quota")
         ) as m_do_create:
             with self.assertRaises(RuntimeError):
                 gpt._chat_completion_create([{"role": "user", "content": "x"}])
@@ -59,7 +59,7 @@ class MergeCancelTest(unittest.TestCase):
         gpt = _gpt()
         cancel = threading.Event()
         cancel.set()
-        with mock.patch.object(gpt, "_chat_completion_create") as m:
+        with mock.patch.object(gpt.client.chat.completions, "create") as m:
             with self.assertRaises(TaskCancelledError):
                 gpt._merge_partials(["partial-1", "partial-2"], None, None, cancel_event=cancel)
         m.assert_not_called()
@@ -67,7 +67,7 @@ class MergeCancelTest(unittest.TestCase):
     def test_merge_proceeds_without_cancel(self):
         gpt = _gpt()
         with mock.patch.object(
-            gpt, "_chat_completion_create",
+            gpt.client.chat.completions, "create",
             return_value=mock.Mock(choices=[mock.Mock(
                 message=mock.Mock(content="合并结果"), finish_reason="stop")]),
         ) as m:

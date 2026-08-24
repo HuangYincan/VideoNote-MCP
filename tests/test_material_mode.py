@@ -15,6 +15,7 @@ import base64
 import json
 import shutil
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -197,8 +198,7 @@ def test_skip_download_media_cache_miss_clears_audio_path():
         video_id="BV1xx411c7mD",
         raw_info={},
     )
-    with mock.patch("app.services.note.note_cache.lookup_media", return_value=None), \
-         mock.patch.object(gen, "_update_status"):
+    with mock.patch("app.services.note.note_cache.lookup_media", return_value=None):
         audio = gen._download_media(
             downloader=fake_downloader,
             video_url="https://www.bilibili.com/video/BV1xx411c7mD",
@@ -250,8 +250,7 @@ def test_skip_download_keeps_real_local_path():
         video_id=None,
         raw_info={},
     )
-    with mock.patch("app.services.note.note_cache.lookup_media", return_value=None), \
-         mock.patch.object(gen, "_update_status"):
+    with mock.patch("app.services.note.note_cache.lookup_media", return_value=None):
         audio = gen._download_media(
             downloader=fake_downloader,
             video_url=local_path,
@@ -294,7 +293,7 @@ def test_skip_download_media_cache_hit_reuses_real_file():
     )
     with mock.patch(
         "app.services.note.note_cache.lookup_media", return_value="/cache/real.mp3"
-    ), mock.patch.object(gen, "_update_status"):
+    ):
         audio = gen._download_media(
             downloader=fake_downloader,
             video_url="https://www.bilibili.com/video/BV1xx411c7mD",
@@ -348,7 +347,7 @@ def test_audio_cache_none_file_path_treated_as_stale():
         video_id="BV1xx411c7mD",
         raw_info={},
     )
-    with mock.patch.object(gen, "_update_status"):
+    with nullcontext():
         audio = gen._download_media(
             downloader=fake_downloader,
             video_url="https://www.bilibili.com/video/BV1xx411c7mD",
@@ -401,8 +400,7 @@ def test_format_screenshot_forces_video_download():
         video_id="BV1xx411c7mD",
         raw_info={},
     )
-    with mock.patch.object(gen, "_update_status"), \
-         mock.patch.object(gen, "_get_downloader", return_value=fake_dl), \
+    with mock.patch("app.services.note._new_downloader", return_value=fake_dl), \
          mock.patch.object(note_mod, "VideoReader") as m_reader, \
          mock.patch.object(note_mod, "_extract_audio_from_video",
                            return_value=str(task_dir / "raw" / "a.mp3")), \

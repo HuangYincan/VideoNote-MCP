@@ -1,26 +1,55 @@
-"""#32 同族绑定回归的结构性守卫（docs/05 #139 批次 1）。
+"""#32 同族绑定回归的结构性守卫（docs/05 #139 批次 1/4）。
 
 issue #32 根因：悬空 @staticmethod 装饰器（被注释分割）把实例方法误绑为静态方法，
 运行时 self.method() 抛 TypeError；700+ 测试全绿是因为 mock 整体打桩掩盖了绑定差异。
 
-本模块把 #32 的签名固化为 AST 编译期断言——任何同类回归（装饰器误加/误删/注释分割、
-staticmethod 误用实例属性）在测试阶段即红，不依赖人工排查：
+本模块把 #32 的签名固化为 AST/descriptor 编译期断言——任何同类回归（装饰器误加/误删/
+注释分割、staticmethod 误用实例属性）在测试阶段即红，不依赖人工排查：
 
 1. 装饰器与函数/类定义之间不得被注释或代码行分割（空行放行——合法风格）
 2. @staticmethod 方法体不得引用 self.<attr> 实例属性
 3. @staticmethod 首参不得是 self/cls；@classmethod 首参必须是 cls
 4. 绑定敏感方法不得被 mock.patch.object 整体打桩（清单随发现扩充，见 B1）
+5. 绑定敏感方法必须是普通实例方法（descriptor 断言）——对保留方法级 mock 的
+   （Douyin/VideoReader/_load_checkpoint/__upload_part 等：下沉成本高或属方法本体
+   单元隔离），用 inspect.getattr_static 兜底：误加 @staticmethod/@classmethod 即红
 """
 import ast
+import importlib
+import inspect
+import sys
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCAN_DIRS = ("app", "videonote_mcp")
 
-# 绑定敏感方法：生产经 self.method() 真实调用、测试若整体打桩会掩盖绑定回归（#32 教训）。
+# 守卫 4 白名单：已迁移到依赖层打桩、今后不得再整体 mock 的绑定敏感方法（#32 教训）。
 # 新增排查发现的方法往这里加；对应 mock 应下沉到方法体内的依赖（见 docs/05 #139 B1/C1）。
-BINDING_SENSITIVE_METHODS = {"_init_transcriber"}
+BINDING_SENSITIVE_METHODS = {
+    "_init_transcriber", "_get_downloader", "_update_status", "_transcribe_audio",
+    "_do_create", "_chat_completion_create", "_upload", "_create_task", "_query_result",
+}
+
+# 守卫 5 清单：所有绑定敏感方法（含保留方法级 mock 的）——descriptor 类型断言兜底绑定。
+# 类路径 → 方法名列表。
+BINDING_SENSITIVE_CLASSES = {
+    "app.services.note.NoteGenerator": [
+        "_init_transcriber", "_get_downloader", "_update_status", "_transcribe_audio",
+    ],
+    "app.gpt.universal_gpt.UniversalGPT": [
+        "_do_create", "_chat_completion_create", "_load_checkpoint",
+    ],
+    "app.transcriber.bcut.BcutTranscriber": [
+        "_upload", "_create_task", "_query_result",
+        "_BcutTranscriber__upload_part", "_BcutTranscriber__commit_upload",
+    ],
+    "app.downloaders.douyin_downloader.DouyinDownloader": [
+        "extract_video_id", "fetch_video_info",
+    ],
+    "app.utils.video_reader.VideoReader": ["extract_frames"],
+    "app.services.cookie_manager.CookieConfigManager": ["get"],
+}
 
 
 def _py_files():
@@ -32,6 +61,15 @@ def _decorator_names(node) -> set:
     return {d.id for d in node.decorator_list if isinstance(d, ast.Name)}
 
 
+def _parse(src: str):
+    """ast.parse 包装：文件内 `\d` 等正则字符串字面量触发 SyntaxWarning，压掉噪音。"""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        return ast.parse(src)
+
+
 class DecoratorGapGuardTest(unittest.TestCase):
     """守卫 1：装饰器与函数/类定义之间不得被注释或代码行分割（#32 精确签名）。"""
 
@@ -39,7 +77,7 @@ class DecoratorGapGuardTest(unittest.TestCase):
         offenders = []
         for p in _py_files():
             src = p.read_text(encoding="utf-8")
-            tree = ast.parse(src)
+            tree = _parse(src)
             lines = src.splitlines()
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -68,7 +106,7 @@ class StaticBindingGuardTest(unittest.TestCase):
     def test_staticmethod_and_classmethod_binding_sane(self):
         offenders = []
         for p in _py_files():
-            tree = ast.parse(p.read_text(encoding="utf-8"))
+            tree = _parse(p.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
@@ -104,7 +142,7 @@ class MockTargetGuardTest(unittest.TestCase):
     def test_binding_sensitive_methods_not_whole_mocked(self):
         offenders = []
         for p in sorted((REPO_ROOT / "tests").rglob("test_*.py")):
-            tree = ast.parse(p.read_text(encoding="utf-8"))
+            tree = _parse(p.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
@@ -120,4 +158,23 @@ class MockTargetGuardTest(unittest.TestCase):
             offenders, [],
             "绑定敏感方法被整体 mock（应下沉到方法体内依赖，见 docs/05 #139）：\n"
             + "\n".join(offenders),
+        )
+
+
+class BindingDescriptorGuardTest(unittest.TestCase):
+    """守卫 5：绑定敏感方法必须是普通实例方法（descriptor 断言）。"""
+
+    def test_binding_sensitive_methods_are_instance_methods(self):
+        offenders = []
+        for dotted, methods in BINDING_SENSITIVE_CLASSES.items():
+            mod_name, cls_name = dotted.rsplit(".", 1)
+            importlib.import_module(mod_name)
+            cls = getattr(sys.modules[mod_name], cls_name)
+            for m in methods:
+                desc = inspect.getattr_static(cls, m)
+                if isinstance(desc, (staticmethod, classmethod)):
+                    offenders.append(f"{dotted}.{m} → {type(desc).__name__}")
+        self.assertEqual(
+            offenders, [],
+            "绑定敏感方法被静态/类方法绑定（#32 同族）：\n" + "\n".join(offenders),
         )
