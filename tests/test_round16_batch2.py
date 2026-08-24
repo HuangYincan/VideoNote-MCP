@@ -90,6 +90,13 @@ class StreamDownloadRetryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             stream_download("https://example.com/v.mp4", "/tmp/x.mp4", attempts=0)
 
+    def test_private_resource_url_blocked(self):
+        """#140：API 返回的资源 URL（url_list/photoUrl）在 stream_download 入口
+        直接被 SSRF 防护拦截——入口 URL 校验覆盖不到的点。"""
+        with self.assertRaises(ValueError) as cm:
+            stream_download("http://169.254.169.254/latest/meta-data/", "/tmp/x.mp4")
+        self.assertIn("SSRF", str(cm.exception))
+
     def test_cancel_interrupts_download_loop(self):
         ev = threading.Event()
 

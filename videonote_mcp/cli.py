@@ -50,6 +50,7 @@ from app.db.provider_dao import seed_default_providers
 from app.services.provider import ProviderService
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.services.transcriber_config_manager import TranscriberConfigManager
+from app.utils.url_safety import sanitize_url
 
 init_db()
 seed_default_providers()
@@ -262,7 +263,7 @@ def _wizard_llm(inq) -> None:
                 suffix = f"  ⤷默认={default_model}" if default_model else ""
                 choices.append(
                     {
-                        "name": f"{p['id']:<10} {p['name']:<12} key={'✓已填' if p['api_key'] else '空'}  {p['base_url']}{suffix}",
+                        "name": f"{p['id']:<10} {p['name']:<12} key={'✓已填' if p['api_key'] else '空'}  {sanitize_url(p['base_url'])}{suffix}",
                         "value": ("open", p["id"]),
                     }
                 )
@@ -1018,7 +1019,7 @@ def _setup_cli_fallback() -> None:
         for i, p in enumerate(provs, 1):
             dm = get_app_config().get(f"default_model:{p['id']}")
             suffix = f"  默认={dm}" if dm else ""
-            print(f"   {i}) {p['id']}  key={'已填' if p['api_key'] else '空'}  {p['base_url']}{suffix}", file=sys.stdout)
+            print(f"   {i}) {p['id']}  key={'已填' if p['api_key'] else '空'}  {sanitize_url(p['base_url'])}{suffix}", file=sys.stdout)
         sel = _ask("   选择要管理的 [1-%d]，0 跳过" % len(provs), default="0")
         if sel.isdigit() and 1 <= int(sel) <= len(provs):
             pid = provs[int(sel) - 1]["id"]
@@ -1221,7 +1222,7 @@ def _providers_cli(argv) -> None:
             key = f"已填 {p['api_key']}" if p["api_key"] else "空"
             dm = get_app_config().get(f"default_model:{p['id']}")
             suffix = f"  默认={dm}" if dm else ""
-            print(f"{p['id']:10} {p['name']:12} key={key}  base_url={p['base_url']}{suffix}", file=sys.stdout)
+            print(f"{p['id']:10} {p['name']:12} key={key}  base_url={sanitize_url(p['base_url'])}{suffix}", file=sys.stdout)
     elif opts.cmd == "test":
         provider = ProviderService.get_provider_by_id(opts.provider_id)
         if not provider:
@@ -1402,16 +1403,15 @@ def _proxy_cli(argv) -> None:
             None,
         )
         if cfg["enabled"] and cfg["url"]:
-            from app.utils.url_safety import sanitize_url
-
             print(f"代理: {sanitize_url(cfg['url'])}（配置文件启用）", file=sys.stdout)
         elif env:
-            print(f"代理: {env}（环境变量）", file=sys.stdout)
+            # 环境变量代理可能带 user:pass@ —— 同样脱敏后再展示（#140 A5）
+            print(f"代理: {sanitize_url(env)}（环境变量）", file=sys.stdout)
         else:
             print("代理: 未配置（yt-dlp 下载直连；fake-ip 代理环境下会失败）", file=sys.stdout)
     elif opts.cmd == "set":
         mgr.update_config(True, opts.url)
-        print(f"✅ 代理已启用: {opts.url}", file=sys.stdout)
+        print(f"✅ 代理已启用: {sanitize_url(opts.url)}", file=sys.stdout)
     elif opts.cmd == "off":
         mgr.update_config(False)
         print("✅ 代理已关闭（回退环境变量）", file=sys.stdout)

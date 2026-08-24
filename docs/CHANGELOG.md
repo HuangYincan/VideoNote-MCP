@@ -744,3 +744,13 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **批次 5 staticmethod 类名调用**（commit 87f1d6f）：11 组 16 处 `self.<staticmethod>()` 改类名调用（Kuaishou 测试 mock 升类级——类名调用下实例 mock 失效，测试变红恰好证明纪律生效）；守卫 6 AST 断言全库强制。
 - **批次 6 真实转写集成冒烟**（commit 76dd7d3）：`tests/test_integration_transcribe.py` 全库第一条真实转写执行路径（引擎实例化+模型加载+推理，本地 fast-whisper small 验证通过）；`@pytest.mark.integration` 默认跳过，ci.yml `workflow_dispatch` 手动 job 触发。
 - **714 passed + ruff F/I-clean**；docs/05 #139 C 组全部转 ✅。
+
+## Wave I 批 31（2026-08-25 · 安全扫描收尾 #140，714→723 tests）
+
+- **SSRF 逐跳校验（A1 高）**：#133 A1 只覆盖入口 URL + 首跳 DNS——重定向目标与 API 返回资源直连 URL 全裸奔。`url_safety` 新增 `PublicOnlySession`（重写 `Session.send`——requests `resolve_redirects` 经 `self.send` 发下一跳，重写即覆盖初始 URL + 全部 Location 跳点）+ `public_get/public_head`，接入短链解析（b23.tv / v.douyin.com）、快手 `get_photo_id`、抖音 `extract_video_id`、B 站字幕 `_fetch_body`；`stream_download` 入口校验平台 API 返回的 `photoUrl/url_list` 直连资源。yt-dlp 内部重定向维持已知边界（网络侧 egress 白名单/代理为完整方案）。
+- **全局清理越界拒绝（A2 中）**：`cleanup_all_files` 的 config/models 目录经 `VIDEONOTE_CONFIG_DIR/VIDEONOTE_MODEL_DIR` 可指向数据根外或符号链接到外部——`_empty` 直接清空会误伤用户数据（config 含 key/cookie、models 重下成本高）。改为 `config_models_inside_data_root()` 复用 `_safe_resolve` 判定，越界拒绝清理并列入 `kept_outside`（与便携笔记副本同沙箱红线）；MCP cleanup dry_run 如实标注「将拒绝清理」。
+- **依赖审计（A3 中）**：`cryptography 49.0.0`（PYSEC-2026-3552 / CVE-2026-69247）→ `>=50.0.0`（uv.lock 同步）；`lightning 2.6.5`（PYSEC-2026-3624 / CVE-2026-58659）出自可选 diarization 依赖链，无修复版本——pyproject 注记暂缓启用该 extra。
+- **凭据展示脱敏（A4 低）**：`proxy set/list`（含环境变量代理）与 `providers list`/向导/`get_config` 的 base_url 统一过 `sanitize_url`——带 `user:pass@` 的 URL 不再把凭据打进终端/MCP 输出。
+- **固定 tmp + 0644 收尾（A5 低）**：`_atomic_write_json`（server）/ `record_task_paths`（task_manifest）/ `_save_checkpoint`（universal_gpt）接入 `json_store._unique_tmp` + 创建即 0600——#133 A2 登记项落地。
+- **工作区卫生（A6 低）**：`.gitignore` 增加 `/node_modules/` 与 `/scripts/`（本地安全扫描脚本从 auth.json 读 key 并经命令行传 token，进程列表可见，不入库）。
+- 相关文件分叉登记进 `VENDOR.md` 冻结清单（common / url_parser / douyin_downloader / kuaishou_helper / bilibili_subtitle）。

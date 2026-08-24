@@ -6,6 +6,7 @@ task_manifest 清理功能测试（不碰真实网络/数据库，只用临时�
 """
 
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -28,8 +29,20 @@ from app.utils.task_manifest import (  # noqa: E402
 
 
 class TaskManifestTest(unittest.TestCase):
+    _ENV_KEYS = (
+        "VIDEONOTE_DATA_DIR",
+        "NOTE_OUTPUT_DIR",
+        "IMAGE_OUTPUT_DIR",
+        "VIDEONOTE_CONFIG_DIR",
+        "VIDEONOTE_MODEL_DIR",
+    )
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
+        # 环境变量 save/restore（而非 pop）：tearDown pop 会把 conftest 注入的
+        # 会话级隔离值一并拔掉，后续用例落到仓库 data/（曾把笔记写进 repo 泄漏
+        # gitignore 外产物 + 跨进程 pid 路径串扰，#140 验证时踩到）
+        self._env_backup = {k: os.environ.get(k) for k in self._ENV_KEYS}
         # resolve 掉 macOS 的 /var → /private/var 软链，保证 manifest 记录与解析一致
         self.root = Path(self._tmp.name).resolve()
         # 目录布局模拟 MCP 数据目录（config.setup_environment 建的那一套）
@@ -47,13 +60,12 @@ class TaskManifestTest(unittest.TestCase):
 
     def tearDown(self):
         self._tmp.cleanup()
-        for k in (
-            "VIDEONOTE_DATA_DIR",
-            "NOTE_OUTPUT_DIR",
-            "IMAGE_OUTPUT_DIR",
-            "VIDEONOTE_CONFIG_DIR",
-        ):
-            os.environ.pop(k, None)
+        for k in self._ENV_KEYS:
+            v = self._env_backup.get(k)
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     # ---------- 造假 task 产物 ----------
 
@@ -253,6 +265,60 @@ class TaskManifestTest(unittest.TestCase):
         self.assertTrue((self.models / "whisper" / "model.bin").exists())
         self.assertIn("models", res["kept"])
         self.assertNotIn("config", res["kept"])
+        self.assertEqual(res["kept_outside"], [])
+
+    def test_cleanup_all_refuses_config_outside_data_root(self):
+        """#140 A2：VIDEONOTE_CONFIG_DIR 指向数据根外 → include_config 拒绝清空并留痕。"""
+        outside = Path(tempfile.mkdtemp(prefix="vn_outside_cfg_"))
+        try:
+            keep = outside / "keep.json"
+            keep.write_text("{}", encoding="utf-8")
+            os.environ["VIDEONOTE_CONFIG_DIR"] = str(outside)
+            res = cleanup_all_files(include_config=True, include_models=False)
+            # 外部目录原封不动；被拒绝项留痕，且不进入 cleaned
+            self.assertTrue(keep.exists())
+            self.assertEqual(len(res["kept_outside"]), 1)
+            self.assertIn("config", res["kept_outside"][0])
+            self.assertNotIn("config", res["cleaned"])
+            self.assertNotIn("config", res["kept"])
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+            os.environ["VIDEONOTE_CONFIG_DIR"] = str(self.cfg)
+
+    def test_cleanup_all_refuses_models_outside_data_root(self):
+        """#140 A2：VIDEONOTE_MODEL_DIR 指向数据根外 → include_models 同样拒绝。"""
+        outside = Path(tempfile.mkdtemp(prefix="vn_outside_models_"))
+        try:
+            w = outside / "whisper"
+            w.mkdir()
+            (w / "model.bin").write_bytes(b"m")
+            os.environ["VIDEONOTE_MODEL_DIR"] = str(outside)
+            res = cleanup_all_files(include_config=False, include_models=True)
+            self.assertTrue((w / "model.bin").exists())
+            self.assertEqual(len(res["kept_outside"]), 1)
+            self.assertIn("models", res["kept_outside"][0])
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+            os.environ.pop("VIDEONOTE_MODEL_DIR", None)
+
+    def test_cleanup_all_refuses_config_symlink_outside(self):
+        """#140 A2：data/config 是指向外部的符号链接 → resolve 后越界，同样拒绝。"""
+        outside = Path(tempfile.mkdtemp(prefix="vn_outside_link_"))
+        keep = outside / "keep.json"
+        keep.write_text("{}", encoding="utf-8")
+        os.environ["VIDEONOTE_CONFIG_DIR"] = str(self.cfg)  # 默认 data/config（符号链接）
+        self.cfg.rmdir()
+        try:
+            os.symlink(outside, self.cfg)
+            res = cleanup_all_files(include_config=True, include_models=False)
+            self.assertTrue(keep.exists())
+            self.assertEqual(len(res["kept_outside"]), 1)
+            self.assertIn("config", res["kept_outside"][0])
+        finally:
+            if self.cfg.is_symlink():
+                self.cfg.unlink()
+            self.cfg.mkdir(exist_ok=True)
+            os.environ["VIDEONOTE_CONFIG_DIR"] = str(self.cfg)
 
 
 if __name__ == "__main__":

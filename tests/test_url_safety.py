@@ -7,6 +7,7 @@ import socket
 from unittest import mock
 
 import pytest
+import requests
 
 from app.utils.url_safety import (
     assert_public_http_url,
@@ -171,15 +172,80 @@ class TestShortUrlResolverGuard:
             resolve_douyin_short_url("http://10.0.0.1/v.douyin.com/abc")
 
     def test_resolver_public_url_still_resolves(self):
-        # 合法短链（conftest DNS 桩为公网）不被误拦，走到 requests.head（被 mock）
-        import requests
-
+        # 合法短链（conftest DNS 桩为公网）不被误拦；HEAD 经 adapter（mock 掉，
+        # 不碰真实网络）返回最终 URL
         from app.utils.url_parser import resolve_bilibili_short_url
 
-        with mock.patch.object(
-            requests, "head",
-            return_value=mock.Mock(url="https://www.bilibili.com/video/BV1xx"),
-        ) as m_head:
+        with mock.patch("requests.adapters.HTTPAdapter.send", side_effect=_http_ok("https://www.bilibili.com/video/BV1xx")) as m_send:
             out = resolve_bilibili_short_url("https://b23.tv/xxxxxx")
         assert out == "https://www.bilibili.com/video/BV1xx"
-        m_head.assert_called_once()
+        m_send.assert_called_once()
+
+
+def _http_ok(url: str, status: int = 200, location: str = ""):
+    """构造 HTTPAdapter.send 桩：返回指定状态/跳转的 Response（逐跳校验测试用）。
+
+    不碰真实网络：adapter 是 requests 的出站最后一层，mock 它即挡住所有 I/O；
+    Response.url 决定 get_redirect_target 的相对跳转基准，必须与请求 URL 一致。
+    mock.patch 类方法时 side_effect 不绑定 self——签名是 (request, **kwargs)。
+    """
+
+    def _send(request, **kwargs):
+        resp = requests.Response()
+        resp.status_code = status
+        resp._content = b""
+        resp.url = url
+        resp.request = request
+        resp.raw = None
+        resp.headers = requests.structures.CaseInsensitiveDict({"Location": location} if location else {})
+        return resp
+
+    return _send
+
+
+class TestPublicOnlySessionRedirect:
+    """#140：逐跳校验 —— 重定向目标在发出前校验。
+
+    requests 的 resolve_redirects 经 `self.send` 发下一跳（含相对跳转拼好的绝对
+    URL），重写 Session.send 即覆盖初始 URL + 全部 Location 跳点。
+    """
+
+    def test_session_send_blocks_private_without_network(self):
+        from app.utils.url_safety import PublicOnlySession
+
+        req = requests.Request("GET", "http://169.254.169.254/latest/meta-data/").prepare()
+        with mock.patch("requests.adapters.HTTPAdapter.send", side_effect=AssertionError("不应发出请求")):
+            with pytest.raises(ValueError, match="SSRF"):
+                PublicOnlySession().send(req)
+
+    def test_redirect_to_private_blocked_before_fetch(self):
+        from app.utils.url_safety import public_get
+
+        calls = []
+
+        def _send(request, **kwargs):
+            calls.append(request.url)
+            return _http_ok(request.url, status=302, location="http://169.254.169.254/latest/meta-data/")(request, **kwargs)
+
+        with mock.patch("requests.adapters.HTTPAdapter.send", side_effect=_send):
+            with pytest.raises(ValueError, match="SSRF"):
+                public_get("http://public.example.com/a.mp3")
+        # 第一跳结束后第二跳被拦：跳点 URL 从未发出
+        assert calls == ["http://public.example.com/a.mp3"]
+
+    def test_public_redirect_chain_followed(self):
+        from app.utils.url_safety import public_get
+
+        calls = []
+
+        def _send(request, **kwargs):
+            calls.append(request.url)
+            if len(calls) == 1:
+                return _http_ok(request.url, status=302, location="http://cdn.example.com/b.mp3")(request, **kwargs)
+            return _http_ok(request.url)(request, **kwargs)
+
+        with mock.patch("requests.adapters.HTTPAdapter.send", side_effect=_send):
+            resp = public_get("http://example.com/a.mp3")
+        assert resp.status_code == 200
+        assert len(calls) == 2
+        assert calls[1] == "http://cdn.example.com/b.mp3"

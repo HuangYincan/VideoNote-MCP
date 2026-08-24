@@ -1601,6 +1601,22 @@ class GetConfigTest(unittest.TestCase):
                 server.get_config()
         m_probe.assert_not_called()
 
+    def test_providers_base_url_credentials_stripped(self):
+        """#140 A5：base_url 带 user:pass@（中转站鉴权常见）→ get_config 返回脱敏值。"""
+        with ExitStack() as st:
+            for p in self._patch_reads():
+                st.enter_context(p)
+            st.enter_context(mock.patch.object(
+                server.ProviderService, "get_all_providers_safe",
+                return_value=[
+                    {"id": "p1", "name": "x", "api_key": "sk-***",
+                     "base_url": "https://user:secret@relay.example.com/v1"},
+                ],
+            ))
+            resp = json.loads(server.get_config())
+        self.assertEqual(resp["providers"][0]["base_url"], "https://relay.example.com/v1")
+        self.assertNotIn("user:secret", json.dumps(resp))
+
     def test_probe_ok_reports_models(self):
         with ExitStack() as st:
             for p in self._patch_reads():

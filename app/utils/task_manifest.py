@@ -117,8 +117,14 @@ def record_task_paths(task_id: str, paths: Sequence) -> None:
             data["paths"] = list(data["paths"]) + additions
         f = manifest_path(task_id)
         f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 唯一 tmp + 创建即 0600（#140 A5，#133 A2 登记项收尾：与 json_store/status 同口径）——
+        # 固定 <path>.tmp 在 CLI 与 MCP server 双进程并发写时互相截断丢更新
+        from app.utils.json_store import _unique_tmp, _write_bytes_with_mode
+
+        tmp = _unique_tmp(f)
+        _write_bytes_with_mode(
+            tmp, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), 0o600
+        )
         tmp.replace(f)
     except Exception as e:  # noqa: BLE001 —— 记录是尽力而为
         logger.warning("记录 task 路径失败 task_id=%s: %s", task_id, e)
@@ -331,6 +337,21 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
     }
 
 
+def config_models_inside_data_root() -> dict:
+    """config / models 目录是否落于数据根内（全局清理的删除前提，#140 A2）。
+
+    VIDEONOTE_CONFIG_DIR / VIDEONOTE_MODEL_DIR 可被环境变量指向数据根外，
+    data/config 等默认路径也可能是指向外部的符号链接——Path.resolve() 跟随
+    符号链接给出真实目标。越界目录若被 `_empty` 清空即误伤用户数据
+    （config 常含 key/cookie，models 是重下成本高的模型缓存）。
+    """
+    root = [get_data_dir()]
+    return {
+        "config": _safe_resolve(get_config_dir(), root) is not None,
+        "models": _safe_resolve(get_models_dir(), root) is not None,
+    }
+
+
 def cleanup_all_files(include_config: bool = False, include_models: bool = False) -> Dict:
     """全局清理（恢复出厂）：清空 note_results / static/screenshots / static/cover / covers / note_cache 的任务产物。
 
@@ -340,8 +361,12 @@ def cleanup_all_files(include_config: bool = False, include_models: bool = False
     默认保留 config/（LLM key / cookie / 转写设置）与 models/（模型可复用、重下成本高）；
     include_config=True 时连 config/ 一起清；include_models=True 时连 models/ 一起清。
     同步清空 video_tasks 全局索引（任务目录删了，索引记录一并清）。
+
+    安全红线（#140 A2）：config/models 目录若落在数据根**外**（环境变量指向外部 /
+    符号链接到外部），拒绝清空并列入 kept_outside——沙箱红线只清数据目录内，
+    与便携笔记副本同口径（绝不清用户指定目录下与任务无关的内容）。
     """
-    result: Dict = {"cleaned": {}, "kept": []}
+    result: Dict = {"cleaned": {}, "kept": [], "kept_outside": []}
 
     def _empty(d: Path, key: str) -> None:
         if not d.exists() or not d.is_dir():
@@ -370,14 +395,22 @@ def cleanup_all_files(include_config: bool = False, include_models: bool = False
         logger.warning(f"清空全局任务索引失败（目录已清理，索引可能残留）: {exc}")
         result["index_error"] = str(exc)
 
-    if include_config:
-        _empty(get_config_dir(), "config")
-    else:
-        result["kept"].append("config")
-
-    if include_models:
-        _empty(get_models_dir(), "models")
-    else:
-        result["kept"].append("models")
+    # config/models：先确认落在数据根内再清（#140 A2），越界拒绝并留痕
+    inside = config_models_inside_data_root()
+    for label, d, flag in (
+        ("config", get_config_dir(), include_config),
+        ("models", get_models_dir(), include_models),
+    ):
+        if not flag:
+            result["kept"].append(label)
+            continue
+        if not inside[label]:
+            logger.warning(
+                "拒绝清理 %s 目录（%s 落在数据根外或为外部符号链接，沙箱红线只清数据目录内）: %s",
+                label, label, d,
+            )
+            result["kept_outside"].append(f"{label}（数据根外，拒绝清理: {d}）")
+            continue
+        _empty(d, label)
 
     return result

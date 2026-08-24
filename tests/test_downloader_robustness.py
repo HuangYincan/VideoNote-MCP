@@ -30,6 +30,24 @@ class KuaiShouFailureTest(unittest.TestCase):
     def _mk(self):
         return KuaiShou()
 
+    @staticmethod
+    def _ok_resp(url: str):
+        """构造 HTTPAdapter.send 桩（#140：get_photo_id 改走 public_get 逐跳校验，
+        mock 点从模块级 requests 下沉到 adapter；不绑定 self，见 mock.patch 语义）。"""
+        import requests
+
+        def _send(request, **kwargs):
+            resp = requests.Response()
+            resp.status_code = 200
+            resp._content = b""
+            resp.url = url
+            resp.request = request
+            resp.raw = None
+            resp.headers = requests.structures.CaseInsensitiveDict()
+            return resp
+
+        return _send
+
     def test_no_link_raises(self):
         with self.assertRaisesRegex(RuntimeError, "URL 解析失败"):
             self._mk().run("无链接文本")
@@ -78,14 +96,18 @@ class KuaiShouFailureTest(unittest.TestCase):
 
     def test_get_photo_id_unmatched_returns_none(self):
         ks = self._mk()
-        with mock.patch("app.downloaders.kuaishou_helper.kuaishou.requests") as m_req:
-            m_req.get.return_value.url = "https://v.kuaishou.com/fWvrA9B"
+        with mock.patch(
+            "requests.adapters.HTTPAdapter.send",
+            side_effect=self._ok_resp("https://v.kuaishou.com/fWvrA9B"),
+        ):
             self.assertIsNone(ks.get_photo_id("https://v.kuaishou.com/fWvrA9B"))
 
     def test_get_photo_id_matched(self):
         ks = self._mk()
-        with mock.patch("app.downloaders.kuaishou_helper.kuaishou.requests") as m_req:
-            m_req.get.return_value.url = "https://www.kuaishou.com/short-video/3xabc123"
+        with mock.patch(
+            "requests.adapters.HTTPAdapter.send",
+            side_effect=self._ok_resp("https://www.kuaishou.com/short-video/3xabc123"),
+        ):
             self.assertEqual(ks.get_photo_id("https://v.kuaishou.com/x"), "3xabc123")
 
 

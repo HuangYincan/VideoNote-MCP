@@ -109,11 +109,12 @@ from app.utils.model_status import check_whisper_model_exists
 from app.utils.task_manifest import (
     cleanup_all_files,
     cleanup_task_files,
+    config_models_inside_data_root,
     get_task_paths,
     list_task_files,
     record_task_paths,
 )
-from app.utils.url_safety import assert_public_http_url
+from app.utils.url_safety import assert_public_http_url, sanitize_url
 from videonote_mcp.provider_probe import probe_models
 
 logger = get_logger(__name__)
@@ -304,10 +305,18 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
 
 
 def _atomic_write_json(path: Path, payload) -> None:
-    """原子写 JSON（tmp + replace）：避免轮询读到半截文件（docs/05 #54）。"""
+    """原子写 JSON（tmp + replace + 唯一后缀 + 0600）：避免轮询读到半截文件（docs/05 #54）。
+
+    #140 A5（#133 A2 登记项收尾）：固定 `<path>.json.tmp` 在 CLI 与 MCP server 双进程
+    并发写时互相截断丢更新；与 json_store/status 同口径——_unique_tmp + 创建即 0600。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    from app.utils.json_store import _unique_tmp, _write_bytes_with_mode
+
+    tmp = _unique_tmp(path)
+    _write_bytes_with_mode(
+        tmp, json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8"), 0o600
+    )
     tmp.replace(path)
 
 
@@ -1310,7 +1319,9 @@ def cleanup(
     安全红线（与合并前一致）：单任务仍在运行（或排队中）时拒绝；全局清理有进行中/
     排队任务时拒绝、include_models=True 且仍有模型后台下载时拒绝（删 models/ 会打断
     下载线程，#123 A1）。数据目录**外**的便携笔记副本（用户指定 notes_dir 时常见）
-    不删除（沙箱红线），路径经 notes_kept_outside 列出，不会成为无人知晓的孤儿。
+    不删除（沙箱红线），路径经 notes_kept_outside 列出，不会成为无人知晓的孤儿；
+    config/models 目录落在数据根外（环境变量指向外部/符号链接到外部）时同样拒绝
+    清理，路径经 kept_outside 列出（#140 A2）。
 
     参数冲突显式报错（避免静默忽略误导）：单任务模式传 include_config/include_models、
     全局模式传 include_note 都会 ValueError。
@@ -1349,11 +1360,19 @@ def cleanup(
             "note_results/", "static/screenshots/", "static/cover/", "covers/",
             "note_cache/", "video_tasks 全局索引",
         ]
-        if include_config:
-            would_clean.append("config/（LLM key / cookie / 转写设置）")
-        if include_models:
-            would_clean.append("models/（已下载模型）")
         would_keep = ["logs/（运行日志，刻意不清）"]
+        # config/models 落在数据根外时 dry_run 如实标注「将拒绝清理」（#140 A2）
+        inside = config_models_inside_data_root()
+        if include_config:
+            if inside["config"]:
+                would_clean.append("config/（LLM key / cookie / 转写设置）")
+            else:
+                would_keep.append("config/（数据根外，将拒绝清理）")
+        if include_models:
+            if inside["models"]:
+                would_clean.append("models/（已下载模型）")
+            else:
+                would_keep.append("models/（数据根外，将拒绝清理）")
         if not include_config:
             would_keep.append("config/")
         if not include_models:
@@ -1734,9 +1753,15 @@ def get_config(provider_id: str = "") -> str:
     cfg = mgr.get_config()
     ready = mgr.is_model_ready()
     cookie_platforms = sorted(CookieConfigManager().list_all().keys())
+    # providers：api_key 已掩码（get_all_providers_safe）；base_url 可能带 user:pass@
+    # （中转站鉴权常见形式）——剥离凭据后再进 MCP 输出（#140 A5）
+    providers = [
+        {**p, "base_url": sanitize_url(p.get("base_url"))}
+        for p in ProviderService.get_all_providers_safe()
+    ]
     result = {
         "app_config": safe,
-        "providers": ProviderService.get_all_providers_safe(),
+        "providers": providers,
         "transcriber": {
             **cfg,
             "ready": ready["ready"],

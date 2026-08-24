@@ -38,11 +38,18 @@ def stream_download(
     >30s（慢网/CDN 抖动）整体失败且已下字节作废、任务直接 FAILED。改为
     连接 10s + 单次读 300s；瞬时网络错误（连接失败/超时/5xx）指数退避重试。
     取消事件在下载循环内检查（B1）：cancel 即抛 TaskCancelledError，不等读超时。
+
+    SSRF（#140）：url 来自平台 API 返回的资源地址（抖音 url_list / 快手 photoUrl），
+    入口 URL 校验覆盖不到——出站下载前置公网校验，拦截被注入/被污染的 API 返回内网地址
+    （如 169.254.169.254 元数据端点）。
     """
     import requests
 
+    from app.utils.url_safety import assert_public_http_url
+
     if attempts <= 0:
         raise ValueError(f"attempts 必须为正整数，收到: {attempts}")
+    assert_public_http_url(url)
     for i in range(attempts):
         try:
             with requests.get(url, headers=headers, timeout=timeout, stream=True) as resp:
