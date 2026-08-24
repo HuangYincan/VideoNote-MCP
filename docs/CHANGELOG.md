@@ -726,3 +726,12 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 
 - **删除 note.py 悬空 @staticmethod**（commit 75571cb）：#134 死代码清理删 `delete_note` 时残留装饰器行，注释不打断绑定 → `_init_transcriber` 被误绑为静态方法，`self._init_transcriber()` 抛 `missing 1 required positional argument: 'self'`（本地复现 + 红绿验证）。回归测试打桩 `get_transcriber` 而非 `_init_transcriber` 本身，强制走 914 行真实绑定路径，防止同类回归再漏网。
 - **709 passed + ruff F/I-clean**（708 + 1）；docs/06 批 28 同步登记。
+
+## Wave I 批 29（2026-08-24 · 第 18 轮专项扫描 #139，709→712 tests）
+
+#32 修复后用户要求的专项全库扫描（#32 同族：装饰器/绑定回归）。
+
+- **三代理 + 双确定性 AST 扫描**：装饰器↔def 注释/代码分割全库 **0 命中**（#32 为唯一一次，已修复未复现）；历史清理 commit（#134 / 第 11-16 轮）删除侧**零残留**；真正风险在防回归机制缺失——mock 整体打桩掩盖绑定漂移（`_get_downloader`/`_update_status`/GPT/Bcut/Douyin 等 10+ 兄弟方法原样保留 #32 掩盖模式）+ CI 无真实转写路径兜底。
+- **批次 1 绑定守卫测试**（commit a3bcac4）：新增 `tests/test_binding_guard.py` 四守卫——装饰器间隔 / staticmethod 用 self / classmethod 缺 cls / 绑定敏感方法禁整体 mock；`_init_transcriber` 4 处整体 mock 迁移到 `get_transcriber` 层。
+- **批次 2 死代码/死注释清理**（commit c62a5e8）：whisper 类内 `is_torch_installed` 死静态方法、`transcriber_provider._init_transcriber` 改名 `_get_or_build_transcriber`、异常类 `code` 注解 `ProviderErrorEnum→int`、三处死注释（provider.py 旧下标序列化 / abogus 注释参数 / kuaishou 注释硬编码 Cookie）。
+- **712 passed + ruff F/I-clean**；docs/05 #139 登记；troubleshooting 补「任务 FAILED + Python 异常原文」症状条目（#32 用户侧表现无排障指引）。
