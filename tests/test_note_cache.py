@@ -337,7 +337,7 @@ class GenerateIntegrationTest(unittest.TestCase):
         gen = self._gen()
         downloader = _fake_downloader("abcDEF12345")
         with mock.patch.object(gen, "_get_downloader", return_value=downloader):
-            with mock.patch.object(gen, "_init_transcriber") as init_tr:
+            with mock.patch("app.services.note.get_transcriber") as init_tr:
                 result = gen.generate(
                     video_url=self.YT_URL, platform="youtube",
                     task_id="cachehit00001", material_only=True,
@@ -358,7 +358,7 @@ class GenerateIntegrationTest(unittest.TestCase):
             "segments": [{"start": 0, "end": 1, "text": "fresh"}],
         }
         with mock.patch.object(gen, "_get_downloader", return_value=downloader):
-            with mock.patch.object(gen, "_init_transcriber") as init_tr:
+            with mock.patch("app.services.note.get_transcriber") as init_tr:
                 # 无字幕视频：generate 主路径已试过 downloader.download_subtitles（None），
                 # _get_transcript 走 skip_subtitle=True → pipeline.fetch_subtitles 不得再调
                 # （重复 API 调用，#123 B1）
@@ -446,7 +446,7 @@ class GenerateIntegrationTest(unittest.TestCase):
             }
             gen = self._gen()
             with mock.patch.object(gen, "_get_downloader", return_value=downloader):
-                with mock.patch.object(gen, "_init_transcriber"):
+                with mock.patch("app.services.note.get_transcriber"):
                     with mock.patch.object(note_pipeline, "fetch_subtitles", return_value=None):
                         with mock.patch.object(note_pipeline, "transcribe_audio", return_value=transcript_dict):
                             gen.generate(
@@ -458,7 +458,7 @@ class GenerateIntegrationTest(unittest.TestCase):
 
             gen2 = self._gen()
             with mock.patch.object(gen2, "_get_downloader", return_value=downloader):
-                with mock.patch.object(gen2, "_init_transcriber"):
+                with mock.patch("app.services.note.get_transcriber"):
                     result2 = gen2.generate(
                         video_url=self.YT_URL, platform="youtube",
                         task_id="media000002", material_only=True,
