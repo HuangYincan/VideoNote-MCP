@@ -719,3 +719,10 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **四组合并 + 扩展**（commit e02296d）：`task` 收编 get_task_status / get_task_transcript / cancel_note；`cleanup` 收编 cleanup_note / cleanup_all；`process_media` 收编 export_transcript / merge_audio / diarize_media；`health_check` 扩展收编 preflight。
 - **不丢功能**：分段转写 / dry_run 先查后清 / need_provider / hf_token 蜜罐 / 运行中拒绝全保留。
 - **708 passed + ruff F/I-clean**（692 + 16：契约测试迁移 + 新增 test_138_batch.py 16 tests）；CI 名单 16 → 10。
+
+## Wave I 批 28（2026-08-24 · #32 转写器实例绑定修复，708→709 tests）
+
+用户报障 issue #32：无官方字幕、需走本地转写的视频 100% 失败。
+
+- **删除 note.py 悬空 @staticmethod**（commit 75571cb）：#134 死代码清理删 `delete_note` 时残留装饰器行，注释不打断绑定 → `_init_transcriber` 被误绑为静态方法，`self._init_transcriber()` 抛 `missing 1 required positional argument: 'self'`（本地复现 + 红绿验证）。回归测试打桩 `get_transcriber` 而非 `_init_transcriber` 本身，强制走 914 行真实绑定路径，防止同类回归再漏网。
+- **709 passed + ruff F/I-clean**（708 + 1）；docs/06 批 28 同步登记。
