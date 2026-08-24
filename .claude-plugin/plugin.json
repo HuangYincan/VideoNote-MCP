@@ -1,6 +1,6 @@
 {
   "name": "videonote",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Generate AI Markdown notes from video links (Bilibili/YouTube/Douyin/Kuaishou/local)",
   "author": {
     "name": "HuangYincan",
