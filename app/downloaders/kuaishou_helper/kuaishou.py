@@ -15,7 +15,6 @@ headers = {
     'Accept-Language': 'zh-CN,zh;q=0.9',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
-    # 'Cookie': 'did=web_9e8cfa4403000587b9e7d67233e6b04c; didv=1719811812378; kpf=PC_WEB; clientid=3; kpn=KUAISHOU_VISION',
     'Origin': 'https://www.kuaishou.com',
     'Pragma': 'no-cache',
     'Referer': 'https://www.kuaishou.com/',
@@ -28,7 +27,6 @@ headers = {
     'sec-ch-ua': '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
     'sec-ch-ua-mobile': '?0',
     'sec-ch-ua-platform': '"Windows"',
-    # 'Cookie':cookies.strip()
 }
 
 logger = get_logger(__name__)
@@ -87,7 +85,7 @@ class KuaiShou:
         return response.json()
 
     def run(self, url):
-        real_url = self._extract_kuaishou_link(url)
+        real_url = KuaiShou._extract_kuaishou_link(url)
         if not real_url:
             raise RuntimeError(f"快手视频 URL 解析失败 {url}")
 

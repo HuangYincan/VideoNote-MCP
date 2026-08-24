@@ -541,7 +541,7 @@ class NoteGenerator:
             provider=provider["type"],
             name=provider["name"],
         )
-        return GPTFactory().from_config(config)
+        return GPTFactory.from_config(config)
 
     def _get_downloader(self, platform: str) -> Downloader:
         """

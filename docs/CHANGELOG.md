@@ -726,3 +726,21 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 
 - **删除 note.py 悬空 @staticmethod**（commit 75571cb）：#134 死代码清理删 `delete_note` 时残留装饰器行，注释不打断绑定 → `_init_transcriber` 被误绑为静态方法，`self._init_transcriber()` 抛 `missing 1 required positional argument: 'self'`（本地复现 + 红绿验证）。回归测试打桩 `get_transcriber` 而非 `_init_transcriber` 本身，强制走 914 行真实绑定路径，防止同类回归再漏网。
 - **709 passed + ruff F/I-clean**（708 + 1）；docs/06 批 28 同步登记。
+
+## Wave I 批 29（2026-08-24 · 第 18 轮专项扫描 #139，709→712 tests）
+
+#32 修复后用户要求的专项全库扫描（#32 同族：装饰器/绑定回归）。
+
+- **三代理 + 双确定性 AST 扫描**：装饰器↔def 注释/代码分割全库 **0 命中**（#32 为唯一一次，已修复未复现）；历史清理 commit（#134 / 第 11-16 轮）删除侧**零残留**；真正风险在防回归机制缺失——mock 整体打桩掩盖绑定漂移（`_get_downloader`/`_update_status`/GPT/Bcut/Douyin 等 10+ 兄弟方法原样保留 #32 掩盖模式）+ CI 无真实转写路径兜底。
+- **批次 1 绑定守卫测试**（commit a3bcac4）：新增 `tests/test_binding_guard.py` 四守卫——装饰器间隔 / staticmethod 用 self / classmethod 缺 cls / 绑定敏感方法禁整体 mock；`_init_transcriber` 4 处整体 mock 迁移到 `get_transcriber` 层。
+- **批次 2 死代码/死注释清理**（commit c62a5e8）：whisper 类内 `is_torch_installed` 死静态方法、`transcriber_provider._init_transcriber` 改名 `_get_or_build_transcriber`、异常类 `code` 注解 `ProviderErrorEnum→int`、三处死注释（provider.py 旧下标序列化 / abogus 注释参数 / kuaishou 注释硬编码 Cookie）。
+- **712 passed + ruff F/I-clean**；docs/05 #139 登记；troubleshooting 补「任务 FAILED + Python 异常原文」症状条目（#32 用户侧表现无排障指引）。
+
+## Wave I 批 30（2026-08-24 · 第 18 轮建议后续实施 #139 C1-C4，713→714 tests）
+
+用户指示优化——第 18 轮登记的四项「建议后续」全部落地。
+
+- **批次 4 mock 下沉**（commit 97ed5ef）：#32 掩盖模式从 10+ 兄弟方法清除——`_get_downloader`/`_update_status`（删 mock）/`_transcribe_audio`/UniversalGPT/Bcut/`CookieConfigManager.get` 全部下沉到依赖层打桩；守卫 5（`inspect.getattr_static` descriptor 断言）兜底保留方法级 mock 的 Douyin/VideoReader/`_load_checkpoint`/`__upload_part`。
+- **批次 5 staticmethod 类名调用**（commit 87f1d6f）：11 组 16 处 `self.<staticmethod>()` 改类名调用（Kuaishou 测试 mock 升类级——类名调用下实例 mock 失效，测试变红恰好证明纪律生效）；守卫 6 AST 断言全库强制。
+- **批次 6 真实转写集成冒烟**（commit 76dd7d3）：`tests/test_integration_transcribe.py` 全库第一条真实转写执行路径（引擎实例化+模型加载+推理，本地 fast-whisper small 验证通过）；`@pytest.mark.integration` 默认跳过，ci.yml `workflow_dispatch` 手动 job 触发。
+- **714 passed + ruff F/I-clean**；docs/05 #139 C 组全部转 ✅。

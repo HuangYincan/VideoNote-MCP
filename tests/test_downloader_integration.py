@@ -232,7 +232,7 @@ class GenericDownloaderTest(unittest.TestCase):
     def _patch_ydl(self, captured, info):
         import app.downloaders.generic_downloader as mod
 
-        with mock.patch.object(mod.CookieConfigManager, "get", return_value=""):
+        with mock.patch("app.services.cookie_manager.read_json", return_value={}):
             return mock.patch.object(mod.yt_dlp, "YoutubeDL", side_effect=_fake_ydl(captured, info))
 
     def test_download_result_contract(self):
@@ -251,7 +251,7 @@ class GenericDownloaderTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             captured = {}
-            with mock.patch.object(mod.CookieConfigManager, "get", return_value=""), \
+            with mock.patch("app.services.cookie_manager.read_json", return_value={}), \
                  mock.patch.object(mod.yt_dlp, "YoutubeDL",
                                    side_effect=_fake_ydl(captured, {"id": "g1", "title": "t"}, download_ok=False)):
                 with self.assertRaises(RuntimeError):

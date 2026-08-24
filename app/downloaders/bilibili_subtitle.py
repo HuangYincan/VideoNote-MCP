@@ -126,7 +126,7 @@ class BilibiliSubtitleFetcher:
 
     def _fetch_body(self, subtitle_url: str) -> Optional[List[dict]]:
         try:
-            resp = requests.get(self._normalize_url(subtitle_url), headers=self._headers(), timeout=15)
+            resp = requests.get(BilibiliSubtitleFetcher._normalize_url(subtitle_url), headers=self._headers(), timeout=15)
             data = resp.json()
             return data.get("body") or []
         except Exception as e:

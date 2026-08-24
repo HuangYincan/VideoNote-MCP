@@ -50,13 +50,6 @@ class ProviderService:
             "base_url": row.get("base_url"),
             "api_key": row.get("api_key"),
             "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
-            # "name": row[1],
-            # "logo": row[2],
-            # "type": row[3],
-            # "api_key": row[4],
-            # "base_url": row[5],
-            # "enabled": row[6],
-            # "created_at": row[7],
         }
     @staticmethod
     def serialize_provider_safe(row: Provider) -> dict:
@@ -73,15 +66,6 @@ class ProviderService:
             "base_url": row.get("base_url"),
             "api_key":  ProviderService.mask_key(row.get("api_key")),
             "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
-
-            # "id": row[0],
-            # "name": row[1],
-            # "logo": row[2],
-            # "type": row[3],
-            # "api_key": ProviderService.mask_key(row[4]),
-            # "base_url": row[5],
-            # "enabled": row[6],
-            # "created_at": row[7],
         }
     @staticmethod
     def mask_key(key: str) -> str:

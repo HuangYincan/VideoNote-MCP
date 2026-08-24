@@ -68,7 +68,7 @@ class KuaiShouDownloader(Downloader, ABC):
         ks = KuaiShou()
         video_raw_info = ks.run(video_url)
         logger.debug("快手视频原始信息已获取")
-        photo_info = self._extract_photo(video_raw_info)
+        photo_info = KuaiShouDownloader._extract_photo(video_raw_info)
         video_id = photo_info["id"]
         # caption 可为 null（无文案/草稿）——裸 strip 会在下载开始前 AttributeError（#127 B5）
         title = (photo_info.get('caption') or '').strip().replace('\n', '').replace(' ', '_')[:50]
@@ -157,7 +157,7 @@ class KuaiShouDownloader(Downloader, ABC):
         os.makedirs(output_dir, exist_ok=True)
         ks = KuaiShou()
         video_raw_info = ks.run(video_url)
-        photo_info = self._extract_photo(video_raw_info)
+        photo_info = KuaiShouDownloader._extract_photo(video_raw_info)
         mp4_path = os.path.join(output_dir, f"{photo_info['id']}.mp4")
         self._download_mp4(photo_info, mp4_path, cancel_event=cancel_event)
         return mp4_path

@@ -86,7 +86,7 @@ class TranscriberCloseTest(unittest.TestCase):
         try:
             cls = mock.Mock(return_value=mock.Mock())
             cls.__name__ = "FakeTranscriber"  # logger 里访问 cls.__name__
-            tp._init_transcriber(key, cls, model_size="small")
+            tp._get_or_build_transcriber(key, cls, model_size="small")
             old.close.assert_called_once()
         finally:
             tp._transcribers[key] = saved

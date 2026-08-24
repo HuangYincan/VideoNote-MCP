@@ -41,7 +41,7 @@ class WhisperTranscriber(Transcriber):
         if device == 'cpu' or device is None:
             self.device = 'cpu'
         else:
-            self.device = "cuda" if self.is_cuda() else "cpu"
+            self.device = "cuda" if WhisperTranscriber.is_cuda() else "cpu"
             if device == 'cuda' and self.device == 'cpu':
                 logger.info('没有 cuda 使用 cpu进行计算')
 
@@ -55,10 +55,10 @@ class WhisperTranscriber(Transcriber):
         try:
             self.model = self._build_model(model_size, model_dir)
         except Exception as e:
-            if self._is_cache_error(e):
+            if WhisperTranscriber._is_cache_error(e):
                 # 自愈：损坏 / 截断 / 半成品 cache → 删掉对应 HF cache 重下一次
                 logger.warning(f"加载 whisper-{model_size} 失败（cache 损坏）：{e}；清理 cache 后重新下载")
-                self._purge_cache(model_dir, model_size)
+                WhisperTranscriber._purge_cache(model_dir, model_size)
             else:
                 # 网络瞬时故障/404/参数错误不 purge：删掉只会丢失可断点续传的
                 # 半截下载，等再次加载时自然重试（#124 B18）
@@ -126,14 +126,6 @@ class WhisperTranscriber(Transcriber):
             if path.exists():
                 logger.info(f"清理损坏 cache: {path}")
                 shutil.rmtree(path, ignore_errors=True)
-    @staticmethod
-    def is_torch_installed() -> bool:
-        try:
-            import torch  # noqa: F401  —— 可用性探测，不需使用
-            return True
-        except ImportError:
-            return False
-
     @staticmethod
     def is_cuda() -> bool:
         try:

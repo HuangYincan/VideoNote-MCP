@@ -4,6 +4,7 @@ on:
   push:
     branches: [main, dev]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   smoke:
@@ -64,3 +65,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "Smoke tests passed (Python 3.11/3.12/3.13)"
+
+  # 真实转写集成冒烟（docs/05 #139 C2）：仅手动触发（workflow_dispatch），
+  # 不进 push/PR 默认门禁——模型下载有网络/时长成本。跑 tests/test_integration_transcribe.py
+  # 的真实引擎实例化 + 模型加载 + 推理路径（其余测试全在 get_transcriber 之上打桩）。
+  integration-transcribe:
+    name: Integration transcribe (manual)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Real transcription smoke (fast-whisper tiny, model downloads on first run)
+        run: |
+          VIDEONOTE_RUN_INTEGRATION=1 uv run pytest tests/test_integration_transcribe.py -q

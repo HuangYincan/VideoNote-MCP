@@ -130,7 +130,7 @@ class VideoReader:
                     continue
 
                 if self.dedupe_enabled:
-                    frame_hash = self._calculate_file_md5(output_path)
+                    frame_hash = VideoReader._calculate_file_md5(output_path)
                     if frame_hash == last_hash:
                         os.remove(output_path)
                         continue

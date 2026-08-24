@@ -153,18 +153,18 @@ class BilibiliCommentFetcher:
             window_counts.items(), key=lambda kv: (-kv[1], kv[0])
         )[:DANMAKU_TOP_WINDOWS]
         dense = " ".join(
-            f"{self._fmt_ts(w)}-{self._fmt_ts(w + DANMAKU_WINDOW_SECONDS)}({c}条)"
+            f"{BilibiliCommentFetcher._fmt_ts(w)}-{BilibiliCommentFetcher._fmt_ts(w + DANMAKU_WINDOW_SECONDS)}({c}条)"
             for w, c in top_windows
         )
 
-        keywords = self._extract_keywords([text for _, text in danmaku])
+        keywords = BilibiliCommentFetcher._extract_keywords([text for _, text in danmaku])
         kw_str = "、".join(keywords)
 
         return f"弹幕高密度时段：{dense}\n高频弹幕：{kw_str}"
 
     def fetch_danmaku(self, video_url: str) -> dict:
         """抓取弹幕并聚合摘要。返回 {"ok", "source", "bvid", "cid", "danmaku_summary", "error"}。"""
-        video_url = self._normalize_video_url(video_url)
+        video_url = BilibiliCommentFetcher._normalize_video_url(video_url)
 
         bvid = extract_video_id(video_url, "bilibili")
         if not bvid:
@@ -199,7 +199,7 @@ class BilibiliCommentFetcher:
             }
 
         try:
-            danmaku = self._parse_danmaku_xml(xml_text)
+            danmaku = BilibiliCommentFetcher._parse_danmaku_xml(xml_text)
         except Exception as e:
             logger.warning(f"解析弹幕 XML 失败: {e}")
             return {
@@ -216,7 +216,7 @@ class BilibiliCommentFetcher:
 
     def fetch_comments(self, video_url: str, limit: int = 20) -> dict:
         """抓取热门评论。返回 {"ok", "source", "bvid", "aid", "comments", "error"}。"""
-        video_url = self._normalize_video_url(video_url)
+        video_url = BilibiliCommentFetcher._normalize_video_url(video_url)
 
         bvid = extract_video_id(video_url, "bilibili")
         if not bvid:
