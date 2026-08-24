@@ -742,5 +742,5 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 
 - **批次 4 mock 下沉**（commit 97ed5ef）：#32 掩盖模式从 10+ 兄弟方法清除——`_get_downloader`/`_update_status`（删 mock）/`_transcribe_audio`/UniversalGPT/Bcut/`CookieConfigManager.get` 全部下沉到依赖层打桩；守卫 5（`inspect.getattr_static` descriptor 断言）兜底保留方法级 mock 的 Douyin/VideoReader/`_load_checkpoint`/`__upload_part`。
 - **批次 5 staticmethod 类名调用**（commit 87f1d6f）：11 组 16 处 `self.<staticmethod>()` 改类名调用（Kuaishou 测试 mock 升类级——类名调用下实例 mock 失效，测试变红恰好证明纪律生效）；守卫 6 AST 断言全库强制。
-- **批次 6 真实转写集成冒烟**（commit 待回填）：`tests/test_integration_transcribe.py` 全库第一条真实转写执行路径（引擎实例化+模型加载+推理，本地 fast-whisper small 验证通过）；`@pytest.mark.integration` 默认跳过，ci.yml `workflow_dispatch` 手动 job 触发。
+- **批次 6 真实转写集成冒烟**（commit 76dd7d3）：`tests/test_integration_transcribe.py` 全库第一条真实转写执行路径（引擎实例化+模型加载+推理，本地 fast-whisper small 验证通过）；`@pytest.mark.integration` 默认跳过，ci.yml `workflow_dispatch` 手动 job 触发。
 - **714 passed + ruff F/I-clean**；docs/05 #139 C 组全部转 ✅。
