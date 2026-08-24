@@ -320,6 +320,44 @@ class TaskManifestTest(unittest.TestCase):
             self.cfg.mkdir(exist_ok=True)
             os.environ["VIDEONOTE_CONFIG_DIR"] = str(self.cfg)
 
+    def test_cleanup_all_refuses_note_cache_symlink_outside(self):
+        """#140 复扫 A1：note_cache（note_results 的兄弟目录）是指向外部的符号链接
+        → resolve 后越界，拒绝清空——复扫实测裸 _empty 会删外部目录里的文件。"""
+        outside = Path(tempfile.mkdtemp(prefix="vn_outside_cache_"))
+        keep = outside / "keep.json"
+        keep.write_text("{}", encoding="utf-8")
+        try:
+            cache_dir = self.note_dir.parent / "note_cache"
+            if cache_dir.exists():
+                cache_dir.rmdir()
+            os.symlink(outside, cache_dir)
+            res = cleanup_all_files()
+            self.assertTrue(keep.exists())
+            self.assertIn("note_cache", " ".join(res["kept_outside"]))
+            self.assertNotIn("note_cache", res["cleaned"])
+        finally:
+            cache_dir = self.note_dir.parent / "note_cache"
+            if cache_dir.is_symlink():
+                cache_dir.unlink()
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_cleanup_all_refuses_note_output_outside(self):
+        """#140 复扫 A1：NOTE_OUTPUT_DIR 指向数据根外 → note_results 拒绝清空。"""
+        outside = Path(tempfile.mkdtemp(prefix="vn_outside_note_"))
+        keep = outside / "keep.json"
+        keep.write_text("{}", encoding="utf-8")
+        try:
+            os.environ["NOTE_OUTPUT_DIR"] = str(outside)
+            res = cleanup_all_files()
+            self.assertTrue(keep.exists())
+            self.assertIn("note_results", " ".join(res["kept_outside"]))
+            self.assertNotIn("note_results", res["cleaned"])
+            # 数据根内的默认目录不受影响（越界只拒该目标本身）
+            self.assertIn("static/screenshots", res["cleaned"])
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+            os.environ["NOTE_OUTPUT_DIR"] = str(self.note_dir)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

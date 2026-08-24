@@ -12,6 +12,7 @@ from app.db.provider_dao import (
     update_provider,
 )
 from app.utils.logger import get_logger
+from app.utils.url_safety import sanitize_url
 
 logger = get_logger(__name__)
 
@@ -24,6 +25,9 @@ class ProviderService:
 
         允许 localhost/私网地址——自建网关/Ollama 等本地 LLM 是合法用例；
         key 外泄防护靠「base_url 变更使 key 失效」，而非禁私网。
+        **拒绝 user:pass@ 凭据**（#140 复扫 A3）：base_url 原样明文落库（SQLite 只加密
+        api_key），内嵌凭据会随库文件泄露——鉴权走 api_key 字段（OpenAI 兼容头），
+        不依赖 URL userinfo。
         """
         s = str(base_url or "").strip()
         if not s:
@@ -31,9 +35,14 @@ class ProviderService:
         try:
             parts = urlsplit(s)
         except ValueError as e:
-            raise ValueError(f"base_url 无法解析: {s}") from e
+            raise ValueError(f"base_url 无法解析: {sanitize_url(s)}") from e
         if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
-            raise ValueError(f"base_url 仅支持 http/https 且须包含主机名: {s}")
+            raise ValueError(f"base_url 仅支持 http/https 且须包含主机名: {sanitize_url(s)}")
+        if parts.username or parts.password:
+            raise ValueError(
+                f"base_url 不允许携带 user:pass@ 凭据（{sanitize_url(s)}）："
+                "用户信息会明文落入本地 SQLite——请改用 --api-key 传递鉴权"
+            )
         return s
 
     @staticmethod

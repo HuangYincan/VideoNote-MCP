@@ -134,6 +134,15 @@ def test_setup_environment_purges_then_fills_defaults():
     del os.environ["TRANSCRIBER_TYPE"]
 
 
+def test_setup_environment_creates_data_dir_0700(monkeypatch, tmp_path):
+    """#140 复扫 A3：数据目录创建即 0700（默认 umask 022 是 0755，同机可列 key/cookie 与笔记）。"""
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("VIDEONOTE_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")  # 防裸脚本副产物
+    setup_environment()
+    assert data_dir.stat().st_mode & 0o777 == 0o700
+
+
 def test_plugin_json_env_keys_match_mapping():
     """plugin.json 的 mcpServers env 键与 _USER_CONFIG_MAPPED_ENV 精确一致，
     且占位符指向存在的 userConfig 键（docs 审计 P1-3：漂移会把

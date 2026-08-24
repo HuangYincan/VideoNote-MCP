@@ -4,6 +4,10 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+import requests
+
+from app.utils.url_safety import assert_public_http_url
+
 
 def ytdlp_cancel_hook(cancel_event: Optional[threading.Event]) -> Callable[[dict], None]:
     """构造 yt-dlp progress_hooks：任务被取消时抛 TaskCancelledError。
@@ -39,20 +43,19 @@ def stream_download(
     连接 10s + 单次读 300s；瞬时网络错误（连接失败/超时/5xx）指数退避重试。
     取消事件在下载循环内检查（B1）：cancel 即抛 TaskCancelledError，不等读超时。
 
-    SSRF（#140）：url 来自平台 API 返回的资源地址（抖音 url_list / 快手 photoUrl），
-    入口 URL 校验覆盖不到——出站下载前置公网校验，拦截被注入/被污染的 API 返回内网地址
-    （如 169.254.169.254 元数据端点）。
+    SSRF（#140，复扫 A1 修复）：url 来自平台 API 返回的资源地址（抖音 url_list /
+    快手 photoUrl），入口 URL 校验覆盖不到——**禁用自动跟随重定向 + 手动逐跳跟进**：
+    每一跳（含 302 Location 目标）都先过 `assert_public_http_url` 再发出请求。
+    裸 `requests.get` 默认跟随会把公网入口 302 到内网/云元数据（169.254.169.254）
+    的第二跳实际发出（复扫已复现）。
     """
-    import requests
-
-    from app.utils.url_safety import assert_public_http_url
-
     if attempts <= 0:
         raise ValueError(f"attempts 必须为正整数，收到: {attempts}")
     assert_public_http_url(url)
     for i in range(attempts):
         try:
-            with requests.get(url, headers=headers, timeout=timeout, stream=True) as resp:
+            resp = _follow_redirects_public(url, headers=headers, timeout=timeout)
+            with resp:
                 resp.raise_for_status()
                 with open(output_path, "wb") as f:
                     for chunk in resp.iter_content(1024 * 1024):
@@ -76,6 +79,36 @@ def stream_download(
         time.sleep(base_delay * (2**i))
     # 循环内最后一次迭代必然 return 或 raise，正常流程到不了这里
     raise RuntimeError("stream_download 重试耗尽但未抛异常，属不可达分支")
+
+
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+_MAX_REDIRECTS = 10
+
+
+def _follow_redirects_public(url: str, *, headers, timeout) -> "requests.Response":
+    """逐跳公网校验地跟随重定向，返回最终响应（#140 复扫 A1）。
+
+    allow_redirects=False + 手动循环：requests 内部跟随无法在每跳发出前校验；
+    Location 目标先 assert_public_http_url 再请求，内网跳点（含相对跳转）在
+    发出前被拦截（抛 ValueError，非网络错误不重试）。
+    """
+    from urllib.parse import urljoin
+
+    redirects = 0
+    while True:
+        assert_public_http_url(url)
+        resp = requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+        if resp.status_code in _REDIRECT_STATUSES:
+            location = resp.headers.get("Location")
+            redirects += 1
+            resp.close()
+            if not location or redirects > _MAX_REDIRECTS:
+                raise requests.exceptions.TooManyRedirects(
+                    f"重定向超过 {_MAX_REDIRECTS} 次或缺少 Location"
+                )
+            url = urljoin(str(url), location)
+            continue
+        return resp
 
 
 def ytdlp_retry(fn, *args, attempts: int = 3, base_delay: float = 1.5, **kwargs) -> Any:

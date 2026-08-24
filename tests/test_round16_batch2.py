@@ -97,6 +97,61 @@ class StreamDownloadRetryTest(unittest.TestCase):
             stream_download("http://169.254.169.254/latest/meta-data/", "/tmp/x.mp4")
         self.assertIn("SSRF", str(cm.exception))
 
+    @staticmethod
+    def _redirect_resp(location: str):
+        resp = mock.Mock()
+        resp.status_code = 302
+        resp.headers = {"Location": location}
+        resp.close = mock.Mock()
+        return resp
+
+    def test_redirect_to_private_blocked_per_hop(self):
+        """#140 复扫 A1：302 → 内网/云元数据 的第二跳必须在**发出前**被拦截——
+        裸 requests.get 跟随重定向曾把公网入口打到 169.254.169.254。"""
+        calls = []
+
+        def _fake_get(url, **kwargs):
+            calls.append(url)
+            return self._redirect_resp("http://169.254.169.254/latest/meta-data/")
+
+        with mock.patch("requests.get", side_effect=_fake_get):
+            with self.assertRaises(ValueError) as cm:
+                stream_download("https://example.com/a.mp3", "/tmp/x.mp4")
+        self.assertIn("SSRF", str(cm.exception))
+        self.assertEqual(calls, ["https://example.com/a.mp3"])  # 第二跳从未发出
+
+    def test_public_redirect_chain_followed(self):
+        """公网 CDN 跳链（302 → 另一公网 CDN）照常下载，每跳先校验后请求。"""
+        calls = []
+
+        def _fake_get(url, **kwargs):
+            calls.append(url)
+            if len(calls) == 1:
+                return self._redirect_resp("https://cdn.example.com/b.mp3")
+            return _ok_response()
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "v.mp4"
+            with mock.patch("requests.get", side_effect=_fake_get):
+                stream_download("https://example.com/a.mp3", str(out))
+            self.assertTrue(out.exists())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1], "https://cdn.example.com/b.mp3")
+
+    def test_redirect_loop_capped(self):
+        """自跳转（Location 指回自己）不无限循环：超过 _MAX_REDIRECTS 抛 TooManyRedirects。"""
+        calls = []
+
+        def _fake_get(url, **kwargs):
+            calls.append(url)
+            return self._redirect_resp(url)
+
+        with mock.patch("requests.get", side_effect=_fake_get):
+            with self.assertRaises(requests.exceptions.TooManyRedirects):
+                stream_download("https://example.com/a.mp3", "/tmp/x.mp4")
+        # 第一次请求 + 10 次跳点（redirects>10 时抛）——共 11 次 get 后中止
+        self.assertEqual(len(calls), 11)
+
     def test_cancel_interrupts_download_loop(self):
         ev = threading.Event()
 

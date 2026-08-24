@@ -48,11 +48,33 @@ if DATABASE_URL.startswith("sqlite"):
         否则两个线程并发写会互锁抛 OperationalError: database is locked；
         WAL 让读写不互斥，busy_timeout 让短竞争自旋而非立刻失败。
         """
+        # 先收紧文件权限（#140 复扫 A3）：SQLite 默认 0666&~umask 建库（常见 0644）——
+        # 同机其他用户可读库中 providers（api_key 已 Fernet 加密，但 base_url 原样明文）。
+        # 放在 PRAGMA 前：-wal/-shm 文件复制主库权限（WAL pragma 在其后执行才正确继承）。
+        _restrict_sqlite_file_perms()
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA busy_timeout=30000")
         cur.execute("PRAGMA synchronous=NORMAL")
         cur.close()
+
+
+def _restrict_sqlite_file_perms() -> None:
+    """把 SQLite 数据文件权限收紧到 0600（失败只忽略——只读介质等场景由连接报错兜底）。
+
+    仅当 DATABASE_URL 是本地 sqlite 路径时生效（:memory: / 远程 URL 跳过）。
+    engine.url.database 是 SQLAlchemy 解析好的文件路径（相对/绝对均正确处理，
+    无需手工解析 URL——`sqlite:///relative` 不会误拼成根路径）。
+    """
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    db_path = getattr(engine.url, "database", None)
+    if not db_path or db_path == ":memory:":
+        return
+    try:
+        os.chmod(db_path, 0o600)
+    except OSError:
+        pass
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

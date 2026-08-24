@@ -108,8 +108,8 @@ from app.utils.logger import get_logger
 from app.utils.model_status import check_whisper_model_exists
 from app.utils.task_manifest import (
     cleanup_all_files,
+    cleanup_targets_inside_data_root,
     cleanup_task_files,
-    config_models_inside_data_root,
     get_task_paths,
     list_task_files,
     record_task_paths,
@@ -1319,9 +1319,10 @@ def cleanup(
     安全红线（与合并前一致）：单任务仍在运行（或排队中）时拒绝；全局清理有进行中/
     排队任务时拒绝、include_models=True 且仍有模型后台下载时拒绝（删 models/ 会打断
     下载线程，#123 A1）。数据目录**外**的便携笔记副本（用户指定 notes_dir 时常见）
-    不删除（沙箱红线），路径经 notes_kept_outside 列出，不会成为无人知晓的孤儿；
-    config/models 目录落在数据根外（环境变量指向外部/符号链接到外部）时同样拒绝
-    清理，路径经 kept_outside 列出（#140 A2）。
+    不删除（沙箱红线），路径经 notes_kept_outside 列出，不会成为无人知晓的孤儿。
+    全局清理的**所有**目标目录（note_results/static/covers/note_cache/config/models）
+    落在数据根外（环境变量指向外部/符号链接到外部）时同样拒绝清理，路径经
+    kept_outside 列出（#140，复扫 A1 修复）。
 
     参数冲突显式报错（避免静默忽略误导）：单任务模式传 include_config/include_models、
     全局模式传 include_note 都会 ValueError。
@@ -1356,13 +1357,23 @@ def cleanup(
     with _tasks_lock:
         running = [tid for tid, f in _task_futures.items() if not f.done()]
     if dry_run:
-        would_clean = [
-            "note_results/", "static/screenshots/", "static/cover/", "covers/",
-            "note_cache/", "video_tasks 全局索引",
-        ]
+        # 全部清理目标（含 base 五类）经 cleanup_targets_inside_data_root 判定——
+        # 落在数据根外时 dry_run 如实标注「将拒绝清理」（#140 复扫 A1）
+        inside = cleanup_targets_inside_data_root()
+        would_clean: List = []
         would_keep = ["logs/（运行日志，刻意不清）"]
-        # config/models 落在数据根外时 dry_run 如实标注「将拒绝清理」（#140 A2）
-        inside = config_models_inside_data_root()
+        for key, label in (
+            ("note_results", "note_results/"),
+            ("static/screenshots", "static/screenshots/"),
+            ("static/cover", "static/cover/"),
+            ("covers", "covers/"),
+            ("note_cache", "note_cache/"),
+        ):
+            if inside[key]:
+                would_clean.append(label)
+            else:
+                would_keep.append(f"{label}（数据根外，将拒绝清理）")
+        would_clean.append("video_tasks 全局索引")
         if include_config:
             if inside["config"]:
                 would_clean.append("config/（LLM key / cookie / 转写设置）")
@@ -1485,6 +1496,23 @@ def health_check(
         db_ok, db_err = False, str(e)
     checks.append(
         {"name": "db", "ok": db_ok, "detail": "" if db_ok else f"error: {db_err}"}
+    )
+
+    # 加密状态（#140 复扫 A4）：key 创建/加密失败会回退明文——如实暴露，防误以为已加密
+    from videonote_mcp.crypto import encrypt_status as _crypto_status
+
+    _crypto = _crypto_status()
+    checks.append(
+        {
+            "name": "encryption",
+            "ok": _crypto == "fernet",
+            "detail": (
+                "Fernet 加密正常"
+                if _crypto == "fernet"
+                else "Fernet key 创建/加密失败，已回退明文——敏感字段（API key / HF token）"
+                "当前明文落盘；检查 config/ 目录可写性后重启"
+            ),
+        }
     )
 
     try:

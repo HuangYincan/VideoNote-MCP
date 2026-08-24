@@ -19,7 +19,12 @@ import pytest
 _TEST_ROOT = Path(f"/tmp/videonote_pytest_{os.getpid()}")
 _TEST_ROOT.mkdir(parents=True, exist_ok=True)
 _TEST_DB = _TEST_ROOT / "video_note.db"
-_NOTE_OUTPUT_DIR = _TEST_ROOT / "note_results"
+# 数据目录与 NOTE_OUTPUT_DIR 同生产布局（config.setup_environment：note_results 在
+# 数据根内）——清理越界检查（#140 复扫 A1）按「数据根内才清」判定，
+# 兄弟目录布局会把所有测试的 note_results 误判为越界
+_TEST_DATA_DIR = _TEST_ROOT / "data"
+_TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
+_NOTE_OUTPUT_DIR = _TEST_DATA_DIR / "note_results"
 _NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # 每次都从干净库开始（上一个进程若异常退出会残留 -wal/-shm）
@@ -35,7 +40,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB}"
 os.environ.setdefault("NOTE_OUTPUT_DIR", str(_NOTE_OUTPUT_DIR))
 # 数据目录也隔离：server 模块级会 open(DATA_DIR/logs/mcp_stderr.log) 并 dup2(2)，
 # 不隔离会把测试 stderr 写进仓库 data/ 并污染 git 工作区（docs 审计 P2-6）
-os.environ.setdefault("VIDEONOTE_DATA_DIR", str(_TEST_ROOT / "data"))
+os.environ.setdefault("VIDEONOTE_DATA_DIR", str(_TEST_DATA_DIR))
 
 
 @pytest.fixture(scope="session", autouse=True)

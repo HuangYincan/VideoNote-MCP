@@ -48,6 +48,7 @@
 - `app/services/note.py`（任务文件夹、`IMAGE_OUTPUT_DIR`、material_only、便携笔记）
 - `app/services/provider.py` / `app/db/video_task_dao.py` / `app/db/models/video_tasks.py`
 - `app/services/transcriber_config_manager.py` / `app/utils/model_status.py` / `app/utils/path_helper.py` / `app/utils/logger.py`
+- `app/db/engine.py`（2026-08-25 #140 复扫 A3：SQLite 数据文件在 connect 事件 chmod 0600——上游无此安全收紧，同步时需人工合并）
 - `app/services/cookie_manager.py` / `proxy_config_manager.py` / **`app/utils/json_store.py`**（2026-08-17 #106：三个配置管理器改 `json_store` 安全读写——损坏不静默当空（warning + `.corrupt` 备份）、`_write` 原子化（tmp+replace+0600）；上游若带原生读写逻辑需人工合并）
 - `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py`
 - `app/downloaders/common.py` / `app/utils/url_parser.py` / `app/downloaders/douyin_downloader.py` / `app/downloaders/kuaishou_helper/kuaishou.py` / `app/downloaders/bilibili_subtitle.py`（2026-08-25 #140：出站请求逐跳 SSRF 校验——stream_download 入口校验 + 短链解析/视频页跟随/API 资源 URL 改走 `url_safety.public_get/public_head`；上游若带原生 requests 调用逻辑需人工合并）

@@ -19,7 +19,7 @@ from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.path_helper import get_data_dir
 from app.utils.url_parser import extract_bilibili_p_number, extract_video_id
-from app.utils.url_safety import sanitize_url
+from app.utils.url_safety import assert_public_http_url, sanitize_url
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,10 @@ class BilibiliDownloader(Downloader, ABC):
             output_dir=self.cache_data
         os.makedirs(output_dir, exist_ok=True)
 
+        # app 层自身的入口 SSRF 校验（#140 复扫 B1）：与 generic/youtube 下载器同款
+        # 内部防线——MCP 入口有 _guard_remote_url 兜底，公共 app/ 层函数不依赖外层
+        assert_public_http_url(video_url)
+
         output_path = os.path.join(output_dir, "%(id)s.%(ext)s")
 
         ydl_opts = {
@@ -137,6 +141,8 @@ class BilibiliDownloader(Downloader, ABC):
         if output_dir is None:
             output_dir = get_data_dir()
         os.makedirs(output_dir, exist_ok=True)
+        # 入口 SSRF 校验（#140 复扫 B1）：与 download() 同口径
+        assert_public_http_url(video_url)
         logger.debug("video_url=%s", sanitize_url(video_url))
         video_id=extract_video_id(video_url, "bilibili")
         if not video_id:
