@@ -504,7 +504,6 @@ class NoteGenerator:
             self._update_status(task_id, TaskStatus.FAILED, message=str(exc))
             return None
 
-    @staticmethod
     # ---------------- 私有方法 ----------------
 
     def _init_transcriber(self) -> Transcriber:
