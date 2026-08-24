@@ -754,3 +754,13 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **固定 tmp + 0644 收尾（A5 低）**：`_atomic_write_json`（server）/ `record_task_paths`（task_manifest）/ `_save_checkpoint`（universal_gpt）接入 `json_store._unique_tmp` + 创建即 0600——#133 A2 登记项落地。
 - **工作区卫生（A6 低）**：`.gitignore` 增加 `/node_modules/` 与 `/scripts/`（本地安全扫描脚本从 auth.json 读 key 并经命令行传 token，进程列表可见，不入库）。
 - 相关文件分叉登记进 `VENDOR.md` 冻结清单（common / url_parser / douyin_downloader / kuaishou_helper / bilibili_subtitle）。
+
+## Wave I 批 32（2026-08-25 · 安全复扫收尾 #141，723→738 tests）
+
+- **stream_download 逐跳校验（A1 高）**：#140 只校验入口 URL——复扫复现 `requests.get` 自动跟随把公网入口 302 到内网/云元数据（169.254.169.254）的第二跳实际发出。改为 `allow_redirects=False` + 手动 `_follow_redirects_public` 循环：每跳先 `assert_public_http_url` 再发出，跳数上限 10（超限 TooManyRedirects）。回归测试：私网跳点从头未发出 / 公网跳链照常 / 自跳转封顶。
+- **cleanup_all 全部目标越界检查（A2 高）**：#140 只覆盖 config/models——复扫实测 data/note_cache 符号链接到外部时裸 `_empty` 会删外部目录内容；NOTE_OUTPUT_DIR/IMAGE_OUTPUT_DIR 指向外部同理。统一 `cleanup_targets_inside_data_root()`（note_results/static/screenshots/static/cover/covers/note_cache/config/models 全部），越界拒绝清理并列 kept_outside；MCP cleanup dry_run 全目标准确标注。conftest 的 NOTE_OUTPUT_DIR 改数据根内布局（与 setup_environment 同构）。
+- **base_url 凭据与文件权限（A3 中）**：`_validate_base_url` 拒绝 user:pass@（明文落库面消除；鉴权走 api_key）；connect 事件 chmod SQLite 数据文件 0600（PRAGMA 前，-wal/-shm 继承）；`setup_environment` 数据目录创建即 0700。
+- **加密回退明文状态暴露（A4 中）**：`crypto.encrypt_status()`（fernet / plaintext-fallback）+ health_check `encryption` 检查项——key 创建/加密失败回退明文时用户可见，不再误以为已加密。
+- **BilibiliDownloader 入口 SSRF（B1 低）**：download()/download_video() 补 `assert_public_http_url`（与 generic/youtube 同款内部防线）。
+- **B2 残余面**：lightning（PYSEC-2026-3624）无修复版本，pyproject 已注记暂缓 diarization extra——保持禁用直至上游修复。
+- VENDOR.md 冻结清单新增 `app/db/engine.py`（0600 安全收紧）。
