@@ -735,3 +735,12 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **批次 1 绑定守卫测试**（commit a3bcac4）：新增 `tests/test_binding_guard.py` 四守卫——装饰器间隔 / staticmethod 用 self / classmethod 缺 cls / 绑定敏感方法禁整体 mock；`_init_transcriber` 4 处整体 mock 迁移到 `get_transcriber` 层。
 - **批次 2 死代码/死注释清理**（commit c62a5e8）：whisper 类内 `is_torch_installed` 死静态方法、`transcriber_provider._init_transcriber` 改名 `_get_or_build_transcriber`、异常类 `code` 注解 `ProviderErrorEnum→int`、三处死注释（provider.py 旧下标序列化 / abogus 注释参数 / kuaishou 注释硬编码 Cookie）。
 - **712 passed + ruff F/I-clean**；docs/05 #139 登记；troubleshooting 补「任务 FAILED + Python 异常原文」症状条目（#32 用户侧表现无排障指引）。
+
+## Wave I 批 30（2026-08-24 · 第 18 轮建议后续实施 #139 C1-C4，713→714 tests）
+
+用户指示优化——第 18 轮登记的四项「建议后续」全部落地。
+
+- **批次 4 mock 下沉**（commit 97ed5ef）：#32 掩盖模式从 10+ 兄弟方法清除——`_get_downloader`/`_update_status`（删 mock）/`_transcribe_audio`/UniversalGPT/Bcut/`CookieConfigManager.get` 全部下沉到依赖层打桩；守卫 5（`inspect.getattr_static` descriptor 断言）兜底保留方法级 mock 的 Douyin/VideoReader/`_load_checkpoint`/`__upload_part`。
+- **批次 5 staticmethod 类名调用**（commit 87f1d6f）：11 组 16 处 `self.<staticmethod>()` 改类名调用（Kuaishou 测试 mock 升类级——类名调用下实例 mock 失效，测试变红恰好证明纪律生效）；守卫 6 AST 断言全库强制。
+- **批次 6 真实转写集成冒烟**（commit 待回填）：`tests/test_integration_transcribe.py` 全库第一条真实转写执行路径（引擎实例化+模型加载+推理，本地 fast-whisper small 验证通过）；`@pytest.mark.integration` 默认跳过，ci.yml `workflow_dispatch` 手动 job 触发。
+- **714 passed + ruff F/I-clean**；docs/05 #139 C 组全部转 ✅。

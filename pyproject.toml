@@ -67,3 +67,8 @@ build-backend = "hatchling.build"
 # （如 app/db/models），glob 确保 app/、videonote_mcp/ 全部被打进 wheel
 # skills/** 与 release.yml 的 wheel 内容门禁对齐（wheel 自包含 Skill 资产）
 include = ["videonote_mcp/**", "app/**", "skills/**"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: 真实转写集成冒烟（引擎实例化+模型加载+推理）；默认跳过，VIDEONOTE_RUN_INTEGRATION=1 触发（docs/05 #139 C2）",
+]
