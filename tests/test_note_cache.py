@@ -316,12 +316,12 @@ class GenerateIntegrationTest(unittest.TestCase):
         self.cache = note_cache.cache_root()
         shutil.rmtree(self.cache, ignore_errors=True)
         # 清掉可能残留的同名任务目录（per-task 缓存会短路整条流水线）
-        for tid in ("cachehit00001", "cachemiss00001", "media000001", "media000002"):
+        for tid in ("cachehit00001", "cachemiss00001", "media000001", "media000002", "asrregg00001"):
             shutil.rmtree(NOTE_OUTPUT_DIR / tid, ignore_errors=True)
 
     def tearDown(self):
         shutil.rmtree(self.cache, ignore_errors=True)
-        for tid in ("cachehit00001", "cachemiss00001", "media000001", "media000002"):
+        for tid in ("cachehit00001", "cachemiss00001", "media000001", "media000002", "asrregg00001"):
             shutil.rmtree(NOTE_OUTPUT_DIR / tid, ignore_errors=True)
 
     def _gen(self):
@@ -379,6 +379,36 @@ class GenerateIntegrationTest(unittest.TestCase):
         entry = note_cache.cache_root() / "youtube-abcDEF12345" / f"transcript_{key}.json"
         self.assertTrue(entry.exists())
         self.assertEqual(json.loads(entry.read_text(encoding="utf-8"))["full_text"], "fresh")
+
+    def test_real_init_transcriber_binds_as_instance_method(self):
+        """#32：_init_transcriber 曾被悬空 @staticmethod 误绑（#134 死代码清理残留），
+        无字幕走本地转写时 self._init_transcriber() 抛
+        "missing 1 required positional argument: 'self'"。
+        这里打桩 get_transcriber（真实方法体内的调用）而非 _init_transcriber 本身，
+        强制走 914 行真实调用路径，验证实例方法绑定 + 惰性初始化完成。"""
+        gen = self._gen()
+        gen.transcriber_type = "fast-whisper"
+        gen.model_size = "small"
+        fake_transcriber = mock.Mock()
+        downloader = _fake_downloader("abcDEF12345")
+        transcript_dict = {
+            "language": "zh", "full_text": "fresh",
+            "segments": [{"start": 0, "end": 1, "text": "fresh"}],
+        }
+        with mock.patch.object(gen, "_get_downloader", return_value=downloader):
+            with mock.patch("app.services.note.get_transcriber", return_value=fake_transcriber) as gt:
+                with mock.patch.object(
+                    note_pipeline, "fetch_subtitles",
+                    side_effect=AssertionError("不应重复调用字幕 API"),
+                ), mock.patch.object(note_pipeline, "transcribe_audio", return_value=transcript_dict):
+                    result = gen.generate(
+                        video_url=self.YT_URL, platform="youtube",
+                        task_id="asrregg00001", material_only=True,
+                    )
+        # 真实 _init_transcriber 跑通：get_transcriber 收到实例属性，惰性初始化完成
+        gt.assert_called_once_with(transcriber_type="fast-whisper", model_size="small")
+        self.assertIs(gen.transcriber, fake_transcriber)
+        self.assertEqual(result.transcript.full_text, "fresh")
 
     def test_get_transcript_skip_subtitle_avoids_second_fetch(self):
         """_get_transcript(skip_subtitle=True) 直接走转写，不重复调 pipeline.fetch_subtitles。"""
