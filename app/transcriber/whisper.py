@@ -127,14 +127,6 @@ class WhisperTranscriber(Transcriber):
                 logger.info(f"清理损坏 cache: {path}")
                 shutil.rmtree(path, ignore_errors=True)
     @staticmethod
-    def is_torch_installed() -> bool:
-        try:
-            import torch  # noqa: F401  —— 可用性探测，不需使用
-            return True
-        except ImportError:
-            return False
-
-    @staticmethod
     def is_cuda() -> bool:
         try:
             if is_cuda_available():

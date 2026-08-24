@@ -45,7 +45,7 @@ _transcribers = {
 _cache_lock = threading.Lock()
 
 # 公共实例初始化函数
-def _init_transcriber(key: TranscriberType, cls, *args, **kwargs):
+def _get_or_build_transcriber(key: TranscriberType, cls, *args, **kwargs):
     # 已存在实例且模型尺寸不同 → 重建（否则切模型尺寸后拿到的仍是首次构造的实例，
     # CLI transcriber set 配置的 large-v3 永远不会生效）。模型在构造时即加载完毕。
     want_size = kwargs.get("model_size")
@@ -89,10 +89,10 @@ def _init_transcriber(key: TranscriberType, cls, *args, **kwargs):
 
 # 各类型获取方法
 def get_groq_transcriber():
-    return _init_transcriber(TranscriberType.GROQ, GroqTranscriber)
+    return _get_or_build_transcriber(TranscriberType.GROQ, GroqTranscriber)
 
 def get_whisper_transcriber(model_size="small", device="cuda"):
-    return _init_transcriber(TranscriberType.FAST_WHISPER, WhisperTranscriber, model_size=model_size, device=device)
+    return _get_or_build_transcriber(TranscriberType.FAST_WHISPER, WhisperTranscriber, model_size=model_size, device=device)
 
 def get_bcut_transcriber():
     # bcut 有请求级状态（task_id/上传分片/download_url），并发任务必须各用各的实例
@@ -106,11 +106,11 @@ def get_mlx_whisper_transcriber(model_size="small"):
     if not MLX_WHISPER_AVAILABLE:
         logger.warning("MLX Whisper 不可用，请确保在 Apple 平台且已安装 mlx_whisper")
         raise ImportError("MLX Whisper 不可用")
-    return _init_transcriber(TranscriberType.MLX_WHISPER, MLXWhisperTranscriber, model_size=model_size)
+    return _get_or_build_transcriber(TranscriberType.MLX_WHISPER, MLXWhisperTranscriber, model_size=model_size)
 
 def get_funasr_transcriber(device="cpu"):
     from app.transcriber.funasr_transcriber import FunASRTranscriber
-    return _init_transcriber(TranscriberType.FUNASR, FunASRTranscriber, device=device)
+    return _get_or_build_transcriber(TranscriberType.FUNASR, FunASRTranscriber, device=device)
 
 # 通用入口
 def get_transcriber(transcriber_type="fast-whisper", model_size=None, device="cuda"):
