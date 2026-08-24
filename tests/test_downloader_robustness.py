@@ -36,14 +36,14 @@ class KuaiShouFailureTest(unittest.TestCase):
 
     def test_no_cookies_raises(self):
         ks = self._mk()
-        with mock.patch.object(ks, "_extract_kuaishou_link", return_value="https://v.kuaishou.com/abc"), \
+        with mock.patch.object(KuaiShou, "_extract_kuaishou_link", return_value="https://v.kuaishou.com/abc"), \
              mock.patch.object(ks, "get_temp_cookies", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "cookies 解析失败"):
                 ks.run("x")
 
     def test_no_photo_id_raises(self):
         ks = self._mk()
-        with mock.patch.object(ks, "_extract_kuaishou_link", return_value="https://v.kuaishou.com/abc"), \
+        with mock.patch.object(KuaiShou, "_extract_kuaishou_link", return_value="https://v.kuaishou.com/abc"), \
              mock.patch.object(ks, "get_temp_cookies", return_value="did=1"), \
              mock.patch.object(ks, "get_photo_id", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "ID 解析失败"):
@@ -51,7 +51,7 @@ class KuaiShouFailureTest(unittest.TestCase):
 
     def test_no_details_raises_not_typeerror(self):
         ks = self._mk()
-        with mock.patch.object(ks, "_extract_kuaishou_link", return_value="https://v.kuaishou.com/abc"), \
+        with mock.patch.object(KuaiShou, "_extract_kuaishou_link", return_value="https://v.kuaishou.com/abc"), \
              mock.patch.object(ks, "get_temp_cookies", return_value="did=1"), \
              mock.patch.object(ks, "get_photo_id", return_value="ph1"), \
              mock.patch.object(ks, "get_video_details", return_value=None):
@@ -60,7 +60,7 @@ class KuaiShouFailureTest(unittest.TestCase):
 
     def test_empty_data_raises(self):
         ks = self._mk()
-        with mock.patch.object(ks, "_extract_kuaishou_link", return_value="https://v.kuaishou.com/abc"), \
+        with mock.patch.object(KuaiShou, "_extract_kuaishou_link", return_value="https://v.kuaishou.com/abc"), \
              mock.patch.object(ks, "get_temp_cookies", return_value="did=1"), \
              mock.patch.object(ks, "get_photo_id", return_value="ph1"), \
              mock.patch.object(ks, "get_video_details", return_value={"data": None}):
@@ -70,7 +70,7 @@ class KuaiShouFailureTest(unittest.TestCase):
     def test_success_returns_data(self):
         ks = self._mk()
         payload = {"data": {"visionVideoDetail": {"photo": {"id": "ph1"}}}}
-        with mock.patch.object(ks, "_extract_kuaishou_link", return_value="https://v.kuaishou.com/abc"), \
+        with mock.patch.object(KuaiShou, "_extract_kuaishou_link", return_value="https://v.kuaishou.com/abc"), \
              mock.patch.object(ks, "get_temp_cookies", return_value="did=1"), \
              mock.patch.object(ks, "get_photo_id", return_value="ph1"), \
              mock.patch.object(ks, "get_video_details", return_value=payload):

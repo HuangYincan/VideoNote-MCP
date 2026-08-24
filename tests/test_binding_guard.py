@@ -178,3 +178,42 @@ class BindingDescriptorGuardTest(unittest.TestCase):
             offenders, [],
             "绑定敏感方法被静态/类方法绑定（#32 同族）：\n" + "\n".join(offenders),
         )
+
+
+class StaticMethodCallSiteGuardTest(unittest.TestCase):
+    """守卫 6：@staticmethod 必须经类名调用，不得经 self.<name>()（#139 C3 约定）。
+
+    经 self 调用静态方法当前合法（首参对得上），但改绑（加 self 参数/改签名）时
+    调用点与 mock 不对称即崩——统一类名调用让绑定错误在定义处即红。
+    abogus.py 例外：JS 移植风格内部大量 self 调用 static/classmethod（约 40 处），
+    绑定由真实调用测试兜底，白名单处理（docs/05 #139 C3）。
+    """
+
+    def test_staticmethods_called_via_class_not_self(self):
+        offenders = []
+        for p in _py_files():
+            if p.name == "abogus.py":
+                continue
+            tree = _parse(p.read_text(encoding="utf-8"))
+            for cls_node in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+                # 本类定义的 staticmethod 名
+                static_names = {
+                    n.name for n in cls_node.body
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and "staticmethod" in _decorator_names(n)
+                }
+                if not static_names:
+                    continue
+                for fn in (n for n in ast.walk(cls_node) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+                    for call in ast.walk(fn):
+                        if not isinstance(call, ast.Call):
+                            continue
+                        func = call.func
+                        if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                                and func.value.id == "self" and func.attr in static_names):
+                            offenders.append(f"{p}:{call.lineno} self.{func.attr}()（应类名调用）")
+        self.assertEqual(
+            offenders, [],
+            "@staticmethod 经 self 调用（应改类名调用，见 docs/05 #139 C3）：\n"
+            + "\n".join(offenders),
+        )

@@ -309,7 +309,7 @@ class UniversalGPT(GPT):
                 temperature=self.temperature,
             )
         except Exception as exc:
-            if self._is_temperature_unsupported_error(exc):
+            if UniversalGPT._is_temperature_unsupported_error(exc):
                 # stdio 模式 stdout 被吞，print 用户看不到（#120）——走 logger 留痕
                 logger.warning(
                     "模型 %s 不支持自定义 temperature，改用默认值重试", self.model
@@ -325,7 +325,7 @@ class UniversalGPT(GPT):
             try:
                 return self._do_create(messages)
             except Exception as exc:
-                if attempt == self._max_retry_attempts - 1 or not self._is_retryable_error(exc):
+                if attempt == self._max_retry_attempts - 1 or not UniversalGPT._is_retryable_error(exc):
                     raise
                 sleep_seconds = self._retry_base_backoff * (2 ** attempt)
                 time.sleep(sleep_seconds)
@@ -373,7 +373,7 @@ class UniversalGPT(GPT):
                         self._save_checkpoint(checkpoint_key, source_signature, current_partials, "merge")
                     raise
 
-                content = self._first_choice_content(response)
+                content = UniversalGPT._first_choice_content(response)
                 if not content:
                     raise ValueError(
                         "模型返回空内容（可能被拒绝/内容过滤），finish_reason="
@@ -489,7 +489,7 @@ class UniversalGPT(GPT):
                     self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")
                 raise
 
-            content = self._first_choice_content(response)
+            content = UniversalGPT._first_choice_content(response)
             if not content:
                 raise ValueError(
                     "模型返回空内容（可能被拒绝/内容过滤），finish_reason="

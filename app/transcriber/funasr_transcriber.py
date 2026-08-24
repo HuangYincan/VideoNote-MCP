@@ -37,7 +37,7 @@ class FunASRTranscriber(Transcriber):
     def __init__(self, device: str = "cpu"):
         # cuda 探测回退（#127 B1）：transcriber_provider 默认传 device="cuda"，
         # 无 CUDA 机器（Mac 全系/无 N 卡 Linux）构造 AutoModel 即崩——与 whisper 同款兜底
-        self.device = self._resolve_device(device or "cpu")
+        self.device = FunASRTranscriber._resolve_device(device or "cpu")
         # 共享单例上的转写锁：funasr 模型并发调用需串行化
         self._lock = threading.Lock()
         self._model = None

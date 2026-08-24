@@ -85,7 +85,7 @@ class KuaiShou:
         return response.json()
 
     def run(self, url):
-        real_url = self._extract_kuaishou_link(url)
+        real_url = KuaiShou._extract_kuaishou_link(url)
         if not real_url:
             raise RuntimeError(f"快手视频 URL 解析失败 {url}")
 

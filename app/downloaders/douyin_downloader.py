@@ -147,7 +147,7 @@ class DouyinDownloader(Downloader):
         return url
 
     def extract_video_id(self, url: str) -> str:
-        video_url = self.find_url(url)
+        video_url = DouyinDownloader.find_url(url)
 
         if len(video_url):
             video_url = video_url[0]
