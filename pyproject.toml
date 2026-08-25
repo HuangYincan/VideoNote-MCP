@@ -1,6 +1,6 @@
 [project]
 name = "videonote"
-version = "0.1.18"
+version = "0.1.19"
 description = "VideoNote 能力 MCP 封装：视频链接 → AI Markdown 笔记（内嵌下载/转写/LLM 流水线，无需启动 FastAPI 后端）"
 readme = "README.md"
 # 上界 3.14：faster-whisper(ctranslate2) 等目前尚未提供 3.14 wheel
@@ -18,7 +18,8 @@ dependencies = [
     "mcp>=1.29.0,<2",
     "yt-dlp>=2025.3.31",
     "openai>=1.70.0",
-    "faster-whisper>=1.1.1",
+    # >=1.2.0：WhisperModel 才有 revision kwarg（#142 A2 固定模型版本；1.1.1 无此参，传了会 TypeError）
+    "faster-whisper>=1.2.0",
     "ffmpeg-python>=0.2.0",
     "huggingface_hub>=0.30.0",
     "httpx>=0.28.1",
@@ -29,7 +30,9 @@ dependencies = [
     "SQLAlchemy>=2.0.41",
     "youtube-transcript-api>=1.0.0",
     # 敏感信息机器级加密（docs/05 #29：providers.api_key / app_config hf_token 落盘加密）
-    "cryptography>=42.0.0",
+    # >=50.0.0：PYSEC-2026-3552 / CVE-2026-69247 已在 50.0.0 修复（当前代码只用到 Fernet，
+    # 直接触发面低，但依赖审计不应带已知漏洞）
+    "cryptography>=50.0.0",
     # 抖音 ABogus 签名（douyin_helper/abogus.py）
     "gmssl>=3.2.2",
     # 交互式 setup 向导（方向键选择/高亮；无则回退纯文本提示）
@@ -44,6 +47,9 @@ mlx = ["mlx-whisper"]
 # 音频降噪（可选，setup 勾选「启用降噪」时用）
 preprocess = ["noisereduce", "scipy"]
 # 说话人分离（可选，重依赖：torch + pyannote + HF_TOKEN + 模型授权）
+# lightning（pyannote.audio 依赖链）：PYSEC-2026-3624 / CVE-2026-58659（恶意 checkpoint RCE，
+# 上游尚无修复版本）——本应用不直接加载 Lightning checkpoint，该 extra 仅在无修复版本
+# 前暂缓启用 / 跟踪 lock 更新（2026-08-25 依赖审计）
 diarization = ["pyannote.audio>=3.1", "torch", "torchaudio"]
 # 中文转写（可选，重依赖：torch + funasr，Paraformer-zh + VAD + 标点）
 funasr = ["funasr", "torch"]

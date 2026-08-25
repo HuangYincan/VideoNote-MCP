@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from videonote_mcp import __version__ as _SERVER_VERSION
 from videonote_mcp.config import (
+    env_bool,
     env_int,
     env_or,
     get_app_config,
@@ -108,12 +109,13 @@ from app.utils.logger import get_logger
 from app.utils.model_status import check_whisper_model_exists
 from app.utils.task_manifest import (
     cleanup_all_files,
+    cleanup_targets_inside_data_root,
     cleanup_task_files,
     get_task_paths,
     list_task_files,
     record_task_paths,
 )
-from app.utils.url_safety import assert_public_http_url
+from app.utils.url_safety import assert_public_http_url, sanitize_url
 from videonote_mcp.provider_probe import probe_models
 
 logger = get_logger(__name__)
@@ -304,10 +306,18 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
 
 
 def _atomic_write_json(path: Path, payload) -> None:
-    """原子写 JSON（tmp + replace）：避免轮询读到半截文件（docs/05 #54）。"""
+    """原子写 JSON（tmp + replace + 唯一后缀 + 0600）：避免轮询读到半截文件（docs/05 #54）。
+
+    #140 A5（#133 A2 登记项收尾）：固定 `<path>.json.tmp` 在 CLI 与 MCP server 双进程
+    并发写时互相截断丢更新；与 json_store/status 同口径——_unique_tmp + 创建即 0600。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    from app.utils.json_store import _unique_tmp, _write_bytes_with_mode
+
+    tmp = _unique_tmp(path)
+    _write_bytes_with_mode(
+        tmp, json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8"), 0o600
+    )
     tmp.replace(path)
 
 
@@ -559,6 +569,51 @@ def _local_video_exists(video_url: str) -> bool:
     return _coerce_local_path(video_url).is_file()
 
 
+def _external_paths_allowed() -> bool:
+    """数据目录外路径开关（VIDEONOTE_ALLOW_EXTERNAL_PATHS，默认关，#142 A1）。
+
+    MCP 工具面可被 Agent 以任意输入驱动：本地文件输入会经转写把内容原样返回给
+    Agent（不可信内容/prompt 注入场景 = 本地文件外泄通道），输出目录可写到任意
+    位置。默认只允许数据目录内路径，越界调用报错并指明放行开关；开关打开后回到
+    「只提示不拦截」（docs/05 #45/#99 口径——放行即用户显式意图）。
+    """
+    return env_bool("VIDEONOTE_ALLOW_EXTERNAL_PATHS", False)
+
+
+def _destructive_cleanup_allowed() -> bool:
+    """全局清理 include_config/include_models 门禁（VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP，默认关，#142 A1）。
+
+    清理 config/（LLM key / cookie / 转写设置）与 models/（已下载模型）不可逆——
+    被注入的 Agent 可直接清空用户凭据与模型。默认拒绝执行（dry_run 如实标注将
+    拒绝），env 显式放行后仍受运行中任务 / 下载中模型 / 越界目录三层守卫约束。
+    """
+    return env_bool("VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP", False)
+
+
+def _inside_data_dir(p: Path) -> bool:
+    """路径是否在数据目录内。resolve 跟随符号链接：目录内软链到外部的路径算外。"""
+    try:
+        return p.resolve().is_relative_to(DATA_DIR.resolve())
+    except OSError:
+        return False
+
+
+def _guard_data_boundary(p: Path, what: str) -> None:
+    """数据目录边界校验（#142 A1）：目录外路径默认拒绝，开关放行后仅告警。
+
+    与 SSRF 守卫同构（默认收紧、显式放行）；报错消息带放行开关名，Agent 可转告用户。
+    """
+    if _external_paths_allowed():
+        return
+    if not _inside_data_dir(p):
+        raise ValueError(
+            f"{what} 必须在数据目录内（数据目录: {DATA_DIR}；收到: {p}）。"
+            "为防止本地文件被误读/误写，默认只允许数据目录内的路径；"
+            "确实需要时可设置 VIDEONOTE_ALLOW_EXTERNAL_PATHS=1"
+            "（或插件设置 allow_external_paths）后重启 MCP"
+        )
+
+
 def _guard_remote_url(url: str, platform: str) -> None:
     """非本地平台入口统一 SSRF 校验（#133 A1）。
 
@@ -669,6 +724,8 @@ def generate_note(
     - video_understanding / video_interval / grid_size: 视频理解（需多模态模型）；不传时用 setup ③ 配置的默认（默认关 / 6s）；显式传入始终覆盖；
     - screenshot + format 含 "screenshot": 插入图片，产出便携笔记 note.md + Assets/（相对引用）；不传时用 setup ③ 配置的默认（默认关）；显式传入始终覆盖；
     - notes_dir: 便携笔记的输出目录（可选；缺省 VIDEONOTE_NOTES_DIR 环境变量，再缺省 note_results/{task_id}/；支持 file:// URI）。
+      安全边界：数据目录内的笔记/本地视频路径始终允许；数据目录外默认拒绝（报错注明放行方式），
+      设 VIDEONOTE_ALLOW_EXTERNAL_PATHS=1（或插件设置 allow_external_paths）后放行并只提示。
 
     转写素材来源（无需配置，自动优先）：平台官方字幕（YouTube/B 站人工+自动字幕）总是
     先用——官方字幕准、快、不耗转写引擎；无字幕或获取失败才下载音轨走转写引擎
@@ -690,6 +747,8 @@ def generate_note(
         if not _local_video_exists(video_url):
             raise ValueError(f"本地文件不存在: {video_url}")
         video_url = str(_coerce_local_path(video_url))
+        # 本地文件入口边界（#142 A1）：默认只允许数据目录内文件，防本地文件外泄
+        _guard_data_boundary(Path(video_url), "本地视频路径")
     # SSRF 入口校验（#133 A1）：显式 platform=bilibili/kuaishou/douyin 曾绕过
     # 下载器内部的 #132 A1 检查（url_parser 短链解析另已内置守卫）
     _guard_remote_url(video_url, platform)
@@ -772,7 +831,9 @@ def generate_note(
     # 输出目录与输入文件同口径：file:// URI 先规整，否则 Path("file:///…") 会在 CWD 下建字面 `file:` 目录
     if notes_dir_out is not None:
         notes_dir_out = str(_coerce_local_path(notes_dir_out))
-    # 便携笔记可写数据目录外（用户显式意图），只提示不拦截（与 export/merge 同口径，docs/05 #45）
+        # 输出目录边界（#142 A1）：数据目录外默认拒绝（原 #99 只告警，扫描判定不够）
+        _guard_data_boundary(Path(notes_dir_out), "便携笔记输出目录（notes_dir）")
+    # 开关放行后：便携笔记可写数据目录外（用户显式意图），只提示不拦截（docs/05 #45）
     if notes_dir_out and not Path(notes_dir_out).resolve().is_relative_to(DATA_DIR.resolve()):
         logger.warning("generate_note 便携笔记输出到数据目录外: %s", notes_dir_out)
     # 布尔开关并入 format 列表：screenshot/link=True 时自动追加对应 format 项
@@ -846,6 +907,8 @@ def prepare_note_material(
         if not _local_video_exists(video_url):
             raise ValueError(f"本地文件不存在: {video_url}")
         video_url = str(_coerce_local_path(video_url))
+        # 本地文件入口边界（#142 A1）：默认只允许数据目录内文件，防本地文件外泄
+        _guard_data_boundary(Path(video_url), "本地视频路径")
     # SSRF 入口校验（#133 A1，与 generate_note 同口径）
     _guard_remote_url(video_url, platform)
 
@@ -1304,6 +1367,8 @@ def cleanup(
       static/cover / covers / note_cache 与 video_tasks 全局索引；include_config=True 时连
       config/（LLM key / cookie / 转写设置）一起清；include_models=True 时连 models/
       （已下载模型）一起清；**logs/ 刻意不清**（#121 C3：MCP 进程持有日志文件 fd）。
+      include_config / include_models 不可逆，**默认拒绝**：设 VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP=1
+      （或插件设置 allow_destructive_cleanup）后放行（dry_run 会标注「将拒绝清理」）。
     - dry_run=True：**先查后清**——单任务列出该任务占用的文件，全局预览
       would_clean/would_keep/running，都不删任何东西；确认后再去掉 dry_run 执行。
 
@@ -1311,6 +1376,9 @@ def cleanup(
     排队任务时拒绝、include_models=True 且仍有模型后台下载时拒绝（删 models/ 会打断
     下载线程，#123 A1）。数据目录**外**的便携笔记副本（用户指定 notes_dir 时常见）
     不删除（沙箱红线），路径经 notes_kept_outside 列出，不会成为无人知晓的孤儿。
+    全局清理的**所有**目标目录（note_results/static/covers/note_cache/config/models）
+    落在数据根外（环境变量指向外部/符号链接到外部）时同样拒绝清理，路径经
+    kept_outside 列出（#140，复扫 A1 修复）。
 
     参数冲突显式报错（避免静默忽略误导）：单任务模式传 include_config/include_models、
     全局模式传 include_note 都会 ValueError。
@@ -1342,18 +1410,53 @@ def cleanup(
     # ---- 全局清理 ----
     if include_note:
         raise ValueError("include_note 仅单任务清理生效（传 task_id 时）")
+    # 破坏性清理门禁（#142 A1）：删 key/cookie/转写配置与模型不可逆，默认拒绝执行
+    # （dry_run 走预览分支，只标注「将拒绝清理」，与数据根外标注同口径）
+    destructive = _destructive_cleanup_allowed()
+    if (include_config or include_models) and not destructive and not dry_run:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "删除配置/模型（include_config / include_models）不可逆，需显式授权："
+                "设置 VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP=1"
+                "（或插件设置 allow_destructive_cleanup）后重试",
+            },
+            ensure_ascii=False,
+        )
     with _tasks_lock:
         running = [tid for tid, f in _task_futures.items() if not f.done()]
     if dry_run:
-        would_clean = [
-            "note_results/", "static/screenshots/", "static/cover/", "covers/",
-            "note_cache/", "video_tasks 全局索引",
-        ]
-        if include_config:
-            would_clean.append("config/（LLM key / cookie / 转写设置）")
-        if include_models:
-            would_clean.append("models/（已下载模型）")
+        # 全部清理目标（含 base 五类）经 cleanup_targets_inside_data_root 判定——
+        # 落在数据根外时 dry_run 如实标注「将拒绝清理」（#140 复扫 A1）
+        inside = cleanup_targets_inside_data_root()
+        would_clean: List = []
         would_keep = ["logs/（运行日志，刻意不清）"]
+        for key, label in (
+            ("note_results", "note_results/"),
+            ("static/screenshots", "static/screenshots/"),
+            ("static/cover", "static/cover/"),
+            ("covers", "covers/"),
+            ("note_cache", "note_cache/"),
+        ):
+            if inside[key]:
+                would_clean.append(label)
+            else:
+                would_keep.append(f"{label}（数据根外，将拒绝清理）")
+        would_clean.append("video_tasks 全局索引")
+        if include_config:
+            if inside["config"] and destructive:
+                would_clean.append("config/（LLM key / cookie / 转写设置）")
+            elif inside["config"]:
+                would_keep.append("config/（需 VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP=1，将拒绝清理）")
+            else:
+                would_keep.append("config/（数据根外，将拒绝清理）")
+        if include_models:
+            if inside["models"] and destructive:
+                would_clean.append("models/（已下载模型）")
+            elif inside["models"]:
+                would_keep.append("models/（需 VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP=1，将拒绝清理）")
+            else:
+                would_keep.append("models/（数据根外，将拒绝清理）")
         if not include_config:
             would_keep.append("config/")
         if not include_models:
@@ -1466,6 +1569,23 @@ def health_check(
         db_ok, db_err = False, str(e)
     checks.append(
         {"name": "db", "ok": db_ok, "detail": "" if db_ok else f"error: {db_err}"}
+    )
+
+    # 加密状态（#140 复扫 A4）：key 创建/加密失败会回退明文——如实暴露，防误以为已加密
+    from videonote_mcp.crypto import encrypt_status as _crypto_status
+
+    _crypto = _crypto_status()
+    checks.append(
+        {
+            "name": "encryption",
+            "ok": _crypto == "fernet",
+            "detail": (
+                "Fernet 加密正常"
+                if _crypto == "fernet"
+                else "Fernet key 创建/加密失败，已回退明文——敏感字段（API key / HF token）"
+                "当前明文落盘；检查 config/ 目录可写性后重启"
+            ),
+        }
     )
 
     try:
@@ -1734,9 +1854,15 @@ def get_config(provider_id: str = "") -> str:
     cfg = mgr.get_config()
     ready = mgr.is_model_ready()
     cookie_platforms = sorted(CookieConfigManager().list_all().keys())
+    # providers：api_key 已掩码（get_all_providers_safe）；base_url 可能带 user:pass@
+    # （中转站鉴权常见形式）——剥离凭据后再进 MCP 输出（#140 A5）
+    providers = [
+        {**p, "base_url": sanitize_url(p.get("base_url"))}
+        for p in ProviderService.get_all_providers_safe()
+    ]
     result = {
         "app_config": safe,
-        "providers": ProviderService.get_all_providers_safe(),
+        "providers": providers,
         "transcriber": {
             **cfg,
             "ready": ready["ready"],
@@ -1957,7 +2083,9 @@ def _export_transcript(
         # 输出目录同输入文件：file:// URI 先规整，否则 Path("file:///…") 建字面 `file:` 目录（#107）
         out_dir = str(_coerce_local_path(out_dir))
     out = out_dir or str(task_dir / "gen")
-    # 数据目录外输出只提示不拦截：显式导出到别处是用户意图（docs/05 #45）
+    # 输出目录边界（#142 A1）：数据目录外默认拒绝；开关放行后回到「只提示不拦截」
+    if out_dir:
+        _guard_data_boundary(Path(out), "导出输出目录（out_dir）")
     if out_dir and not Path(out).resolve().is_relative_to(DATA_DIR.resolve()):
         logger.warning("process_media export 输出到数据目录外: %s", out)
 
@@ -2033,8 +2161,6 @@ def _merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
             # 输出目录同输入文件：file:// URI 先规整，否则 Path("file:///…") 建字面 `file:` 目录（#107）
             out_dir = str(_coerce_local_path(out_dir))
         out = out_dir or str(NOTE_OUTPUT_DIR / "merged")
-        if out_dir and not Path(out_dir).resolve().is_relative_to(DATA_DIR.resolve()):
-            logger.warning("merge_audio 输出到数据目录外: %s", out_dir)
         # 与 transcribe_media/extract_frames 同口径：file:// URI 先规整（app 层只认普通路径，
         # 直接传 file:// 会误报「文件不存在」）
         paths = [_coerce_local_path(f) for f in files]
@@ -2046,6 +2172,14 @@ def _merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
                 {"ok": False, "error": f"文件不存在或不是文件: {', '.join(not_files)}"},
                 ensure_ascii=False,
             )
+        # 输入/输出目录边界（#142 A1）：数据目录外默认拒绝（先报「不是文件/不存在」再报边界）
+        for p in paths:
+            _guard_data_boundary(p, "合并输入文件")
+        if out_dir:
+            _guard_data_boundary(Path(out), "合并输出目录（out_dir）")
+        # 开关放行后：数据目录外输出只提示不拦截（用户显式意图，docs/05 #45）
+        if out_dir and not Path(out_dir).resolve().is_relative_to(DATA_DIR.resolve()):
+            logger.warning("merge_audio 输出到数据目录外: %s", out_dir)
         merged = _merge([str(p) for p in paths], out_dir=out)
         return json.dumps({"ok": True, "path": Path(merged).as_uri()}, ensure_ascii=False)
     except Exception as exc:
@@ -2073,6 +2207,8 @@ def _diarize_media(audio_file: str, num_speakers: Optional[int] = None) -> str:
         p = _coerce_local_path(audio_file)
         if not p.is_file():
             raise FileNotFoundError(f"本地文件不存在: {audio_file}")
+        # 输入文件边界（#142 A1）：默认只允许数据目录内文件
+        _guard_data_boundary(p, "说话人分离输入文件")
         wav = normalize_to_wav(str(p))
         try:
             turns = diarize_audio(wav, hf_token=None, num_speakers=num_speakers)
@@ -2108,6 +2244,8 @@ def process_media(
       返回 {ok, task_id, formats: {fmt: "file://绝对路径"}, errors: {}}，供 Agent 直接 Read；
     - action="merge"：把多个音频/视频文件合并为一个 16kHz mono wav（FFmpeg concat）。
       需 files（至少 2 个本地路径，编码可不同）；out_dir 可选（缺省 note_results/merged/）。
+      同 generate_note 安全边界：本地文件/输出目录默认限数据目录内，数据目录外
+      需 VIDEONOTE_ALLOW_EXTERNAL_PATHS=1 放行（#142 A1）。
       返回 {ok, path: "file://绝对路径"} 或 {ok: false, error}；
     - action="diarize"：对音频做说话人分离（pyannote，可选依赖），返回说话人时间段。
       需 audio_file（本地音频/视频文件，自动归一化）；num_speakers 可选（缺省自动检测）。

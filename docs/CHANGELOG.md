@@ -744,3 +744,32 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **批次 5 staticmethod 类名调用**（commit 87f1d6f）：11 组 16 处 `self.<staticmethod>()` 改类名调用（Kuaishou 测试 mock 升类级——类名调用下实例 mock 失效，测试变红恰好证明纪律生效）；守卫 6 AST 断言全库强制。
 - **批次 6 真实转写集成冒烟**（commit 76dd7d3）：`tests/test_integration_transcribe.py` 全库第一条真实转写执行路径（引擎实例化+模型加载+推理，本地 fast-whisper small 验证通过）；`@pytest.mark.integration` 默认跳过，ci.yml `workflow_dispatch` 手动 job 触发。
 - **714 passed + ruff F/I-clean**；docs/05 #139 C 组全部转 ✅。
+
+## Wave I 批 31（2026-08-25 · 安全扫描收尾 #140，714→723 tests）
+
+- **SSRF 逐跳校验（A1 高）**：#133 A1 只覆盖入口 URL + 首跳 DNS——重定向目标与 API 返回资源直连 URL 全裸奔。`url_safety` 新增 `PublicOnlySession`（重写 `Session.send`——requests `resolve_redirects` 经 `self.send` 发下一跳，重写即覆盖初始 URL + 全部 Location 跳点）+ `public_get/public_head`，接入短链解析（b23.tv / v.douyin.com）、快手 `get_photo_id`、抖音 `extract_video_id`、B 站字幕 `_fetch_body`；`stream_download` 入口校验平台 API 返回的 `photoUrl/url_list` 直连资源。yt-dlp 内部重定向维持已知边界（网络侧 egress 白名单/代理为完整方案）。
+- **全局清理越界拒绝（A2 中）**：`cleanup_all_files` 的 config/models 目录经 `VIDEONOTE_CONFIG_DIR/VIDEONOTE_MODEL_DIR` 可指向数据根外或符号链接到外部——`_empty` 直接清空会误伤用户数据（config 含 key/cookie、models 重下成本高）。改为 `config_models_inside_data_root()` 复用 `_safe_resolve` 判定，越界拒绝清理并列入 `kept_outside`（与便携笔记副本同沙箱红线）；MCP cleanup dry_run 如实标注「将拒绝清理」。
+- **依赖审计（A3 中）**：`cryptography 49.0.0`（PYSEC-2026-3552 / CVE-2026-69247）→ `>=50.0.0`（uv.lock 同步）；`lightning 2.6.5`（PYSEC-2026-3624 / CVE-2026-58659）出自可选 diarization 依赖链，无修复版本——pyproject 注记暂缓启用该 extra。
+- **凭据展示脱敏（A4 低）**：`proxy set/list`（含环境变量代理）与 `providers list`/向导/`get_config` 的 base_url 统一过 `sanitize_url`——带 `user:pass@` 的 URL 不再把凭据打进终端/MCP 输出。
+- **固定 tmp + 0644 收尾（A5 低）**：`_atomic_write_json`（server）/ `record_task_paths`（task_manifest）/ `_save_checkpoint`（universal_gpt）接入 `json_store._unique_tmp` + 创建即 0600——#133 A2 登记项落地。
+- **工作区卫生（A6 低）**：`.gitignore` 增加 `/node_modules/` 与 `/scripts/`（本地安全扫描脚本从 auth.json 读 key 并经命令行传 token，进程列表可见，不入库）。
+- 相关文件分叉登记进 `VENDOR.md` 冻结清单（common / url_parser / douyin_downloader / kuaishou_helper / bilibili_subtitle）。
+
+## Wave I 批 32（2026-08-25 · 安全复扫收尾 #141，723→738 tests）
+
+- **stream_download 逐跳校验（A1 高）**：#140 只校验入口 URL——复扫复现 `requests.get` 自动跟随把公网入口 302 到内网/云元数据（169.254.169.254）的第二跳实际发出。改为 `allow_redirects=False` + 手动 `_follow_redirects_public` 循环：每跳先 `assert_public_http_url` 再发出，跳数上限 10（超限 TooManyRedirects）。回归测试：私网跳点从头未发出 / 公网跳链照常 / 自跳转封顶。
+- **cleanup_all 全部目标越界检查（A2 高）**：#140 只覆盖 config/models——复扫实测 data/note_cache 符号链接到外部时裸 `_empty` 会删外部目录内容；NOTE_OUTPUT_DIR/IMAGE_OUTPUT_DIR 指向外部同理。统一 `cleanup_targets_inside_data_root()`（note_results/static/screenshots/static/cover/covers/note_cache/config/models 全部），越界拒绝清理并列 kept_outside；MCP cleanup dry_run 全目标准确标注。conftest 的 NOTE_OUTPUT_DIR 改数据根内布局（与 setup_environment 同构）。
+- **base_url 凭据与文件权限（A3 中）**：`_validate_base_url` 拒绝 user:pass@（明文落库面消除；鉴权走 api_key）；connect 事件 chmod SQLite 数据文件 0600（PRAGMA 前，-wal/-shm 继承）；`setup_environment` 数据目录创建即 0700。
+- **加密回退明文状态暴露（A4 中）**：`crypto.encrypt_status()`（fernet / plaintext-fallback）+ health_check `encryption` 检查项——key 创建/加密失败回退明文时用户可见，不再误以为已加密。
+- **BilibiliDownloader 入口 SSRF（B1 低）**：download()/download_video() 补 `assert_public_http_url`（与 generic/youtube 同款内部防线）。
+- **B2 残余面**：lightning（PYSEC-2026-3624）无修复版本，pyproject 已注记暂缓 diarization extra——保持禁用直至上游修复。
+- VENDOR.md 冻结清单新增 `app/db/engine.py`（0600 安全收紧）。
+
+## Wave I 批 33（2026-08-25 · 安全扫描收尾 #142，738→771 tests）
+
+- **MCP 本地文件/危险操作边界（A1，中高）**：新增 `VIDEONOTE_ALLOW_EXTERNAL_PATHS`（默认关）——`generate_note`/`prepare_note_material` 本地视频入口、`notes_dir`/`process_media` 的 `out_dir`/`files`/`audio_file` 落在数据目录外默认拒绝（报错指明放行方式；放行后回到「只告警」）；新增 `VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP`（默认关）——`cleanup(include_config/include_models)` 拒绝执行（dry_run 标注「将拒绝清理」）；边界按 `resolve()` 判定（目录内软链外部同拒）；两开关进插件 userConfig（allow_external_paths / allow_destructive_cleanup）。原「只提示不拦截」（#45/#99）升级为默认拒绝、显式放行。
+- **模型 revision 固定（A2，中）**：内置 15 个模型仓库钉 main commit（2026-08-25 逐仓库查询）；faster-whisper 走 `WhisperModel(revision=)`（pyproject 下限 `>=1.1.1` → `>=1.2.0`）、mlx 走 `snapshot_download(revision=)`；映射单一来源（mlx 归并 `model_status.py`、whisper 归并 `whisper_models.BUILTIN_WHISPER_REVISIONS`；自定义/直通不固定）。
+- **弹幕 XML 安全解析（A3，中）**：B 站弹幕 XML 解析前拒绝 `<!DOCTYPE`/`<!ENTITY`（3.11–3.13 无 forbid_dtd 参数，预扫等价）+ 响应体积上限 20 MiB（decode 前检查）。
+- **YouTube EJS 开关（A4，中低）**：`VIDEONOTE_YTDLP_EJS`（默认开——2026+ YouTube JS challenge 硬要求）控制 `remote_components` 远程脚本拉取；组件名不可经 env 注入。
+- **MD5 FIPS 兼容（A6，低）**：帧去重 MD5 加 `usedforsecurity=False`。
+- **文档**：docs/05 #142 条目、docs/06 登记、04 手册「本地文件与安全边界」章节 + 环境变量表、skills tools.md 同步、VENDOR.md 冻结清单（whisper/mlx_whisper_transcriber/model_status/youtube_downloader）、00 基线更新（771 tests）。

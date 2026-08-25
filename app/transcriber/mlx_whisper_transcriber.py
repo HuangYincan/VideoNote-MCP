@@ -9,24 +9,17 @@ from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
+from app.utils.model_status import MLX_REPO_MAP as MLX_MODEL_MAP
+from app.utils.model_status import MLX_REPO_REVISIONS
 from app.utils.path_helper import get_model_dir
 
 logger = get_logger(__name__)
 
-
 # mlx-community 上的 Whisper 仓库命名不统一：常规版本是 'whisper-{size}-mlx'，
 # turbo 例外没有 -mlx 后缀。直接拼 'mlx-community/whisper-{size}' 会 404。
 # 已用 https://huggingface.co/api/models?author=mlx-community&search=whisper 核对过。
-MLX_MODEL_MAP = {
-    "tiny": "mlx-community/whisper-tiny-mlx",
-    "base": "mlx-community/whisper-base-mlx",
-    "small": "mlx-community/whisper-small-mlx",
-    "medium": "mlx-community/whisper-medium-mlx",
-    "large-v1": "mlx-community/whisper-large-v1-mlx",
-    "large-v2": "mlx-community/whisper-large-v2-mlx",
-    "large-v3": "mlx-community/whisper-large-v3-mlx",
-    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
-}
+# 映射与固定 revision 单一来源在 app/utils/model_status.py（CLI 下载/健康检查共用，
+# 避免两处漂移）；此处仅别名保持 import 兼容。
 
 
 def resolve_mlx_repo_id(model_size: str) -> str:
@@ -75,6 +68,8 @@ class MLXWhisperTranscriber(Transcriber):
                 self.model_name,
                 local_dir=self.model_path,
                 local_dir_use_symlinks=False,
+                # 固定 revision（#142 A2）：同尺寸模型跨时间下载内容一致；升级时显式更新
+                revision=MLX_REPO_REVISIONS.get(self.model_size),
             )
             logger.info("模型下载完成")
         

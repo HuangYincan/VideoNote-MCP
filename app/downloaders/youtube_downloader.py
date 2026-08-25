@@ -54,6 +54,26 @@ def _apply_browser_headers(ydl_opts: dict) -> dict:
     return ydl_opts
 
 
+def _ejs_enabled() -> bool:
+    """EJS 远程组件开关（VIDEONOTE_YTDLP_EJS，默认开，#142 A4）。
+
+    yt-dlp 从 GitHub（yt-dlp/yt-dlp-ejs 发布资产）按需拉取 YouTube challenge solver
+    脚本并交本地 node 执行——运行时外部代码拉取面：yt-dlp 对组件做 hash 白名单校验，
+    风险已大幅缓解，但与「零外部代码」仍有差距（上游发布被攻破/供应链替换的残余面）。
+    默认开启：2026+ 的 YouTube JS challenge 是硬性要求，关闭则此类视频直接失败
+    （无 challenge 的视频不受影响）。网络侧建议只放行 github.com 等明确域名，
+    或固定 Node/脚本版本后显式关闭本开关。
+    """
+    v = os.environ.get("VIDEONOTE_YTDLP_EJS")
+    if v is None or not v.strip():
+        return True
+    # 本地解析（不 import videonote_mcp：vendored 层单向依赖纪律）；垃圾值回退默认（开）
+    v = v.strip().lower()
+    if v in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
 def _apply_js_challenge(ydl_opts: dict) -> dict:
     """YouTube 2026+ 的 JS challenge（签名/n 求解）硬性要求（2026-08-19 实测）：
 
@@ -62,9 +82,15 @@ def _apply_js_challenge(ydl_opts: dict) -> dict:
     - node runtime：自动检测在 uvx 隔离环境下不可靠（node 在 PATH 也找不到），
       显式指定 `{'node': {}}` 才生效。
     缺任一条件，即使有登录 cookie + 代理也会失败。
+    VIDEONOTE_YTDLP_EJS=0 关闭远程组件拉取（见 _ejs_enabled，#142 A4）。
     """
-    ydl_opts['remote_components'] = ['ejs:github']
-    ydl_opts['js_runtimes'] = {'node': {}}
+    if _ejs_enabled():
+        # 只允许 yt-dlp 内置的白名单组件名（远端来源与 hash 校验由 yt-dlp 负责）；
+        # 不接受 env 拼进任意组件名——否则环境变量会成为注入外部代码的入口
+        ydl_opts['remote_components'] = ['ejs:github']
+        ydl_opts['js_runtimes'] = {'node': {}}
+    else:
+        logger.info("VIDEONOTE_YTDLP_EJS=0：不启用 EJS 远程组件（带 JS challenge 的 YouTube 视频将失败）")
     return ydl_opts
 
 

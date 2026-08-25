@@ -634,13 +634,13 @@ class NotesDirWarningTest(unittest.TestCase):
         ), mock.patch("videonote_mcp.server._pool.submit", return_value=done):
             return server.generate_note("https://example.com/v", notes_dir=notes_dir)
 
-    def test_outside_data_dir_warns(self):
+    def test_outside_data_dir_rejected_by_default(self):
+        """#142 A1：数据目录外 notes_dir 默认拒绝（#99 只告警被扫描判定不够）。"""
         out_dir = tempfile.mkdtemp(prefix="vn_notes_out_")
         try:
-            with self.assertLogs("videonote_mcp.server", level="WARNING") as logs:
-                resp = self._submit_generate(out_dir)
-            self.assertTrue(any("数据目录外" in m for m in logs.output))
-            self.assertIn('"status": "PENDING"', resp)  # 不拦截，任务照常提交
+            with self.assertRaises(ValueError) as cm:
+                self._submit_generate(out_dir)
+            self.assertIn("VIDEONOTE_ALLOW_EXTERNAL_PATHS", str(cm.exception))
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
@@ -652,17 +652,30 @@ class NotesDirWarningTest(unittest.TestCase):
         )
         self.assertIn('"status": "PENDING"', resp)
 
-    def test_env_fallback_warns_once(self):
-        # 缺省链 notes_dir → app_config → VIDEONOTE_NOTES_DIR 解析后仍校验
+    def test_outside_data_dir_warns_when_allowed(self):
+        """开关放行后回到 #99 口径：只提示不拦截。"""
+        out_dir = tempfile.mkdtemp(prefix="vn_notes_out_")
+        try:
+            with mock.patch.dict(
+                "os.environ", {"VIDEONOTE_ALLOW_EXTERNAL_PATHS": "1"}, clear=False
+            ):
+                with self.assertLogs("videonote_mcp.server", level="WARNING") as logs:
+                    resp = self._submit_generate(out_dir)
+            self.assertTrue(any("数据目录外" in m for m in logs.output))
+            self.assertIn('"status": "PENDING"', resp)
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    def test_env_fallback_rejected_by_default(self):
+        # 缺省链 notes_dir → app_config → VIDEONOTE_NOTES_DIR 解析后仍校验（#142 A1）
         out_dir = tempfile.mkdtemp(prefix="vn_notes_env_")
         try:
             with mock.patch.object(server, "get_app_config", return_value={}), mock.patch.dict(
                 "os.environ", {"VIDEONOTE_NOTES_DIR": out_dir}, clear=False
             ):
-                with self.assertLogs("videonote_mcp.server", level="WARNING") as logs:
-                    resp = self._submit_generate(None)
-            self.assertTrue(any("数据目录外" in m for m in logs.output))
-            self.assertIn('"status": "PENDING"', resp)
+                with self.assertRaises(ValueError) as cm:
+                    self._submit_generate(None)
+            self.assertIn("VIDEONOTE_ALLOW_EXTERNAL_PATHS", str(cm.exception))
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
@@ -820,7 +833,10 @@ class ExportFormatsWhitelistTest(unittest.TestCase):
 
 
 class MergeAudioFileUriTest(unittest.TestCase):
-    """merge_audio 的 file:// 规整：app 层只认普通路径，直接传 URI 曾误报「文件不存在」（#105）。"""
+    """merge_audio 的 file:// 规整：app 层只认普通路径，直接传 URI 曾误报「文件不存在」（#105）。
+
+    输入/输出都在数据目录外（tempfile），需放行开关（#142 A1）——本类只测 URI 规整语义。
+    """
 
     def test_file_uri_paths_coerced_before_merge(self):
         with tempfile.TemporaryDirectory() as td:
@@ -828,7 +844,9 @@ class MergeAudioFileUriTest(unittest.TestCase):
             b = Path(td) / "b.mp3"
             a.write_bytes(b"x")
             b.write_bytes(b"x")
-            with mock.patch(
+            with mock.patch.dict(
+                "os.environ", {"VIDEONOTE_ALLOW_EXTERNAL_PATHS": "1"}, clear=False
+            ), mock.patch(
                 "app.services.merge.merge_audio", return_value=str(Path(td) / "merged.wav")
             ) as m:
                 resp = json.loads(server.process_media(action="merge", files=[a.as_uri(), b.as_uri()], out_dir=td))
@@ -841,7 +859,9 @@ class MergeAudioFileUriTest(unittest.TestCase):
             b = Path(td) / "b.mp3"
             a.write_bytes(b"x")
             b.write_bytes(b"x")
-            with mock.patch(
+            with mock.patch.dict(
+                "os.environ", {"VIDEONOTE_ALLOW_EXTERNAL_PATHS": "1"}, clear=False
+            ), mock.patch(
                 "app.services.merge.merge_audio", return_value=str(Path(td) / "merged.wav")
             ) as m:
                 resp = json.loads(server.process_media(action="merge", files=[str(a), str(b)], out_dir=td))
@@ -928,7 +948,15 @@ class DiarizeMediaIsFileTest(unittest.TestCase):
 
 class OutputDirFileUriTest(unittest.TestCase):
     """输出目录类参数（notes_dir / out_dir）的 file:// 规整：URI 直传曾按字面
-    `file:` 相对目录创建垃圾目录，且「数据目录外」检查基于未规整值误报（#107）。"""
+    `file:` 相对目录创建垃圾目录，且「数据目录外」检查基于未规整值误报（#107）。
+
+    用例输出目录都在数据目录外（tempfile），需放行开关（#142 A1）——本类只测 URI 规整语义。
+    """
+
+    def _env_allow(self):
+        return mock.patch.dict(
+            "os.environ", {"VIDEONOTE_ALLOW_EXTERNAL_PATHS": "1"}, clear=False
+        )
 
     @staticmethod
     def _submit_generate_capture(notes_dir):
@@ -946,13 +974,15 @@ class OutputDirFileUriTest(unittest.TestCase):
     def test_generate_note_file_uri_notes_dir_coerced(self):
         with tempfile.TemporaryDirectory() as td:
             out_dir = Path(td) / "my notes"  # 空格 → URI 编码 %20，必须 unquote
-            kwargs = self._submit_generate_capture(out_dir.as_uri())
+            with self._env_allow():
+                kwargs = self._submit_generate_capture(out_dir.as_uri())
         self.assertEqual(kwargs["notes_dir"], str(out_dir))
         self.assertFalse(Path("file:").exists(), "字面 file: 目录不应存在（URI 未规整的回归标志）")
 
     def test_generate_note_plain_notes_dir_unchanged(self):
         with tempfile.TemporaryDirectory() as td:
-            kwargs = self._submit_generate_capture(td)
+            with self._env_allow():
+                kwargs = self._submit_generate_capture(td)
         self.assertEqual(kwargs["notes_dir"], td)
 
     def test_merge_audio_file_uri_out_dir_coerced(self):
@@ -962,7 +992,7 @@ class OutputDirFileUriTest(unittest.TestCase):
             a.write_bytes(b"x")
             b.write_bytes(b"x")
             out_dir = Path(td) / "out dir"
-            with mock.patch(
+            with self._env_allow(), mock.patch(
                 "app.services.merge.merge_audio", return_value=str(Path(td) / "merged.wav")
             ) as m:
                 resp = json.loads(server.process_media(action="merge", files=[str(a), str(b)], out_dir=out_dir.as_uri()))
@@ -974,7 +1004,10 @@ class OutputDirFileUriTest(unittest.TestCase):
         td = tempfile.mkdtemp(prefix="vn_out_uri_")
         try:
             out_dir = Path(td) / "sub dir"
-            resp = json.loads(server.process_media(action="export", task_id=tid, formats=["srt"], out_dir=out_dir.as_uri()))
+            with mock.patch.dict(
+                "os.environ", {"VIDEONOTE_ALLOW_EXTERNAL_PATHS": "1"}, clear=False
+            ):
+                resp = json.loads(server.process_media(action="export", task_id=tid, formats=["srt"], out_dir=out_dir.as_uri()))
             self.assertTrue(resp["ok"])
             # 输出落在规整后的目录（export 文件名是 transcript.srt），而不是 CWD 下字面 file: 目录
             self.assertTrue((out_dir / "transcript.srt").exists())
@@ -1198,11 +1231,11 @@ class CleanupAllDryRunTest(unittest.TestCase):
         self.assertTrue(any(k.startswith("logs/") for k in resp["would_keep"]))
 
     def test_dry_run_respects_include_flags(self):
+        # #142 A1：无 VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP 时 config/models 标注「将拒绝清理」
         resp = json.loads(server.cleanup(include_config=True, include_models=True, dry_run=True))
-        self.assertIn("config/（LLM key / cookie / 转写设置）", resp["would_clean"])
-        self.assertIn("models/（已下载模型）", resp["would_clean"])
-        self.assertNotIn("config/", resp["would_keep"])
-        self.assertNotIn("models/", resp["would_keep"])
+        self.assertNotIn("config/（LLM key / cookie / 转写设置）", resp["would_clean"])
+        self.assertNotIn("models/（已下载模型）", resp["would_clean"])
+        self.assertTrue(any("VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP" in k for k in resp["would_keep"]))
 
     def test_dry_run_without_include_keeps_kept_lists(self):
         resp = json.loads(server.cleanup(dry_run=True))
@@ -1288,10 +1321,15 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
             self._restore(old)
 
     def test_cleanup_all_refuses_while_model_downloading(self):
-        """include_models=True 且仍有模型后台下载 → 拒绝，避免删 models/ 打断下载（#123 A1）。"""
+        """include_models=True 且仍有模型后台下载 → 拒绝，避免删 models/ 打断下载（#123 A1）。
+
+        #142 A1 后 include_models 本身默认拒绝——本用例先放行破坏性开关，单测下载中守卫。
+        """
         old = self._inject({})
         try:
-            with mock.patch.object(server, "cleanup_all_files") as m, \
+            with mock.patch.dict(
+                "os.environ", {"VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP": "1"}, clear=False
+            ), mock.patch.object(server, "cleanup_all_files") as m, \
                  mock.patch.object(server.dl_state, "downloading_keys", return_value=["small", "mlx-tiny"]):
                 resp = json.loads(server.cleanup(include_models=True))
             self.assertFalse(resp["ok"])
@@ -1302,11 +1340,13 @@ class CleanupRunningTaskGuardTest(unittest.TestCase):
             self._restore(old)
 
     def test_cleanup_all_models_allowed_when_download_idle(self):
-        """无模型下载中时 include_models=True 正常放行。"""
+        """无模型下载中时 include_models=True 正常放行（放行开关打开后，#142 A1）。"""
         old = self._inject({})
         try:
-            with mock.patch.object(server, "cleanup_all_files",
-                                   return_value={"cleaned": [], "kept": []}) as m, \
+            with mock.patch.dict(
+                "os.environ", {"VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP": "1"}, clear=False
+            ), mock.patch.object(server, "cleanup_all_files",
+                                 return_value={"cleaned": [], "kept": []}) as m, \
                  mock.patch.object(server.dl_state, "downloading_keys", return_value=[]):
                 resp = json.loads(server.cleanup(include_models=True))
             self.assertTrue(resp["ok"])  # 成功路径带 ok:true（#126 C2）
@@ -1601,6 +1641,22 @@ class GetConfigTest(unittest.TestCase):
                 server.get_config()
         m_probe.assert_not_called()
 
+    def test_providers_base_url_credentials_stripped(self):
+        """#140 A5：base_url 带 user:pass@（中转站鉴权常见）→ get_config 返回脱敏值。"""
+        with ExitStack() as st:
+            for p in self._patch_reads():
+                st.enter_context(p)
+            st.enter_context(mock.patch.object(
+                server.ProviderService, "get_all_providers_safe",
+                return_value=[
+                    {"id": "p1", "name": "x", "api_key": "sk-***",
+                     "base_url": "https://user:secret@relay.example.com/v1"},
+                ],
+            ))
+            resp = json.loads(server.get_config())
+        self.assertEqual(resp["providers"][0]["base_url"], "https://relay.example.com/v1")
+        self.assertNotIn("user:secret", json.dumps(resp))
+
     def test_probe_ok_reports_models(self):
         with ExitStack() as st:
             for p in self._patch_reads():
@@ -1684,13 +1740,16 @@ class SsrfEntryGuardTest(unittest.TestCase):
         self.assertNotIn("SSRF", str(cm.exception))
 
     def test_local_path_not_blocked(self):
-        # 本地路径在 local 分支分流，不触 SSRF 守卫（缺 provider 也轮不到它）
-        with tempfile.TemporaryDirectory() as td:
-            f = Path(td) / "clip.mp4"
-            f.write_bytes(b"x")
+        # 本地路径在 local 分支分流，不触 SSRF 守卫（缺 provider 也轮不到它）；
+        # 文件放数据目录内（#142 A1 边界放行），验证继续走到 provider 解析
+        f = server.DATA_DIR / "ssrf_local_clip.mp4"
+        f.write_bytes(b"x")
+        try:
             with self.assertRaises(ValueError) as cm:
                 server.generate_note(str(f))
-        self.assertIn("provider_id", str(cm.exception))
+            self.assertIn("provider_id", str(cm.exception))
+        finally:
+            f.unlink(missing_ok=True)
 
 
 class ExplicitProviderKeyCheckTest(unittest.TestCase):

@@ -50,6 +50,7 @@ from app.db.provider_dao import seed_default_providers
 from app.services.provider import ProviderService
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.services.transcriber_config_manager import TranscriberConfigManager
+from app.utils.url_safety import sanitize_url
 
 init_db()
 seed_default_providers()
@@ -101,7 +102,11 @@ def _download_whisper(size: str) -> None:
     """在终端下载 fast-whisper 模型（阻塞，带进度条）。"""
     from huggingface_hub import snapshot_download
 
-    from app.transcriber.whisper_models import is_local_target, resolve_whisper_model
+    from app.transcriber.whisper_models import (
+        is_local_target,
+        resolve_whisper_model,
+        resolve_whisper_revision,
+    )
     from app.utils.path_helper import get_model_dir
 
     target = resolve_whisper_model(size)
@@ -109,12 +114,23 @@ def _download_whisper(size: str) -> None:
     if is_local_target(target):
         print(f"（{target} 为本地路径，无需下载）", file=sys.stdout)
         return
+    # 固定 revision（#142 A2）：与运行时加载（whisper._build_model）指向同一快照，
+    # 否则 CLI 下 main、运行时下 main 变化快照，cache 内出现两份且加载取到新内容
+    revision = resolve_whisper_revision(size)
     print(f"正在下载 whisper-{size}（{target}）…", file=sys.stdout)
-    snapshot_download(repo_id=target, cache_dir=model_dir, tqdm_class=_tqdm_bar())
+    snapshot_download(
+        repo_id=target, revision=revision, cache_dir=model_dir, tqdm_class=_tqdm_bar()
+    )
     # 让 faster-whisper 真正加载（确认模型可用）
     from faster_whisper import WhisperModel
 
-    WhisperModel(model_size_or_path=target, device="cpu", compute_type="int8", download_root=model_dir)
+    WhisperModel(
+        model_size_or_path=target,
+        device="cpu",
+        compute_type="int8",
+        download_root=model_dir,
+        revision=revision,
+    )
     print(f"✓ whisper-{size} 下载完成", file=sys.stdout)
 
 
@@ -126,7 +142,7 @@ def _download_mlx_model(size: str) -> None:
     """
     from huggingface_hub import snapshot_download
 
-    from app.utils.model_status import MLX_REPO_MAP
+    from app.utils.model_status import MLX_REPO_MAP, MLX_REPO_REVISIONS
     from app.utils.path_helper import get_model_dir
 
     repo_id = MLX_REPO_MAP.get(size)
@@ -135,6 +151,8 @@ def _download_mlx_model(size: str) -> None:
     print(f"正在下载 mlx-whisper-{size}（{repo_id}）…", file=sys.stdout)
     snapshot_download(
         repo_id=repo_id,
+        # 固定 revision（#142 A2）：与 MLXWhisperTranscriber 下载同一快照，见 model_status
+        revision=MLX_REPO_REVISIONS.get(size),
         local_dir=os.path.join(get_model_dir("mlx-whisper"), repo_id),
         tqdm_class=_tqdm_bar(),
     )
@@ -262,7 +280,7 @@ def _wizard_llm(inq) -> None:
                 suffix = f"  ⤷默认={default_model}" if default_model else ""
                 choices.append(
                     {
-                        "name": f"{p['id']:<10} {p['name']:<12} key={'✓已填' if p['api_key'] else '空'}  {p['base_url']}{suffix}",
+                        "name": f"{p['id']:<10} {p['name']:<12} key={'✓已填' if p['api_key'] else '空'}  {sanitize_url(p['base_url'])}{suffix}",
                         "value": ("open", p["id"]),
                     }
                 )
@@ -1018,7 +1036,7 @@ def _setup_cli_fallback() -> None:
         for i, p in enumerate(provs, 1):
             dm = get_app_config().get(f"default_model:{p['id']}")
             suffix = f"  默认={dm}" if dm else ""
-            print(f"   {i}) {p['id']}  key={'已填' if p['api_key'] else '空'}  {p['base_url']}{suffix}", file=sys.stdout)
+            print(f"   {i}) {p['id']}  key={'已填' if p['api_key'] else '空'}  {sanitize_url(p['base_url'])}{suffix}", file=sys.stdout)
         sel = _ask("   选择要管理的 [1-%d]，0 跳过" % len(provs), default="0")
         if sel.isdigit() and 1 <= int(sel) <= len(provs):
             pid = provs[int(sel) - 1]["id"]
@@ -1221,7 +1239,7 @@ def _providers_cli(argv) -> None:
             key = f"已填 {p['api_key']}" if p["api_key"] else "空"
             dm = get_app_config().get(f"default_model:{p['id']}")
             suffix = f"  默认={dm}" if dm else ""
-            print(f"{p['id']:10} {p['name']:12} key={key}  base_url={p['base_url']}{suffix}", file=sys.stdout)
+            print(f"{p['id']:10} {p['name']:12} key={key}  base_url={sanitize_url(p['base_url'])}{suffix}", file=sys.stdout)
     elif opts.cmd == "test":
         provider = ProviderService.get_provider_by_id(opts.provider_id)
         if not provider:
@@ -1402,16 +1420,15 @@ def _proxy_cli(argv) -> None:
             None,
         )
         if cfg["enabled"] and cfg["url"]:
-            from app.utils.url_safety import sanitize_url
-
             print(f"代理: {sanitize_url(cfg['url'])}（配置文件启用）", file=sys.stdout)
         elif env:
-            print(f"代理: {env}（环境变量）", file=sys.stdout)
+            # 环境变量代理可能带 user:pass@ —— 同样脱敏后再展示（#140 A5）
+            print(f"代理: {sanitize_url(env)}（环境变量）", file=sys.stdout)
         else:
             print("代理: 未配置（yt-dlp 下载直连；fake-ip 代理环境下会失败）", file=sys.stdout)
     elif opts.cmd == "set":
         mgr.update_config(True, opts.url)
-        print(f"✅ 代理已启用: {opts.url}", file=sys.stdout)
+        print(f"✅ 代理已启用: {sanitize_url(opts.url)}", file=sys.stdout)
     elif opts.cmd == "off":
         mgr.update_config(False)
         print("✅ 代理已关闭（回退环境变量）", file=sys.stdout)

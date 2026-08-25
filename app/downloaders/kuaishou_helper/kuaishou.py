@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
+from app.utils.url_safety import public_get
 
 KUAISHOU_API_BASE = 'https://www.kuaishou.com/graphql'
 KUAISHOU_URL = "https://www.kuaishou.com/"
@@ -55,7 +56,8 @@ class KuaiShou:
         return url[0]
 
     def get_photo_id(self, url):
-        response = requests.get(url, allow_redirects=True, headers=self.header, timeout=(5, 10))
+        # public_get 逐跳校验（#140）：快手短链跟随重定向的每一跳都先过公网校验
+        response = public_get(url, headers=self.header, timeout=(5, 10))
         real_url = response.url
         # 提取short—video/后面的id
         pattern = re.compile(r'short-video/(\w+)')

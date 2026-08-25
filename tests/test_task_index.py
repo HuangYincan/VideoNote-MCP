@@ -65,6 +65,15 @@ class MigrationTest(unittest.TestCase):
         # 已有新列再跑 init_db 不报错
         init_db()
 
+    def test_db_file_permissions_0600(self):
+        """#140 复扫 A3：SQLite 数据文件收紧 0600——同机其他用户不再可读库中
+        providers（api_key 已加密，但 base_url 等字段原样明文）。"""
+        from app.db.engine import get_engine
+
+        with get_engine().connect():
+            pass  # connect 事件内 chmod
+        self.assertEqual(os.stat(_DB).st_mode & 0o777, 0o600)
+
 
 class DaoTest(unittest.TestCase):
     @classmethod

@@ -53,6 +53,34 @@ class CryptoTest(unittest.TestCase):
         self.assertEqual(crypto.decrypt_value(a), "key-a")
         self.assertEqual(crypto.decrypt_value(b), "key-b")
 
+    def test_encrypt_status_defaults_fernet(self):
+        self.assertEqual(crypto.encrypt_status(), "fernet")
+
+    def test_key_creation_failure_marks_status(self):
+        """#140 复扫 A4：Fernet key 创建失败 → _ensure_key 回退 None、值明文落盘，
+        状态标记为 plaintext-fallback（health_check 据此如实暴露）。"""
+        try:
+            crypto._plaintext_fallback = False
+            key_dir = Path(self._td.name)
+            key_dir.chmod(0o500)  # 只读：os.open(O_CREAT) 创建 key 失败
+            try:
+                self.assertEqual(crypto.encrypt_value("sk-ro"), "sk-ro")  # 回退明文
+                self.assertEqual(crypto.encrypt_status(), "plaintext-fallback")
+            finally:
+                key_dir.chmod(0o700)
+        finally:
+            crypto._plaintext_fallback = False
+
+    def test_encrypt_exception_marks_status(self):
+        """Fernet 加密自身异常 → 值原样返回 + 状态标记。"""
+        try:
+            crypto._plaintext_fallback = False
+            with mock.patch("cryptography.fernet.Fernet.encrypt", side_effect=Exception("boom")):
+                self.assertEqual(crypto.encrypt_value("sk-x"), "sk-x")
+            self.assertEqual(crypto.encrypt_status(), "plaintext-fallback")
+        finally:
+            crypto._plaintext_fallback = False
+
 
 class AppConfigEncryptionTest(unittest.TestCase):
     """app_config.json 的 hf_token 落盘加密 + 读回解密（docs/05 #29）。"""

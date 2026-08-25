@@ -18,7 +18,7 @@ from app.models.audio_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
-from app.utils.url_safety import sanitize_url
+from app.utils.url_safety import public_head, sanitize_url
 
 logger = get_logger(__name__)
 from dotenv import load_dotenv
@@ -152,7 +152,9 @@ class DouyinDownloader(Downloader):
         if len(video_url):
             video_url = video_url[0]
             try:
-                response = requests.head(video_url, allow_redirects=True, timeout=(5, 10))
+                # public_head 逐跳校验（#140）：入口 URL 公网后重定向到内网的
+                # Location 在发出前拦截（入口校验覆盖不到 redirect 目标）
+                response = public_head(video_url, timeout=(5, 10))
                 url = response.url
             except Exception:
                 return ""

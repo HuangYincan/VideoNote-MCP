@@ -41,6 +41,9 @@ _USER_CONFIG_MAPPED_ENV = (
     "VIDEONOTE_DEFAULT_EXPORT_FORMATS",
     "VIDEONOTE_MAX_WORKERS",
     "VIDEONOTE_STDERR_LOG_MAX_MB",
+    # 安全边界开关（#142 A1）：数据目录外路径 / 破坏性清理，默认关，插件设置显式放行
+    "VIDEONOTE_ALLOW_EXTERNAL_PATHS",
+    "VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP",
 )
 
 
@@ -184,7 +187,9 @@ def setup_environment() -> Path:
     """解析数据目录并设置环境变量（仅在没有显式设置时填充默认值）。返回数据根目录 Path。"""
     _purge_placeholder_env()
     data_dir = Path(os.environ.get("VIDEONOTE_DATA_DIR") or _default_data_dir()).expanduser().resolve()
-    data_dir.mkdir(parents=True, exist_ok=True)
+    # 数据目录 0700（#140 复扫 A3）：目录内含 key/cookie/转写配置与笔记，
+    # 默认 umask 022 下 mkdir 0755 同机可列——创建即收紧
+    data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     note_results = data_dir / "note_results"
     screenshots = data_dir / "static" / "screenshots"
@@ -192,7 +197,7 @@ def setup_environment() -> Path:
     models_dir = data_dir / "models"
     logs_dir = data_dir / "logs"
     for d in (note_results, screenshots, config_dir, models_dir, logs_dir):
-        d.mkdir(parents=True, exist_ok=True)
+        d.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     # 数据根目录本身（logger / path_helper / downloaders 会读）
     os.environ.setdefault("VIDEONOTE_DATA_DIR", str(data_dir))

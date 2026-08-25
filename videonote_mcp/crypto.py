@@ -17,12 +17,33 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _PREFIX = "enc:"
+
+# 加密回退明文的状态（#140 复扫 A4）：Fernet key 创建/加密失败时按「不丢配置」取舍
+# 回退明文——但「落盘加密」因此不是硬保证。状态经 encrypt_status() 暴露给
+# health_check，用户不会误以为已加密。
+_plaintext_fallback = False
+_plaintext_fallback_lock = threading.Lock()
+
+
+def _mark_plaintext_fallback(reason: str) -> None:
+    global _plaintext_fallback
+    with _plaintext_fallback_lock:
+        if not _plaintext_fallback:
+            _plaintext_fallback = True
+            logger.warning("加密已回退明文（本进程后续敏感字段将明文落盘）: %s", reason)
+
+
+def encrypt_status() -> str:
+    """本进程加密状态：fernet（正常）/ plaintext-fallback（已回退，勿以为已加密）。"""
+    with _plaintext_fallback_lock:
+        return "plaintext-fallback" if _plaintext_fallback else "fernet"
 
 
 def _key_path() -> Path:
@@ -77,6 +98,7 @@ def _ensure_key() -> Optional[bytes]:
         logger.warning("fernet.key 并发创建冲突且重读失败")
         return None
     except Exception as exc:  # noqa: BLE001 —— 加密不可用不阻断，回退明文
+        _mark_plaintext_fallback(f"生成 fernet.key: {exc}")
         logger.warning("生成 fernet.key 失败，回退明文存储: %s", exc)
         return None
 
@@ -94,6 +116,7 @@ def encrypt_value(plaintext: Optional[str]) -> Optional[str]:
         token = Fernet(key).encrypt(plaintext.encode("utf-8")).decode("utf-8")
         return _PREFIX + token
     except Exception as exc:  # noqa: BLE001 —— 加密失败回退明文，保证写入不丢
+        _mark_plaintext_fallback(f"加密值: {exc}")
         logger.warning("加密失败，回退明文: %s", exc)
         return plaintext
 

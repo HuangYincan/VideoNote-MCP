@@ -180,12 +180,25 @@ class TestTranscriberCli:
 class TestProxyCli:
     def test_set_and_list(self, capsys):
         cli._proxy_cli(["set", "http://127.0.0.1:7897"])
-        assert "代理已启用: http://127.0.0.1:7897" in _cli_out(capsys)
+        # 展示走 sanitize_url：userinfo/query 剥离，无 path 时补尾斜杠（#140 A5）
+        assert "代理已启用: http://127.0.0.1:7897/" in _cli_out(capsys)
         capsys.readouterr()
         cli._proxy_cli(["list"])
         out = _cli_out(capsys)
-        assert "http://127.0.0.1:7897" in out
+        assert "http://127.0.0.1:7897/" in out
         assert "配置文件启用" in out
+
+    def test_env_proxy_credentials_masked(self, capsys, monkeypatch):
+        # 环境变量代理可能带 user:pass@：list 只留 host，不落凭据（#140 A5）。
+        # 先关掉配置文件启用态（前序用例可能留下 enabled 配置），确保走 env 分支
+        cli._proxy_cli(["off"])
+        capsys.readouterr()
+        monkeypatch.setenv("HTTPS_PROXY", "http://user:secret@127.0.0.1:7897")
+        cli._proxy_cli(["list"])
+        out = _cli_out(capsys)
+        assert "user:secret" not in out
+        assert "http://127.0.0.1:7897/" in out
+        assert "环境变量" in out
 
     def test_list_masks_credentials(self, capsys):
         # 代理 URL 可带 user:pass@：list 只留 host，不落凭据（与 _apply_proxy 日志同口径）

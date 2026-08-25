@@ -41,6 +41,9 @@ DANMAKU_WINDOW_SECONDS = 30
 DANMAKU_TOP_WINDOWS = 5
 # 高频关键词展示条数
 DANMAKU_TOP_KEYWORDS = 10
+# 弹幕 XML 最大体积（字节，#142 A3）：正常视频弹幕远小于此值；超限视为异常/恶意响应，
+# 拒绝解析——不设上限时恶意响应可撑爆内存/解析耗时（数据源是网络，非可信输入）
+DANMAKU_MAX_XML_BYTES = 20 * 1024 * 1024
 
 
 class BilibiliCommentFetcher:
@@ -105,7 +108,17 @@ class BilibiliCommentFetcher:
 
     @staticmethod
     def _parse_danmaku_xml(xml_text: str) -> List[Tuple[float, str]]:
-        """解析弹幕 XML，返回 [(time_sec, text), ...]。XML 损坏时抛异常，由调用方捕获。"""
+        """解析弹幕 XML，返回 [(time_sec, text), ...]。XML 损坏时抛异常，由调用方捕获。
+
+        #142 A3：弹幕 XML 来自网络（B 站接口），是不可信输入——ElementTree 默认解析器
+        允许 DTD/实体，恶意响应可触发 XXE（读本地文件/内网探测）或实体扩展 DoS。
+        防御：① 解析前拒绝任何 DOCTYPE/ENTITY 声明——无 DTD 的文档无法定义实体，
+        等价于 forbid_dtd/forbid_entities（Python 3.11–3.13 的 C 版 XMLParser 尚不支持
+        这两个参数，3.14 才引入）；② 响应体积上限见 DANMAKU_MAX_XML_BYTES（fetch 侧检查）。
+        """
+        upper = xml_text.upper()
+        if "<!DOCTYPE" in upper or "<!ENTITY" in upper:
+            raise ValueError("弹幕 XML 含 DTD/实体声明，拒绝解析")
         root = ElementTree.fromstring(xml_text)
         items: List[Tuple[float, str]] = []
         for d in root.iter("d"):
@@ -190,6 +203,13 @@ class BilibiliCommentFetcher:
                 headers=self._headers(),
                 timeout=10,
             )
+            # 体积上限在 decode 前检查（#142 A3）：先解码再拒绝会先把恶意大响应拉进内存
+            if len(resp.content) > DANMAKU_MAX_XML_BYTES:
+                logger.warning(f"弹幕 XML 过大（{len(resp.content)} 字节），拒绝解析: bvid={bvid} cid={cid}")
+                return {
+                    "ok": False, "source": "bilibili", "bvid": bvid, "cid": cid,
+                    "danmaku_summary": "", "error": f"弹幕 XML 过大（{len(resp.content)} 字节），拒绝解析",
+                }
             xml_text = resp.content.decode("utf-8", errors="ignore")
         except Exception as e:
             logger.warning(f"获取弹幕失败: {e}")

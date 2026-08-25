@@ -36,6 +36,14 @@ dist/
 # 项目开发专用 skills（只在本机开发用，不随插件分发/入库）
 .claude/skills/
 
+# 本地安全扫描脚本（codex-security-local.sh 从 auth.json 读 key 并经命令行
+# 传 experimental_bearer_token，进程列表可见——只在本机用，不入库）
+/scripts/
+
+# node_modules（本地工具/前端依赖，不入库，误提交风险）
+node_modules/
+/package-lock.json
+
 # LaTeX 编译产物（模板预览 main.pdf 除外，需入库）
 *.aux
 *.fdb_latexmk

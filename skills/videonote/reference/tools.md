@@ -13,7 +13,7 @@
 - `video_understanding=True` + `video_interval`（默认 6）+ `grid_size`（默认 [3,3]）：视频理解，**需多模态模型**。
 - `include_comments=True` + `comments_limit`（默认 20）：整合 B 站弹幕+评论（需 SESSDATA；失败不阻断）。
 - `screenshot=True`：插截图，产出便携笔记 note.md + Assets/（相对引用）。**布尔开关与 `format` 双向闭合（#120）**：`screenshot=True` 自动并入 `format`（否则 prompt 不注入标记指令 → LLM 不输出 `*Screenshot-[mm:ss]` → 视频白下载但笔记无图）；`format=["screenshot"]` 等价（即使布尔省略也会下载视频做截图）。`link=True` 同理自动并入 `format`。
-- `notes_dir`: 便携笔记目录（指定即写 note.md，即使不插图片；支持 `file://` URI）。
+- `notes_dir`: 便携笔记目录（指定即写 note.md，即使不插图片；支持 `file://` URI）。**安全边界**：数据目录外（含 env `VIDEONOTE_NOTES_DIR` 兜底）默认拒绝，需 `VIDEONOTE_ALLOW_EXTERNAL_PATHS=1`/插件 `allow_external_paths` 放行（#142）——报错即说明放行方式，转告用户即可。
 - **并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：超限会拒绝。不要在同一条消息里并行塞多个 `generate_note`（客户端不稳）。`provider_id` 可省略。
 
 ### `inspect_video(url, platform?)`
@@ -71,6 +71,7 @@
   - **创意格式**（思维导图/闪卡/LaTeX/typst/用户自定义模板）不在这里——由 Agent 基于 MD 底稿生成，见 [`output-formats.md`](output-formats.md)。
 - **`action="merge"`**：把多个音频/视频文件合并为一个 16kHz mono wav（FFmpeg concat，自动统一转码）。
   - `files`: 至少 2 个本地路径（编码可不同）；`out_dir` 缺省数据目录 `note_results/merged/`，均支持 `file://` URI。
+  - **数据目录外的本地输入/输出默认拒绝**（#142 边界），需 `VIDEONOTE_ALLOW_EXTERNAL_PATHS=1` 放行（报错即说明放行方式）。
   - 返回 `{ok, path: "file://绝对路径"}` 或 `{ok: false, error}`。适用：多段录音 / 会议分段 / 多个本地视频拼成一段再转写。
 - **`action="diarize"`**：说话人分离（pyannote，**可选重依赖**）：归一化 → 分离 → 返回 `{ok, turns:[{speaker,start,end}], num_speakers}` 或 `{ok: false, error}`。
   - `audio_file` 必填（本地音频/视频文件，自动归一化）；`num_speakers` 可选（缺省自动检测）。
@@ -111,6 +112,7 @@
 - **`task_id` 为空（全局）**：清空 `note_results/*`、`static/screenshots/*`、`note_cache/*` 的所有任务产物 + 全局索引。**`logs/` 不清**（运行日志不属任务产物，#121 C3）。
   - `include_config=False`（默认）：**保留** `config/`（LLM key / cookie / 转写设置）；`include_config=True` 才清。
   - `include_models=False`（默认）：**保留** `models/`（已下载模型可复用，重下成本高）；`include_models=True` 才清。
+  - **`include_config` / `include_models` 默认拒绝执行**（#142：删凭据/模型不可逆），需 `VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP=1`/插件 `allow_destructive_cleanup` 放行；未放行时 dry_run 把它标注为「将拒绝清理」，直接执行返回 `{ok: false, error}`。
 - **`dry_run=True`：先查后清**——单任务列出该任务占用的文件，全局预览 `would_clean`/`would_keep`/`running`，都不删任何东西；确认后再去掉 `dry_run` 执行。
 - **任务仍在运行（或排队中）时拒绝**（单任务返回 `{ok: false, error}`；全局返回 `{ok: false, running, running_task_ids, error}`）：先 `task(task_id, action="cancel")` 或等终态再清理。`include_models=True` 且仍有模型在后台下载时也拒绝（删 `models/` 会打断下载线程，#123 A1）。
 - 以任务文件夹为边界，`resolve()` 校验在数据目录内（防路径穿越）。返回 `{deleted, missing, errors, note_kept, notes_kept_outside}`——`notes_kept_outside` 列出数据目录**外**的便携笔记副本（用户指定 `notes_dir` 时常见）：沙箱红线不删，但路径会列出，不会成无人知晓的孤儿。

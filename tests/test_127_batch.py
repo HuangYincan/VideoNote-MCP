@@ -217,6 +217,41 @@ class ProviderAddLoggingTest(unittest.TestCase):
         self.assertIn("创建模式失败", m_err.call_args.args[0])
 
 
+class ProviderBaseUrlUserinfoRejectedTest(unittest.TestCase):
+    """#140 复扫 A3：base_url 携带 user:pass@ 会明文落库——add/update 均拒绝。"""
+
+    def test_add_rejects_userinfo(self):
+        from app.services.provider import ProviderService
+
+        with self.assertRaises(ValueError) as cm:
+            ProviderService.add_provider(
+                name="x", api_key="sk", base_url="https://user:secret@relay.example.com/v1",
+                logo="", type_="custom",
+            )
+        self.assertIn("user:pass@", str(cm.exception))
+        self.assertNotIn("secret", str(cm.exception))  # 错误消息本身不泄凭据
+
+    def test_update_rejects_userinfo(self):
+        from app.services.provider import ProviderService
+
+        with self.assertRaises(ValueError) as cm:
+            ProviderService.update_provider("p1", {"base_url": "http://u:p@127.0.0.1:11434/v1"})
+        self.assertIn("user:pass@", str(cm.exception))
+        self.assertNotIn("u:p", str(cm.exception))
+
+    def test_plain_base_url_still_allowed(self):
+        from app.services.provider import ProviderService
+
+        self.assertEqual(
+            ProviderService._validate_base_url("https://relay.example.com/v1"),
+            "https://relay.example.com/v1",
+        )
+        self.assertEqual(
+            ProviderService._validate_base_url("http://127.0.0.1:11434/v1"),
+            "http://127.0.0.1:11434/v1",
+        )
+
+
 # ---------------- B9：local convert_to_mp3 默认数据目录 ----------------
 
 class LocalMp3DefaultDirTest(unittest.TestCase):

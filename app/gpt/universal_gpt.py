@@ -226,6 +226,8 @@ class UniversalGPT(GPT):
 
         旧实现直接 write_text/replace——checkpoint 写失败会把成功的 LLM 输出变成任务
         失败；在 except 处理器里保存时还会替换掉原始 LLM 异常（#124 B2）。
+        #140 A5（#133 A2 登记项收尾）：固定 `.tmp` + write_text(0644) 改为
+        json_store 的 _unique_tmp + 创建即 0600——避免并发截断、权限窗口。
         """
         try:
             path = self._checkpoint_path(checkpoint_key)
@@ -236,8 +238,12 @@ class UniversalGPT(GPT):
                 "partials": partials,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
-            tmp_path = path.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            from app.utils.json_store import _unique_tmp, _write_bytes_with_mode
+
+            tmp_path = _unique_tmp(path)
+            _write_bytes_with_mode(
+                tmp_path, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), 0o600
+            )
             tmp_path.replace(path)
         except Exception as exc:  # noqa: BLE001 —— checkpoint 是辅助，写失败不影响主流程
             logger.warning(f"保存 checkpoint 失败（忽略，不影响总结主流程）: {exc}")

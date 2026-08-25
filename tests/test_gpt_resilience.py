@@ -4,7 +4,9 @@
     cd <repo>
     .venv/bin/python tests/test_gpt_resilience.py
 """
+import json
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -101,30 +103,33 @@ class CheckpointResilienceTest(unittest.TestCase):
     在 except 处理器里保存时还会替换掉原始 LLM 异常。
     """
 
-    def _gpt_with_failing_checkpoint(self):
-        gpt = _gpt()
-        path = mock.Mock()
-        path.with_suffix.return_value = path  # tmp_path 同 path
-        path.write_text.side_effect = OSError("磁盘已满")
-        gpt._checkpoint_path = mock.Mock(return_value=path)
-        return gpt
-
     def test_checkpoint_write_failure_does_not_raise(self):
-        gpt = self._gpt_with_failing_checkpoint()
-        with mock.patch("app.gpt.universal_gpt.logger") as m_logger:
-            gpt._save_checkpoint("k", "sig", ["partial"], "summarize")
+        # 父目录不存在 → tmp 创建失败（FileNotFoundError，OSError 子类）——不 raise、只 warning
+        gpt = _gpt()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "no_such_dir" / "ckpt.json"
+            gpt._checkpoint_path = mock.Mock(return_value=path)
+            with mock.patch("app.gpt.universal_gpt.logger") as m_logger:
+                gpt._save_checkpoint("k", "sig", ["partial"], "summarize")
         self.assertTrue(
             any("保存 checkpoint 失败" in str(c) for c in m_logger.warning.call_args_list)
         )
 
     def test_checkpoint_success_still_writes(self):
+        # #140 A5（#133 A2 登记项收尾）：写盘改走 json_store._unique_tmp + 创建即 0600——用真实文件验证
         gpt = _gpt()
-        path = mock.Mock()
-        path.with_suffix.return_value = mock.Mock()  # tmp 路径独立
-        gpt._checkpoint_path = mock.Mock(return_value=path)
-        gpt._save_checkpoint("k", "sig", ["partial"], "merge")
-        path.with_suffix.return_value.write_text.assert_called_once()
-        path.with_suffix.return_value.replace.assert_called_once()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "ckpt.json"
+            gpt._checkpoint_path = mock.Mock(return_value=path)
+            gpt._save_checkpoint("k", "sig", ["partial"], "merge")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["phase"], "merge")
+            self.assertEqual(data["partials"], ["partial"])
+            self.assertEqual(data["source_signature"], "sig")
+            # 权限 0600（与 status/config 同口径）
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            # 不留固定 tmp 残留
+            self.assertEqual(list(Path(td).iterdir()), [path])
 
 
 class EmptyChoicesTest(unittest.TestCase):

@@ -408,27 +408,54 @@ class DmPatchFatalFallbackTest(unittest.TestCase):
 # ---------------- B4：short URL 只解析一次（lru_cache） ----------------
 
 class UrlParserCacheTest(unittest.TestCase):
-    """B4：短链 resolve 走 lru_cache，同一短链只发一次网络请求。"""
+    """B4：短链 resolve 走 lru_cache，同一短链只发一次网络请求。
+
+    #140：resolve 改走 url_safety.public_head（逐跳校验）——requests.head
+    不再被调用，mock 点下沉到 adapter（出站最后一层，挡住真实 I/O）。
+    """
+
+    @staticmethod
+    def _ok_resp(url: str):
+        import requests
+
+        resp = requests.Response()
+        resp.status_code = 200
+        resp._content = b""
+        resp.url = url
+        resp.request = requests.Request("HEAD", url).prepare()
+        resp.raw = None
+        resp.headers = requests.structures.CaseInsensitiveDict()
+        return resp
 
     def test_bilibili_short_url_resolved_once(self):
         from app.utils import url_parser
 
         url = "https://b23.tv/cachetest0001"
-        with mock.patch("app.utils.url_parser.requests.head") as m_head:
-            m_head.return_value.url = "https://www.bilibili.com/video/BV1xx411c7mD"
+        calls = []
+
+        def _send(request, **kwargs):
+            calls.append(request.url)
+            return self._ok_resp("https://www.bilibili.com/video/BV1xx411c7mD")
+
+        with mock.patch("requests.adapters.HTTPAdapter.send", side_effect=_send):
             url_parser.resolve_bilibili_short_url(url)
             url_parser.resolve_bilibili_short_url(url)
-        m_head.assert_called_once()
+        self.assertEqual(len(calls), 1)
 
     def test_douyin_short_url_resolved_once(self):
         from app.utils import url_parser
 
         url = "https://v.douyin.com/cachetest0002/"
-        with mock.patch("app.utils.url_parser.requests.head") as m_head:
-            m_head.return_value.url = "https://www.douyin.com/video/1234567890123456789"
+        calls = []
+
+        def _send(request, **kwargs):
+            calls.append(request.url)
+            return self._ok_resp("https://www.douyin.com/video/1234567890123456789")
+
+        with mock.patch("requests.adapters.HTTPAdapter.send", side_effect=_send):
             url_parser.resolve_douyin_short_url(url)
             url_parser.resolve_douyin_short_url(url)
-        m_head.assert_called_once()
+        self.assertEqual(len(calls), 1)
 
 
 # ---------------- B5：bcut null 文案 / 异常分片参数 ----------------

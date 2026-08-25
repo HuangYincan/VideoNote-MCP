@@ -1,4 +1,4 @@
-"""URL 安全校验 —— SSRF 防护与日志脱敏（docs/05 第 16 轮扫描 A1 / A4 / A5）。
+"""URL 安全校验 —— SSRF 防护与日志脱敏（docs/05 第 16 轮扫描 A1 / A4 / A5；#140 逐跳收尾）。
 
 SSRF 背景：yt-dlp 通用提取器（GenericIE）接受任意 URL，被恶意/被注入的 agent
 可借 `generate_note` / `inspect_video` 访问内网服务、环回地址、
@@ -12,8 +12,15 @@ scheme 与目标主机，拦截指向私网/环回/链路本地/保留地址的�
 - 域名：解析后任一地址非公网即拦截（split-horizon DNS 的保守选择）。
 - DNS 解析失败：放行交由 yt-dlp 正常报错，不因解析器抖动误杀合法链接。
 
-已知边界：校验基于「初始 URL 解析 + 首跳 DNS」；yt-dlp 内部重定向到内网
-的场景不在防护内（完整方案需给 yt-dlp 挂自定义下载器，收益不成比例）。
+覆盖层次（#140：#133 A1 只校验入口 URL 的缺口收尾）：
+- `PublicOnlySession` / `public_get` / `public_head`：requests 系出站请求的
+  **逐跳**校验——重写 `Session.send` 覆盖初始 URL 与每次重定向跳点
+  （requests 的 `resolve_redirects` 经 `self.send` 发出下一跳），
+  短链解析（url_parser）、快手/抖音视频页跟随、B 站 API 返回的资源 URL 均走这里。
+- 平台 API 返回的直连资源 URL（抖音 url_list / 快手 photoUrl）无法用入口 URL
+  覆盖——由 `downloaders/common.stream_download` 在下载前统一校验。
+- 已知边界：yt-dlp 内部重定向到内网的场景不在防护内（完整方案需给 yt-dlp
+  挂自定义下载器，或网络侧对 Docker/remote MCP 强制 egress 白名单/代理）。
 """
 from __future__ import annotations
 
@@ -23,6 +30,8 @@ import logging
 import socket
 from typing import Optional
 from urllib.parse import urlsplit
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -118,3 +127,32 @@ def assert_public_http_url(url: str) -> None:
         raise ValueError(
             f"URL 被 SSRF 防护拦截（仅放行 http/https 且目标须为公网地址，不支持内网/环回/元数据端点）: {sanitize_url(url)}"
         )
+
+
+class PublicOnlySession(requests.Session):
+    """逐跳 SSRF 校验的 requests.Session（#140：#133 A1 入口校验+首跳 DNS 的缺口收尾）。
+
+    `Session.send` 在发出每个请求前校验目标主机公网——requests 的
+    `resolve_redirects` 内部经 `self.send` 发出下一跳（含相对跳转拼好的绝对
+    URL），重写 `send` 即覆盖**初始 URL + 全部 Location 跳点**；拦截抛
+    ValueError（与 `assert_public_http_url` 同消息）。
+    """
+
+    def send(self, request, **kwargs):  # type: ignore[override]
+        assert_public_http_url(request.url)
+        return super().send(request, **kwargs)
+
+
+def public_get(url: str, **kwargs) -> "requests.Response":
+    """`requests.get` 的逐跳 SSRF 校验版：短链跟随 / API 返回资源 URL 统一入口。
+
+    与 requests.get 同语义（allow_redirects=True），区别是每一跳都先过公网校验。
+    """
+    with PublicOnlySession() as session:
+        return session.request("GET", url, **kwargs)
+
+
+def public_head(url: str, **kwargs) -> "requests.Response":
+    """`requests.head` 的逐跳 SSRF 校验版（短链解析等 HEAD 跟随场景）。"""
+    with PublicOnlySession() as session:
+        return session.request("HEAD", url, **kwargs)

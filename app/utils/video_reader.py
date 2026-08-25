@@ -63,7 +63,9 @@ class VideoReader:
 
     @staticmethod
     def _calculate_file_md5(file_path: str) -> str:
-        hasher = hashlib.md5()
+        # 帧去重指纹，不是安全校验（#142 A6）：usedforsecurity=False 消除「MD5 用于安全」
+        # 的误读，且 FIPS 模式下 md5 被禁用时不会抛错（去重不需要抗碰撞）
+        hasher = hashlib.md5(usedforsecurity=False)
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):
                 hasher.update(chunk)

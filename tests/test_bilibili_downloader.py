@@ -2,6 +2,7 @@
 
 不碰真实网络/yt-dlp：mock BilibiliSubtitleFetcher 与 yt_dlp.YoutubeDL。
 """
+import shutil
 import sys
 import tempfile
 import unittest
@@ -154,6 +155,41 @@ class SubtitleFallbackCleanupTest(unittest.TestCase):
         import glob as _glob
 
         self.assertEqual(_glob.glob("/tmp/videonote_subs_*"), [])
+
+
+class BilibiliEntrySshBlockTest(unittest.TestCase):
+    """#140 复扫 B1：BilibiliDownloader 自身入口 SSRF 校验——公共 app 层函数
+    不依赖 MCP 入口 _guard_remote_url 兜底（与 generic/youtube 下载器同款内部防线）。"""
+
+    def setUp(self):
+        patcher = mock.patch.object(
+            BilibiliDownloader, "_write_netscape_cookie_file", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.dl = BilibiliDownloader()
+
+    def test_download_private_url_blocked_before_ytdlp(self):
+        out = tempfile.mkdtemp(prefix="vn_bili_")
+        try:
+            with mock.patch("app.downloaders.bilibili_downloader.yt_dlp") as m_yt:
+                with self.assertRaises(ValueError) as cm:
+                    self.dl.download(
+                        "http://169.254.169.254/latest/meta-data/",
+                        output_dir=out,
+                    )
+            self.assertIn("SSRF", str(cm.exception))
+            m_yt.assert_not_called()  # yt-dlp 从未被触达
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+
+    def test_download_video_private_url_blocked(self):
+        out = tempfile.mkdtemp(prefix="vn_bili_")
+        try:
+            with self.assertRaises(ValueError):
+                self.dl.download_video("http://127.0.0.1/x", output_dir=out)
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
 
 
 if __name__ == "__main__":

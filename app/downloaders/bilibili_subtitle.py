@@ -26,6 +26,7 @@ from app.utils.url_parser import (
     extract_video_id,
     resolve_bilibili_short_url,
 )
+from app.utils.url_safety import public_get
 
 logger = get_logger(__name__)
 
@@ -126,7 +127,13 @@ class BilibiliSubtitleFetcher:
 
     def _fetch_body(self, subtitle_url: str) -> Optional[List[dict]]:
         try:
-            resp = requests.get(BilibiliSubtitleFetcher._normalize_url(subtitle_url), headers=self._headers(), timeout=15)
+            # public_get 逐跳校验（#140）：subtitle_url 来自 B 站 API 返回（已签 auth_key
+            # 的完整地址），与抖音/快手资源 URL 同类——入口校验覆盖不到，出站前校验
+            resp = public_get(
+                BilibiliSubtitleFetcher._normalize_url(subtitle_url),
+                headers=self._headers(),
+                timeout=15,
+            )
             data = resp.json()
             return data.get("body") or []
         except Exception as e:

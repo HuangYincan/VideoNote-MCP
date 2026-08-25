@@ -5,6 +5,7 @@ from typing import Optional
 import requests
 
 from app.utils.logger import get_logger
+from app.utils.url_safety import assert_public_http_url, public_head
 
 logger = get_logger(__name__)
 
@@ -56,12 +57,11 @@ def resolve_bilibili_short_url(short_url: str) -> Optional[str]:
     :return: 真实的视频链接或None
     """
     # SSRF 入口守卫（#133 A1）：调用方只按 "b23.tv" 子串分流，攻击者 URL
-    # （如 http://169.254.169.254/?x=b23.tv）会原样走到 requests.head
-    from app.utils.url_safety import assert_public_http_url
-
+    # （如 http://169.254.169.254/?x=b23.tv）会原样走到 HEAD 请求。
+    # public_head 逐跳校验（#140）：重定向到内网的 Location 在发出前拦截。
     assert_public_http_url(short_url)
     try:
-        response = requests.head(short_url, allow_redirects=True, timeout=(5, 10))
+        response = public_head(short_url, timeout=(5, 10))
         return response.url
     except requests.RequestException as e:
         logger.warning("Error resolving short URL: %s", e)
@@ -75,12 +75,11 @@ def resolve_douyin_short_url(short_url: str) -> Optional[str]:
     HEAD 重定向到真实分享页/视频页（可能被反爬 403/405）——失败返回 None，
     调用方保持「解析不出 → 不命中缓存」的原有行为（#125 B1）。
     """
-    # SSRF 入口守卫（#133 A1）：与 resolve_bilibili_short_url 同口径
-    from app.utils.url_safety import assert_public_http_url
-
+    # SSRF 入口守卫（#133 A1）：与 resolve_bilibili_short_url 同口径。
+    # public_head 逐跳校验（#140）：重定向到内网的 Location 在发出前拦截。
     assert_public_http_url(short_url)
     try:
-        response = requests.head(short_url, allow_redirects=True, timeout=(5, 10))
+        response = public_head(short_url, timeout=(5, 10))
         return response.url
     except requests.RequestException as e:
         logger.warning("Error resolving douyin short URL: %s", e)
