@@ -764,3 +764,12 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **BilibiliDownloader 入口 SSRF（B1 低）**：download()/download_video() 补 `assert_public_http_url`（与 generic/youtube 同款内部防线）。
 - **B2 残余面**：lightning（PYSEC-2026-3624）无修复版本，pyproject 已注记暂缓 diarization extra——保持禁用直至上游修复。
 - VENDOR.md 冻结清单新增 `app/db/engine.py`（0600 安全收紧）。
+
+## Wave I 批 33（2026-08-25 · 安全扫描收尾 #142，738→771 tests）
+
+- **MCP 本地文件/危险操作边界（A1，中高）**：新增 `VIDEONOTE_ALLOW_EXTERNAL_PATHS`（默认关）——`generate_note`/`prepare_note_material` 本地视频入口、`notes_dir`/`process_media` 的 `out_dir`/`files`/`audio_file` 落在数据目录外默认拒绝（报错指明放行方式；放行后回到「只告警」）；新增 `VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP`（默认关）——`cleanup(include_config/include_models)` 拒绝执行（dry_run 标注「将拒绝清理」）；边界按 `resolve()` 判定（目录内软链外部同拒）；两开关进插件 userConfig（allow_external_paths / allow_destructive_cleanup）。原「只提示不拦截」（#45/#99）升级为默认拒绝、显式放行。
+- **模型 revision 固定（A2，中）**：内置 15 个模型仓库钉 main commit（2026-08-25 逐仓库查询）；faster-whisper 走 `WhisperModel(revision=)`（pyproject 下限 `>=1.1.1` → `>=1.2.0`）、mlx 走 `snapshot_download(revision=)`；映射单一来源（mlx 归并 `model_status.py`、whisper 归并 `whisper_models.BUILTIN_WHISPER_REVISIONS`；自定义/直通不固定）。
+- **弹幕 XML 安全解析（A3，中）**：B 站弹幕 XML 解析前拒绝 `<!DOCTYPE`/`<!ENTITY`（3.11–3.13 无 forbid_dtd 参数，预扫等价）+ 响应体积上限 20 MiB（decode 前检查）。
+- **YouTube EJS 开关（A4，中低）**：`VIDEONOTE_YTDLP_EJS`（默认开——2026+ YouTube JS challenge 硬要求）控制 `remote_components` 远程脚本拉取；组件名不可经 env 注入。
+- **MD5 FIPS 兼容（A6，低）**：帧去重 MD5 加 `usedforsecurity=False`。
+- **文档**：docs/05 #142 条目、docs/06 登记、04 手册「本地文件与安全边界」章节 + 环境变量表、skills tools.md 同步、VENDOR.md 冻结清单（whisper/mlx_whisper_transcriber/model_status/youtube_downloader）、00 基线更新（771 tests）。
