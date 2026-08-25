@@ -4071,7 +4071,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=50.0.0" },
-    { name = "faster-whisper", specifier = ">=1.1.1" },
+    { name = "faster-whisper", specifier = ">=1.2.0" },
     { name = "ffmpeg-python", specifier = ">=0.2.0" },
     { name = "funasr", marker = "extra == 'funasr'" },
     { name = "gmssl", specifier = ">=3.2.2" },

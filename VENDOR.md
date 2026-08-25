@@ -53,6 +53,8 @@
 - `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py`
 - `app/downloaders/common.py` / `app/utils/url_parser.py` / `app/downloaders/douyin_downloader.py` / `app/downloaders/kuaishou_helper/kuaishou.py` / `app/downloaders/bilibili_subtitle.py`（2026-08-25 #140：出站请求逐跳 SSRF 校验——stream_download 入口校验 + 短链解析/视频页跟随/API 资源 URL 改走 `url_safety.public_get/public_head`；上游若带原生 requests 调用逻辑需人工合并）
 - `app/transcriber/transcriber_provider.py`（funasr / mlx）
+- `app/transcriber/whisper.py` / `mlx_whisper_transcriber.py` / `app/utils/model_status.py`（2026-08-25 #142 A2：内置模型 revision 固定——whisper 经 `WhisperModel(revision=…)`、mlx 经 `snapshot_download(revision=…)`，映射/散列单一来源在 model_status；上游若带原生下载逻辑需人工合并）
+- `app/downloaders/youtube_downloader.py`（2026-08-25 #142 A4：`VIDEONOTE_YTDLP_EJS` 开关控制 `remote_components`——上游默认无此 env 门禁，同步需人工合并）
 - `app/gpt/universal_gpt.py`（checkpoint 损坏弃用时打 warning 留痕，#106）
 - 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`
 

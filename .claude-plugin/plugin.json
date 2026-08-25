@@ -29,7 +29,9 @@
         "VIDEONOTE_ENABLE_PREPROCESS": "${user_config.enable_preprocess}",
         "VIDEONOTE_DIARIZATION": "${user_config.diarization}",
         "VIDEONOTE_MAX_WORKERS": "${user_config.max_workers}",
-        "VIDEONOTE_STDERR_LOG_MAX_MB": "${user_config.stderr_log_max_mb}"
+        "VIDEONOTE_STDERR_LOG_MAX_MB": "${user_config.stderr_log_max_mb}",
+        "VIDEONOTE_ALLOW_EXTERNAL_PATHS": "${user_config.allow_external_paths}",
+        "VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP": "${user_config.allow_destructive_cleanup}"
       }
     }
   },
@@ -117,6 +119,18 @@
       "title": "MCP 日志轮转上限（MB）",
       "description": "数字，默认 50。mcp_stderr.log 超过该大小后轮转为 .log.1",
       "default": 50
+    },
+    "allow_external_paths": {
+      "type": "boolean",
+      "title": "允许数据目录外的本地文件/输出目录",
+      "description": "输入 true 或 false。默认 false：本地视频输入与 notes_dir/out_dir 输出必须落在数据目录内（防本地文件被误读/误写）。true=放行数据目录外路径（仅告警不拦截）。设置后需重启会话生效",
+      "default": false
+    },
+    "allow_destructive_cleanup": {
+      "type": "boolean",
+      "title": "允许 cleanup 删除配置/模型",
+      "description": "输入 true 或 false。默认 false：cleanup(include_config/include_models) 拒绝执行（删 key/cookie/模型不可逆）。true=放行（仍需无运行中任务、无模型下载中、目录在数据根内）。设置后需重启会话生效",
+      "default": false
     }
   }
 }

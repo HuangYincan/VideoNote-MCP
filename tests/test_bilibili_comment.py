@@ -198,6 +198,39 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
             self.assertIn("弹幕 XML 解析失败", res["error"])
             self.assertIsNotNone(res["error"])
 
+    def test_parse_danmaku_rejects_dtd_and_entities(self):
+        """#142 A3：弹幕 XML 来自网络（不可信输入）——DTD/实体声明必须在解析前被拒绝，
+        否则恶意响应可 XXE（读本地文件/内网探测）或实体扩展 DoS。"""
+        evil_dtd = (
+            '<?xml version="1.0"?><!DOCTYPE i [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+            '<i><d p="1.0,1,25,16777215">&xxe;</d></i>'
+        )
+        with self.assertRaises(ValueError):
+            self.fetcher._parse_danmaku_xml(evil_dtd)
+        evil_entity = (
+            '<?xml version="1.0"?><!DOCTYPE i [<!ENTITY a "aaaaaaaaaaaaaa">]>'
+            '<i><d p="1.0,1,25,16777215">&a;</d></i>'
+        )
+        with self.assertRaises(ValueError):
+            self.fetcher._parse_danmaku_xml(evil_entity)
+        # 大小写变体也拦（<!Entity / <!Doctype）
+        with self.assertRaises(ValueError):
+            self.fetcher._parse_danmaku_xml(
+                '<?xml version="1.0"?><!ENTITY xx "y"><i><d p="1.0,1,25,16777215">z</d></i>'
+            )
+
+    def test_fetch_danmaku_oversize_rejected(self):
+        """#142 A3：响应体积上限（decode 前检查）——超限拒绝解析而不是先拉进内存。"""
+        from app.downloaders.bilibili_comment import DANMAKU_MAX_XML_BYTES
+
+        oversize = b"x" * (DANMAKU_MAX_XML_BYTES + 1)
+        fake_get, _ = _make_fake_get(dm_content=oversize)
+        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get):
+            res = self.fetcher.fetch_danmaku(VIDEO_URL)
+        self.assertFalse(res["ok"], res)
+        self.assertIn("过大", res["error"])
+        self.assertEqual(res["danmaku_summary"], "")
+
     # ---------- 评论 ----------
 
     def test_fetch_comments_ok_dedup_sort(self):

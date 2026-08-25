@@ -102,7 +102,11 @@ def _download_whisper(size: str) -> None:
     """在终端下载 fast-whisper 模型（阻塞，带进度条）。"""
     from huggingface_hub import snapshot_download
 
-    from app.transcriber.whisper_models import is_local_target, resolve_whisper_model
+    from app.transcriber.whisper_models import (
+        is_local_target,
+        resolve_whisper_model,
+        resolve_whisper_revision,
+    )
     from app.utils.path_helper import get_model_dir
 
     target = resolve_whisper_model(size)
@@ -110,12 +114,23 @@ def _download_whisper(size: str) -> None:
     if is_local_target(target):
         print(f"（{target} 为本地路径，无需下载）", file=sys.stdout)
         return
+    # 固定 revision（#142 A2）：与运行时加载（whisper._build_model）指向同一快照，
+    # 否则 CLI 下 main、运行时下 main 变化快照，cache 内出现两份且加载取到新内容
+    revision = resolve_whisper_revision(size)
     print(f"正在下载 whisper-{size}（{target}）…", file=sys.stdout)
-    snapshot_download(repo_id=target, cache_dir=model_dir, tqdm_class=_tqdm_bar())
+    snapshot_download(
+        repo_id=target, revision=revision, cache_dir=model_dir, tqdm_class=_tqdm_bar()
+    )
     # 让 faster-whisper 真正加载（确认模型可用）
     from faster_whisper import WhisperModel
 
-    WhisperModel(model_size_or_path=target, device="cpu", compute_type="int8", download_root=model_dir)
+    WhisperModel(
+        model_size_or_path=target,
+        device="cpu",
+        compute_type="int8",
+        download_root=model_dir,
+        revision=revision,
+    )
     print(f"✓ whisper-{size} 下载完成", file=sys.stdout)
 
 
@@ -127,7 +142,7 @@ def _download_mlx_model(size: str) -> None:
     """
     from huggingface_hub import snapshot_download
 
-    from app.utils.model_status import MLX_REPO_MAP
+    from app.utils.model_status import MLX_REPO_MAP, MLX_REPO_REVISIONS
     from app.utils.path_helper import get_model_dir
 
     repo_id = MLX_REPO_MAP.get(size)
@@ -136,6 +151,8 @@ def _download_mlx_model(size: str) -> None:
     print(f"正在下载 mlx-whisper-{size}（{repo_id}）…", file=sys.stdout)
     snapshot_download(
         repo_id=repo_id,
+        # 固定 revision（#142 A2）：与 MLXWhisperTranscriber 下载同一快照，见 model_status
+        revision=MLX_REPO_REVISIONS.get(size),
         local_dir=os.path.join(get_model_dir("mlx-whisper"), repo_id),
         tqdm_class=_tqdm_bar(),
     )

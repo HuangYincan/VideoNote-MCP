@@ -7,6 +7,7 @@
 import logging
 import os
 from pathlib import Path
+from typing import Dict
 
 from app.transcriber import model_download_state as dl_state
 from app.utils.path_helper import get_model_dir
@@ -57,6 +58,26 @@ MLX_REPO_MAP = {
     "large-v3": "mlx-community/whisper-large-v3-mlx",
     "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
 }
+
+# mlx 尺寸 → 固定 revision（main 分支 commit，#142 A2 于 2026-08-25 钉定）。
+# snapshot_download 不传 revision 会「要什么拉什么」——上游仓库内容可随时变化，
+# 同尺寸模型跨时间下载内核不一致，重装/换机后转写结果漂移；升级模型时与
+# MLX_REPO_MAP 一起显式更新（下载完成后本地路径不随上游变化，可离线复用）。
+MLX_REPO_REVISIONS: Dict[str, str] = {
+    "tiny": "6caf9c55601caafbe6508a8b0d216bdf4783c4e8",
+    "base": "1e3e249fb8d01c655324bd6841b1deadffd6d04c",
+    "small": "45f3915923c7a79a5a5b5a7d909d39aeb0e5630e",
+    "medium": "7fc08c4eac4c316526498f147dfdee6f6303f975",
+    "large-v1": "e2cb9fbf9c7aefad760be1dc9b48c075b21288c8",
+    "large-v2": "cce86229e2765266197fef869ce9f7e2550067ab",
+    "large-v3": "49e6aa286ad60c14352c404340ded53710378a11",
+    "large-v3-turbo": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+}
+
+
+def mlx_repo_revision(size: str) -> "str | None":
+    """size → 固定 revision；未登记尺寸（未知/自定义）返回 None（按默认 main）。"""
+    return MLX_REPO_REVISIONS.get(size)
 
 
 def check_mlx_whisper_model_exists(model_size: str) -> bool:

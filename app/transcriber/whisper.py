@@ -11,6 +11,7 @@ from app.transcriber.whisper_models import (
     hf_cache_dirname,
     is_local_target,
     resolve_whisper_model,
+    resolve_whisper_revision,
 )
 from app.utils.env_checker import is_cuda_available, is_torch_installed
 from app.utils.logger import get_logger
@@ -69,12 +70,16 @@ class WhisperTranscriber(Transcriber):
         # resolve 把模型名映射成可加载标识：内置 size→Systran repo_id、自定义映射、
         # 直通的 repo_id 或本地路径。faster-whisper 对本地目录走 os.path.isdir 分支，
         # 对 repo_id 走 download_model(cache_dir=download_root)，两者都吃 model_size_or_path。
+        # revision 固定到 BUILTIN_WHISPER_REVISIONS（#142 A2）：同尺寸跨时间下载一致；
+        # 自定义/直通/本地路径返回 None（版本由使用者自管，faster-whisper>=1.2.0 才支持）。
         target = resolve_whisper_model(model_size)
+        revision = resolve_whisper_revision(model_size)
         return WhisperModel(
             model_size_or_path=target,
             device=self.device,
             compute_type=self.compute_type,
             download_root=model_dir,
+            revision=revision,
         )
 
     @staticmethod

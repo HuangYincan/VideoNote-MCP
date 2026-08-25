@@ -40,6 +40,22 @@ BUILTIN_WHISPER_MODELS: Dict[str, str] = {
     "large-v3-turbo": "deepdml/faster-whisper-large-v3-turbo-ct2",
 }
 
+# 内置模型固定 revision（main 分支 commit，#142 A2 于 2026-08-25 钉定）。
+# 不固定 revision 时 faster-whisper / snapshot_download 按仓库当前 main 拉取——
+# 同尺寸模型跨时间下载内容可变，重装/换机后转写结果漂移。升级模型时与
+# BUILTIN_WHISPER_MODELS 一起显式更新（HF cache 按 repo 分目录，revision 只是
+# 快照指针对别，加载/删除流程不受影响）。
+BUILTIN_WHISPER_REVISIONS: Dict[str, str] = {
+    "tiny": "d90ca5fe260221311c53c58e660288d3deb8d356",
+    "base": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+    "small": "536b0662742c02347bc0e980a01041f333bce120",
+    "medium": "08e178d48790749d25932bbc082711ddcfdfbc4f",
+    "large-v1": "b07c8d4be0be90092aa01a29c975077acb8d15c9",
+    "large-v2": "f0fe81560cb8b68660e564f55dd99207059c092e",
+    "large-v3": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
+    "large-v3-turbo": "4df90f75321148c3a29a9e2351b7ddf8f5b115a8",
+}
+
 # 前端下拉默认展示的内置档位（保持与历史 WHISPER_MODEL_SIZES 一致，不把 8 个全列出来）
 DEFAULT_VISIBLE_BUILTINS: List[str] = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]
 
@@ -120,6 +136,19 @@ class WhisperModelRegistry:
             "或在 config/whisper_models.json 手工登记自定义模型（HF repo_id 或本地路径）。"
         )
 
+    def resolve_revision(self, name: str) -> Optional[str]:
+        """模型名 → 固定 revision（#142 A2；仅内置档位，自定义/直通返回 None）。
+
+        与 resolve 同优先级：自定义映射命中 → None（用户自管版本，按仓库当前 main 拉取）；
+        内置命中 → BUILTIN_WHISPER_REVISIONS 的 commit；直通（repo_id/本地路径）→ None。
+        """
+        name = (name or "").strip()
+        if name in self._read_custom():
+            return None
+        if name in BUILTIN_WHISPER_MODELS:
+            return BUILTIN_WHISPER_REVISIONS.get(name)
+        return None
+
 
 # 模块级单例
 _registry = WhisperModelRegistry()
@@ -131,3 +160,7 @@ def get_registry() -> WhisperModelRegistry:
 
 def resolve_whisper_model(name: str) -> str:
     return _registry.resolve(name)
+
+
+def resolve_whisper_revision(name: str) -> Optional[str]:
+    return _registry.resolve_revision(name)
