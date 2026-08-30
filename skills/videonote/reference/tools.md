@@ -145,7 +145,7 @@
 | 切本地转写 | `! videonote transcriber set --engine fast-whisper --size small` + `! videonote transcriber download small` |
 | 切云端转写 | `! videonote transcriber set --engine groq`（groq key 用 CLI 填） |
 | B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA） |
-| 小宇宙官方文稿 | 用户在本会话 `! videonote login xiaoyuzhou` 粘贴 x-jike-access-token（建议同时给 refresh-token）；未登录会回退本地下载+ASR，长节目会非常慢 |
+| 小宇宙官方文稿 | 用户在本会话 `! videonote login xiaoyuzhou` 用小宇宙 App 扫码（或 `--token` 粘贴）；未登录会回退本地下载+ASR，长节目会非常慢 |
 | 本地文件 | `generate_note(video_url="file:///绝对/路径/foo%20bar.mp4")` 或普通路径，`platform` 可省略 |
 | 视频理解默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `video_understanding`/`video_interval` 即套用（默认关/6s） |
 | 评论/弹幕整合默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `include_comments`/`comments_limit` 即套用（默认关/20 条） |

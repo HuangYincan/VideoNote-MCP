@@ -629,7 +629,7 @@ def _wizard_other(inq) -> None:
                 message="选择要配置的项（← 返回）",
                 choices=[
                     {"name": "B 站扫码登录（自动获取 SESSDATA，AI 字幕用）", "value": "bili-login"},
-                    {"name": "小宇宙登录（官方文稿需 x-jike token）", "value": "xyz-login"},
+                    {"name": "小宇宙扫码登录（官方文稿用，App 扫一扫）", "value": "xyz-login"},
                     {"name": "平台 Cookie（手动填，B 站等需登录内容）", "value": "cookie"},
                     {"name": f"默认笔记位置（图片模式）：{notes_dir}", "value": "notes"},
                     {"name": f"视频理解默认（{'开' if vu_on else '关'} / {vu_int}s，需多模态模型）", "value": "video"},
@@ -1449,7 +1449,7 @@ def _cookie_cli(argv) -> None:
     - `from-browser`：直接读 Safari/Chrome 的登录态（yt-dlp cookiesfrombrowser），最省事
     - `set`：手动粘贴浏览器复制出来的完整 Cookie 字符串
     B 站推荐 `videonote login bilibili` 扫码登录（AI 字幕需要 SESSDATA）。
-    小宇宙官方文稿需要 `x-jike-access-token`（推荐 `videonote login xiaoyuzhou`）。
+    小宇宙官方文稿需要登录态（推荐 `videonote login xiaoyuzhou` 扫码）。
     """
     parser = argparse.ArgumentParser(
         prog="videonote cookie",
@@ -1598,19 +1598,66 @@ def _login_youtube(args, exit_on_fail: bool = True) -> None:
         print(f"{_YELLOW}⚠ 验证失败: {err}（配置已保存，下载时若仍失败可重试）{_RESET}", file=sys.stdout)
 
 
-def _login_xiaoyuzhou(_args, exit_on_fail: bool = True) -> None:
-    """`videonote login xiaoyuzhou`：粘贴小宇宙 x-jike token（官方文稿用）。
+_XIAOYUZHOU_WEB_API = "https://web-api.xiaoyuzhoufm.com"
+_XIAOYUZHOU_QR_CLIENT_ID = "xyz-web"
+_XIAOYUZHOU_MIDWAY_APP_ID = "v6worU4NnWyL"
+_XIAOYUZHOU_QR_POLL_SEC = 2
+_XIAOYUZHOU_QR_MAX_POLLS = 90  # 约 3 分钟
 
-    access token 约 2 小时过期；一并粘贴 refresh token 后过期会自动续期。
-    不把 token 写进 argv（避免进 shell history）；非交互用 `cookie set`。
-    """
+
+def _xiaoyuzhou_web_headers() -> dict:
+    return {
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json;charset=UTF-8",
+        "origin": "https://accounts.xiaoyuzhoufm.com",
+        "referer": "https://accounts.xiaoyuzhoufm.com/login",
+        "x-jike-allow-app-token-in-cookie": "true",
+        "x-midway-app-id": _XIAOYUZHOU_MIDWAY_APP_ID,
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+    }
+
+
+def _tokens_from_xiaoyuzhou_response(resp, session) -> tuple:
+    """从扫码确认响应取 access/refresh，绝不打印值。"""
+    access = resp.headers.get("x-jike-access-token") or ""
+    refresh = resp.headers.get("x-jike-refresh-token") or ""
+    if session is not None:
+        access = access or (session.cookies.get("x-jike-access-token") or "")
+        refresh = refresh or (session.cookies.get("x-jike-refresh-token") or "")
+    return access, refresh
+
+
+def _print_ascii_qr(data: str) -> None:
+    import qrcode
+
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(data)
+    qr.make(fit=True)
+    try:
+        qr.print_ascii(out=sys.stdout, invert=True)
+    except TypeError:
+        qr.print_ascii(invert=True)
+    print("", file=sys.stdout)
+
+
+def _persist_xiaoyuzhou_tokens(access: str, refresh: str = "") -> str:
+    """保存 token 并实测验证。返回空串=有效，否则是错误信息（不含明文）。"""
     from app.downloaders.xiaoyuzhou_subtitle import (
         format_xiaoyuzhou_cookie,
         verify_xiaoyuzhou_login,
     )
     from app.services.cookie_manager import CookieConfigManager
 
-    _show_header("小宇宙登录")
+    CookieConfigManager().set("xiaoyuzhou", format_xiaoyuzhou_cookie(access, refresh))
+    return verify_xiaoyuzhou_login()
+
+
+def _login_xiaoyuzhou_token(exit_on_fail: bool = True) -> None:
+    """粘贴 x-jike token（扫码不可用时的后备；不把 token 写进 argv）。"""
+    _show_header("小宇宙登录（粘贴 token）")
     print("官方文稿接口需要登录态。请在电脑浏览器登录 https://www.xiaoyuzhoufm.com 后：", file=sys.stdout)
     print("1. 按 F12 → Network → 刷新 → 点任意 api.xiaoyuzhoufm.com 请求", file=sys.stdout)
     print("2. Request Headers 复制 x-jike-access-token（约 2 小时过期）", file=sys.stdout)
@@ -1627,15 +1674,122 @@ def _login_xiaoyuzhou(_args, exit_on_fail: bool = True) -> None:
         print("已取消", file=sys.stdout)
         return
     refresh = inq.secret(message="x-jike-refresh-token（可选，推荐）", keybindings=_KB).execute() or ""
-    CookieConfigManager().set("xiaoyuzhou", format_xiaoyuzhou_cookie(access.strip(), refresh.strip()))
     if not refresh.strip():
         print(f"{_YELLOW}⚠ 未提供 refresh token：access token 约 2 小时后失效，需重新登录{_RESET}", file=sys.stdout)
     print("已保存，正在实测验证（需要网络）…", file=sys.stdout)
-    err = verify_xiaoyuzhou_login()
+    err = _persist_xiaoyuzhou_tokens(access.strip(), refresh.strip())
     if not err:
         print(f"{_GREEN}✓ 小宇宙登录态有效{_RESET}", file=sys.stdout)
         return
     print(f"{_YELLOW}⚠ 验证失败: {err}（配置已保存，生成笔记时若仍失败可重试）{_RESET}", file=sys.stdout)
+
+
+def _login_xiaoyuzhou_qr(exit_on_fail: bool = True) -> None:
+    """官网统一登录扫码：create → 终端 ASCII 二维码 → 轮询 login。"""
+    import time
+
+    import requests
+
+    try:
+        import qrcode  # noqa: F401
+    except ImportError:
+        print("需要 qrcode 库：`uv sync` 后重试", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+
+    session = requests.Session()
+    session.headers.update(_xiaoyuzhou_web_headers())
+    try:
+        created = session.post(
+            f"{_XIAOYUZHOU_WEB_API}/v1/auth/qrcode/create",
+            json={"clientId": _XIAOYUZHOU_QR_CLIENT_ID},
+            timeout=10,
+        )
+        payload = created.json()
+        qr_id = payload.get("id")
+        qr_url = payload.get("url")
+        if created.status_code != 200 or not qr_id or not qr_url:
+            print(f"生成二维码失败: {payload.get('toast') or payload.get('message') or created.status_code}", file=sys.stderr)
+            if exit_on_fail:
+                sys.exit(1)
+            return
+    except Exception as e:
+        print(f"生成二维码失败（网络？）: {e}", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+
+    _show_header("小宇宙扫码登录")
+    print(f"{_YELLOW}请用小宇宙 App「扫一扫」扫描下方二维码（约 3 分钟内有效）{_RESET}", file=sys.stdout)
+    print("扫不了可改用 `videonote login xiaoyuzhou --token` 粘贴 token", file=sys.stdout)
+    _print_ascii_qr(qr_url)
+
+    last_status = None
+    try:
+        for _ in range(_XIAOYUZHOU_QR_MAX_POLLS):
+            time.sleep(_XIAOYUZHOU_QR_POLL_SEC)
+            try:
+                poll = session.post(
+                    f"{_XIAOYUZHOU_WEB_API}/v1/auth/qrcode/login",
+                    json={"id": qr_id},
+                    timeout=10,
+                )
+            except Exception as e:
+                print(f"轮询失败（网络？）: {e}", file=sys.stderr)
+                continue
+            try:
+                data = poll.json() if poll.content else {}
+            except Exception:
+                data = {}
+            if poll.status_code == 401 and data.get("code") == 21:
+                print(f"{_YELLOW}二维码已过期，请重新运行 `videonote login xiaoyuzhou`{_RESET}", file=sys.stdout)
+                return
+            status = data.get("status")
+            if status in ("CONFIRMED", "USED"):
+                access, refresh = _tokens_from_xiaoyuzhou_response(poll, session)
+                if not access:
+                    print("登录成功但未取到 token，请改用 `videonote login xiaoyuzhou --token`", file=sys.stderr)
+                    if exit_on_fail:
+                        sys.exit(1)
+                    return
+                err = _persist_xiaoyuzhou_tokens(access, refresh)
+                print(f"{_GREEN}✓ 已保存小宇宙登录态 —— 官方文稿可直接用了{_RESET}", file=sys.stdout)
+                if err:
+                    print(f"{_YELLOW}⚠ 验证失败: {err}（配置已保存，生成笔记时若仍失败可重试）{_RESET}", file=sys.stdout)
+                try:
+                    input("（按回车返回）")
+                except (EOFError, KeyboardInterrupt):
+                    pass
+                return
+            if status == "SCANNED" and last_status != "SCANNED":
+                print("已扫码，请在手机上确认登录…", file=sys.stdout)
+                last_status = "SCANNED"
+        print(f"{_YELLOW}二维码已过期，请重新运行 `videonote login xiaoyuzhou`{_RESET}", file=sys.stdout)
+    except KeyboardInterrupt:
+        print("（已取消）", file=sys.stdout)
+
+
+def _login_xiaoyuzhou(args, exit_on_fail: bool = True) -> None:
+    """`videonote login xiaoyuzhou`：默认扫码；`--token` 粘贴 x-jike token。
+
+    走官网统一登录（accounts.xiaoyuzhoufm.com）的 create / login 接口。
+    token 不进 argv（避免进 shell history）；非交互用 `cookie set`。
+    """
+    parser = argparse.ArgumentParser(
+        prog="videonote login xiaoyuzhou",
+        description="小宇宙登录（官方文稿用）。默认扫码，--token 改粘贴。",
+    )
+    parser.add_argument(
+        "--token",
+        action="store_true",
+        help="粘贴 x-jike-access-token / refresh-token（不扫码）",
+    )
+    opts = parser.parse_args(args)
+    if opts.token:
+        _login_xiaoyuzhou_token(exit_on_fail)
+        return
+    _login_xiaoyuzhou_qr(exit_on_fail)
 
 
 def _login_cli(argv, exit_on_fail: bool = True) -> None:
@@ -1643,7 +1797,7 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
 
     - bilibili：扫码登录，自动获取并保存 SESSDATA（AI 字幕用）
     - youtube：读浏览器登录态或手动粘贴 Cookie（--browser 时实测验证）
-    - xiaoyuzhou：粘贴 x-jike-access-token / refresh-token（官方文稿用）
+    - xiaoyuzhou：扫码登录（`--token` 改粘贴 x-jike token）
 
     exit_on_fail=False 时失败路径只返回不杀进程（setup 向导内调用，#120：
     登录失败不再让整个向导带 traceback/退出，已配的其它设置不丢失）。

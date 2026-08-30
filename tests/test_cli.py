@@ -15,11 +15,13 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from unittest import mock
 
 import pytest
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -332,8 +334,37 @@ class TestLoginYoutube:
         assert "xiaoyuzhou" in err
 
 
+class _FakeXyzResp:
+    def __init__(self, status_code, json_data, headers=None, content=b"{}"):
+        self.status_code = status_code
+        self._json = json_data
+        self.headers = headers or {}
+        self.content = content if json_data is None else b"{}"
+        self.cookies = {}
+
+    def json(self):
+        if self._json is None:
+            raise ValueError("not json")
+        return self._json
+
+
+class _FakeXyzSession:
+    def __init__(self, posts):
+        self.headers = {}
+        self.cookies = mock.Mock()
+        self.cookies.get.return_value = ""
+        self._posts = list(posts)
+        self.calls = []
+
+    def post(self, url, json=None, timeout=None):
+        self.calls.append((url, json))
+        if not self._posts:
+            raise AssertionError(f"unexpected POST {url}")
+        return self._posts.pop(0)
+
+
 class TestLoginXiaoyuzhou:
-    def test_saves_tokens_and_verifies(self, capsys, monkeypatch):
+    def test_token_flag_saves_and_verifies(self, capsys, monkeypatch):
         import InquirerPy.inquirer as inq_mod
 
         def _secret(message="", **kwargs):
@@ -346,7 +377,7 @@ class TestLoginXiaoyuzhou:
             "app.downloaders.xiaoyuzhou_subtitle.verify_xiaoyuzhou_login",
             lambda: "",
         )
-        cli._login_xiaoyuzhou([])
+        cli._login_xiaoyuzhou(["--token"])
         out = _cli_out(capsys)
         assert "登录态有效" in out
         assert "acc-tok" not in out
@@ -358,7 +389,7 @@ class TestLoginXiaoyuzhou:
         capsys.readouterr()
         cli._cookie_cli(["clear", "xiaoyuzhou"])
 
-    def test_empty_access_cancels(self, capsys, monkeypatch):
+    def test_token_empty_access_cancels(self, capsys, monkeypatch):
         import InquirerPy.inquirer as inq_mod
 
         def _secret(message="", **kwargs):
@@ -367,8 +398,67 @@ class TestLoginXiaoyuzhou:
             return box
 
         monkeypatch.setattr(inq_mod, "secret", _secret)
-        cli._login_xiaoyuzhou([])
+        cli._login_xiaoyuzhou(["--token"])
         assert "已取消" in _cli_out(capsys)
+
+    def test_qr_saves_tokens_without_printing_them(self, capsys, monkeypatch):
+        create = _FakeXyzResp(
+            200,
+            {"id": "qr-id-1", "url": "https://h5.xiaoyuzhoufm.com/oauth?qrcode_id=qr-id-1"},
+        )
+        wait = _FakeXyzResp(200, {"status": "WAITTING"})
+        scanned = _FakeXyzResp(200, {"status": "SCANNED"})
+        confirmed = _FakeXyzResp(
+            200,
+            {"status": "CONFIRMED"},
+            headers={
+                "x-jike-access-token": "acc-from-qr",
+                "x-jike-refresh-token": "ref-from-qr",
+            },
+        )
+        session = _FakeXyzSession([create, wait, scanned, confirmed])
+        monkeypatch.setattr(requests, "Session", lambda: session)
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: print(f"QR:{data}", file=sys.stdout))
+        monkeypatch.setattr(
+            "app.downloaders.xiaoyuzhou_subtitle.verify_xiaoyuzhou_login",
+            lambda: "",
+        )
+        monkeypatch.setattr("builtins.input", lambda *_: "")
+        cli._login_xiaoyuzhou([])
+        out = _cli_out(capsys)
+        assert "已保存小宇宙登录态" in out
+        assert "已扫码" in out
+        assert "acc-from-qr" not in out
+        assert "ref-from-qr" not in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        listed = _cli_out(capsys)
+        assert "xiaoyuzhou" in listed
+        assert "acc-from-qr" not in listed
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "xiaoyuzhou"])
+
+    def test_qr_expired_code_21(self, capsys, monkeypatch):
+        create = _FakeXyzResp(
+            200,
+            {"id": "qr-id-2", "url": "https://h5.xiaoyuzhoufm.com/oauth?qrcode_id=qr-id-2"},
+        )
+        expired = _FakeXyzResp(401, {"code": 21, "toast": "二维码已失效"})
+        session = _FakeXyzSession([create, expired])
+        monkeypatch.setattr(requests, "Session", lambda: session)
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: None)
+        cli._login_xiaoyuzhou([])
+        assert "已过期" in _cli_out(capsys)
+
+    def test_qr_create_failure_exits(self, capsys, monkeypatch):
+        session = _FakeXyzSession([_FakeXyzResp(400, {"toast": "参数错误"})])
+        monkeypatch.setattr(requests, "Session", lambda: session)
+        with pytest.raises(SystemExit) as ei:
+            cli._login_xiaoyuzhou([])
+        assert ei.value.code == 1
+        assert "生成二维码失败" in capsys.readouterr().err
 
 
 class TestExportCli:
