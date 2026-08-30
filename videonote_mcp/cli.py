@@ -629,6 +629,7 @@ def _wizard_other(inq) -> None:
                 message="选择要配置的项（← 返回）",
                 choices=[
                     {"name": "B 站扫码登录（自动获取 SESSDATA，AI 字幕用）", "value": "bili-login"},
+                    {"name": "小宇宙登录（官方文稿需 x-jike token）", "value": "xyz-login"},
                     {"name": "平台 Cookie（手动填，B 站等需登录内容）", "value": "cookie"},
                     {"name": f"默认笔记位置（图片模式）：{notes_dir}", "value": "notes"},
                     {"name": f"视频理解默认（{'开' if vu_on else '关'} / {vu_int}s，需多模态模型）", "value": "video"},
@@ -643,6 +644,8 @@ def _wizard_other(inq) -> None:
                 return
             if pick == "bili-login":
                 _login_cli([], exit_on_fail=False)
+            elif pick == "xyz-login":
+                _login_xiaoyuzhou([], exit_on_fail=False)
             elif pick == "cookie":
                 _show_header("平台 Cookie")
                 platform = inq.select(
@@ -652,6 +655,7 @@ def _wizard_other(inq) -> None:
                         {"name": "youtube", "value": "youtube"},
                         {"name": "douyin", "value": "douyin"},
                         {"name": "kuaishou", "value": "kuaishou"},
+                        {"name": "xiaoyuzhou", "value": "xiaoyuzhou"},
                         {"name": "其他（手动输入）", "value": "other"},
                         {"name": "← 返回", "value": "back"},
                     ],
@@ -1434,7 +1438,8 @@ def _proxy_cli(argv) -> None:
         print("✅ 代理已关闭（回退环境变量）", file=sys.stdout)
 
 
-_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou")
+_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou", "xiaoyuzhou")
+_BROWSER_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou")
 
 
 def _cookie_cli(argv) -> None:
@@ -1444,6 +1449,7 @@ def _cookie_cli(argv) -> None:
     - `from-browser`：直接读 Safari/Chrome 的登录态（yt-dlp cookiesfrombrowser），最省事
     - `set`：手动粘贴浏览器复制出来的完整 Cookie 字符串
     B 站推荐 `videonote login bilibili` 扫码登录（AI 字幕需要 SESSDATA）。
+    小宇宙官方文稿需要 `x-jike-access-token`（推荐 `videonote login xiaoyuzhou`）。
     """
     parser = argparse.ArgumentParser(
         prog="videonote cookie",
@@ -1456,7 +1462,7 @@ def _cookie_cli(argv) -> None:
     p_set.add_argument("platform", choices=_COOKIE_PLATFORMS)
     p_set.add_argument("cookie", help="完整 Cookie 字符串")
     p_fb = sub.add_parser("from-browser", help="直接读浏览器登录态（无需手动导出）")
-    p_fb.add_argument("platform", choices=_COOKIE_PLATFORMS)
+    p_fb.add_argument("platform", choices=_BROWSER_COOKIE_PLATFORMS)
     p_fb.add_argument("browser", choices=("safari", "chrome", "edge", "firefox"), help="从哪个浏览器读登录态")
     p_clear = sub.add_parser("clear", help="清除某平台的 Cookie 配置")
     p_clear.add_argument("platform", choices=_COOKIE_PLATFORMS)
@@ -1592,11 +1598,52 @@ def _login_youtube(args, exit_on_fail: bool = True) -> None:
         print(f"{_YELLOW}⚠ 验证失败: {err}（配置已保存，下载时若仍失败可重试）{_RESET}", file=sys.stdout)
 
 
+def _login_xiaoyuzhou(_args, exit_on_fail: bool = True) -> None:
+    """`videonote login xiaoyuzhou`：粘贴小宇宙 x-jike token（官方文稿用）。
+
+    access token 约 2 小时过期；一并粘贴 refresh token 后过期会自动续期。
+    不把 token 写进 argv（避免进 shell history）；非交互用 `cookie set`。
+    """
+    from app.downloaders.xiaoyuzhou_subtitle import (
+        format_xiaoyuzhou_cookie,
+        verify_xiaoyuzhou_login,
+    )
+    from app.services.cookie_manager import CookieConfigManager
+
+    _show_header("小宇宙登录")
+    print("官方文稿接口需要登录态。请在电脑浏览器登录 https://www.xiaoyuzhoufm.com 后：", file=sys.stdout)
+    print("1. 按 F12 → Network → 刷新 → 点任意 api.xiaoyuzhoufm.com 请求", file=sys.stdout)
+    print("2. Request Headers 复制 x-jike-access-token（约 2 小时过期）", file=sys.stdout)
+    print("3. 强烈建议同时复制 x-jike-refresh-token（长效，过期后自动续期）", file=sys.stdout)
+    try:
+        from InquirerPy import inquirer as inq
+    except ImportError:
+        print("需要 InquirerPy：`uv sync` 后重试", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    access = inq.secret(message="x-jike-access-token（留空取消）", keybindings=_KB).execute()
+    if not access:
+        print("已取消", file=sys.stdout)
+        return
+    refresh = inq.secret(message="x-jike-refresh-token（可选，推荐）", keybindings=_KB).execute() or ""
+    CookieConfigManager().set("xiaoyuzhou", format_xiaoyuzhou_cookie(access.strip(), refresh.strip()))
+    if not refresh.strip():
+        print(f"{_YELLOW}⚠ 未提供 refresh token：access token 约 2 小时后失效，需重新登录{_RESET}", file=sys.stdout)
+    print("已保存，正在实测验证（需要网络）…", file=sys.stdout)
+    err = verify_xiaoyuzhou_login()
+    if not err:
+        print(f"{_GREEN}✓ 小宇宙登录态有效{_RESET}", file=sys.stdout)
+        return
+    print(f"{_YELLOW}⚠ 验证失败: {err}（配置已保存，生成笔记时若仍失败可重试）{_RESET}", file=sys.stdout)
+
+
 def _login_cli(argv, exit_on_fail: bool = True) -> None:
-    """`videonote login [bilibili|youtube]`：平台登录配置。
+    """`videonote login [bilibili|youtube|xiaoyuzhou]`：平台登录配置。
 
     - bilibili：扫码登录，自动获取并保存 SESSDATA（AI 字幕用）
     - youtube：读浏览器登录态或手动粘贴 Cookie（--browser 时实测验证）
+    - xiaoyuzhou：粘贴 x-jike-access-token / refresh-token（官方文稿用）
 
     exit_on_fail=False 时失败路径只返回不杀进程（setup 向导内调用，#120：
     登录失败不再让整个向导带 traceback/退出，已配的其它设置不丢失）。
@@ -1604,8 +1651,11 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
     if argv and argv[0] == "youtube":
         _login_youtube(argv[1:], exit_on_fail)
         return
+    if argv and argv[0] == "xiaoyuzhou":
+        _login_xiaoyuzhou(argv[1:], exit_on_fail)
+        return
     if argv and argv[0] != "bilibili":
-        print(f"未知平台: {argv[0]}（支持 bilibili / youtube）", file=sys.stderr)
+        print(f"未知平台: {argv[0]}（支持 bilibili / youtube / xiaoyuzhou）", file=sys.stderr)
         sys.exit(2)
     import time
     import urllib.parse

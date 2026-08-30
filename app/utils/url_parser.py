@@ -15,7 +15,7 @@ def extract_video_id(url: str, platform: str) -> Optional[str]:
     从视频链接中提取视频 ID
 
     :param url: 视频链接
-    :param platform: 平台名（bilibili / youtube / douyin）
+    :param platform: 平台名（bilibili / youtube / douyin / xiaoyuzhou）
     :return: 提取到的视频 ID 或 None
     """
     if platform == "bilibili":
@@ -43,6 +43,11 @@ def extract_video_id(url: str, platform: str) -> Optional[str]:
                 url = resolved_url
         # 匹配 douyin.com/video/1234567890123456789（含 share/video/ 形态）
         match = re.search(r"/video/(\d+)", url)
+        return match.group(1) if match else None
+
+    elif platform == "xiaoyuzhou":
+        # https://www.xiaoyuzhoufm.com/episode/{24-hex} ；播客页 /podcast/ 不是单集
+        match = re.search(r"/episode/([0-9a-fA-F]{16,})", url)
         return match.group(1) if match else None
 
     return None

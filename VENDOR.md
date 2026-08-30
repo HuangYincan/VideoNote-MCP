@@ -13,7 +13,7 @@
 
 | 子包 | 内容 |
 |------|------|
-| `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, **bilibili_comment**, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, **generic_downloader** + 子包 `douyin_helper/`、`kuaishou_helper/`（xiaoyuzhoufm_download **已删除** 2026-08-17：未接入且 yt-dlp 通用提取已覆盖小宇宙） |
+| `app/downloaders/` | base, common, bilibili_downloader, bilibili_dm_patch, bilibili_subtitle, **bilibili_comment**, youtube_downloader, youtube_subtitle, douyin_downloader, kuaishou_downloader, local_downloader, **generic_downloader**, **xiaoyuzhou_downloader**, **xiaoyuzhou_subtitle** + 子包 `douyin_helper/`、`kuaishou_helper/`（旧 stub `xiaoyuzhoufm_download` 已删除 2026-08-17；2026-08-30 重新接入为一等平台 + 官方文稿） |
 | `app/transcriber/` | base, transcriber_provider, whisper, groq, bcut, kuaishou, mlx_whisper_transcriber, **funasr_transcriber**, **audio_preprocess**, model_download_state, whisper_models |
 | `app/gpt/` | base, gpt_factory, universal_gpt, prompt, prompt_builder, request_chunker + `app/gpt/provider/OpenAI_compatible_provider.py`（gpt_factory 依赖）（openai_gpt / deepseek_gpt / qwen_gpt / utils / tools **已删除** 2026-08-17：全仓零引用——gpt_factory 走 OpenAICompatibleProvider 直连，上游直连类死代码） |
 | `app/db/` | engine, init_db, provider_dao, model_dao, video_task_dao + `app/db/models/`（models, providers, video_tasks）（sqlite_client **已删除** 2026-08-17：全仓零引用 + CWD 相对 DB 路径死引信） |
@@ -56,7 +56,7 @@
 - `app/transcriber/whisper.py` / `mlx_whisper_transcriber.py` / `app/utils/model_status.py`（2026-08-25 #142 A2：内置模型 revision 固定——whisper 经 `WhisperModel(revision=…)`、mlx 经 `snapshot_download(revision=…)`，映射/散列单一来源在 model_status；上游若带原生下载逻辑需人工合并）
 - `app/downloaders/youtube_downloader.py`（2026-08-25 #142 A4：`VIDEONOTE_YTDLP_EJS` 开关控制 `remote_components`——上游默认无此 env 门禁，同步需人工合并）
 - `app/gpt/universal_gpt.py`（checkpoint 损坏弃用时打 warning 留痕，#106）
-- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`
+- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`xiaoyuzhou_downloader.py`、`xiaoyuzhou_subtitle.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`
 
 ## 如何同步上游更新
 

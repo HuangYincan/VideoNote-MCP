@@ -7,6 +7,7 @@ from app.downloaders.douyin_downloader import DouyinDownloader
 from app.downloaders.generic_downloader import GenericDownloader
 from app.downloaders.kuaishou_downloader import KuaiShouDownloader
 from app.downloaders.local_downloader import LocalDownloader
+from app.downloaders.xiaoyuzhou_downloader import XiaoyuzhouDownloader
 from app.downloaders.youtube_downloader import YoutubeDownloader
 
 # 惰性工厂：不要在模块导入期实例化下载器 —— 部分下载器 __init__ 会写 /tmp cookie 文件，
@@ -19,6 +20,7 @@ _DOWNLOADER_FACTORY: Dict[str, Callable] = {
     'tiktok': GenericDownloader,
     'kuaishou': KuaiShouDownloader,
     'douyin': DouyinDownloader,
+    'xiaoyuzhou': XiaoyuzhouDownloader,
     'local': LocalDownloader,
     'generic': GenericDownloader,
 }

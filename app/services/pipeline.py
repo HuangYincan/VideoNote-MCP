@@ -51,6 +51,7 @@ _PLATFORM_HINTS = [
     ("douyin", ("douyin.com",)),
     ("tiktok", ("tiktok.com",)),
     ("kuaishou", ("kuaishou.com", "gifshow.com")),
+    ("xiaoyuzhou", ("xiaoyuzhoufm.com", "xiaoyuzhou.fm")),
 ]
 
 
@@ -106,7 +107,7 @@ def handoff_result(url: str, reason: str = "") -> dict:
         "reason": reason or "yt-dlp 无法解析该链接（可能需登录/JS 渲染/受保护）",
         "handoff": True,
         "hint": (
-            "内置平台（bilibili/youtube/douyin/tiktok/kuaishou/本地文件）之外用 yt-dlp "
+            "内置平台（bilibili/youtube/douyin/tiktok/kuaishou/xiaoyuzhou/本地文件）之外用 yt-dlp "
             "通用提取也失败了。请用 WebFetch/浏览器读取页面提取视频源，或处理登录/验证后"
             "以本地文件调用（generate_note platform='local'）。"
         ),

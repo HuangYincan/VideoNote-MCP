@@ -249,3 +249,10 @@ class TestPublicOnlySessionRedirect:
         assert resp.status_code == 200
         assert len(calls) == 2
         assert calls[1] == "http://cdn.example.com/b.mp3"
+
+    def test_public_post_blocks_private_without_network(self):
+        from app.utils.url_safety import public_post
+
+        with mock.patch("requests.adapters.HTTPAdapter.send", side_effect=AssertionError("不应发出请求")):
+            with pytest.raises(ValueError, match="SSRF"):
+                public_post("http://169.254.169.254/latest/meta-data/", json={"eid": "x"})

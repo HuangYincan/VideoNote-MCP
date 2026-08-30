@@ -262,6 +262,10 @@ class PlatformHandoffTest(unittest.TestCase):
         self.assertEqual(pipeline.detect_platform("https://www.bilibili.com/video/BV1xx"), "bilibili")
         self.assertEqual(pipeline.detect_platform("https://www.youtube.com/watch?v=abc"), "youtube")
         self.assertEqual(pipeline.detect_platform("https://v.douyin.com/x"), "douyin")
+        self.assertEqual(
+            pipeline.detect_platform("https://www.xiaoyuzhoufm.com/episode/69b3b675772ac2295bfc01d0"),
+            "xiaoyuzhou",
+        )
         self.assertEqual(pipeline.detect_platform("/Users/x/video.mp4"), "local")
 
     def test_unknown_returns_generic(self):
