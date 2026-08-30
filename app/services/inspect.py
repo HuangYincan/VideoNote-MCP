@@ -48,6 +48,8 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
     try:
         if plat == "bilibili":
             return _inspect_bilibili(raw)
+        if plat == "xiaohongshu":
+            return _inspect_xiaohongshu(raw)
         if plat == "local":
             # file:// URI 先规整（#133 B2）：#130 A5 用裸 Path(raw) 漏了 file://——
             # inspect 曾是全工具面唯一不认 file:// 的本地入口（#105/#107 系列输入
@@ -154,6 +156,53 @@ def _inspect_bilibili(url: str) -> dict:
         "total": total,
         "truncated": truncated,
         "entries": entries,
+    }
+
+
+def _inspect_xiaohongshu(url: str) -> dict:
+    """单条笔记：解析 INITIAL_STATE；图文笔记返回 ok:false。"""
+    from app.downloaders.xiaohongshu_auth import XiaohongshuAuth
+    from app.utils.url_parser import extract_video_id
+
+    auth = XiaohongshuAuth()
+    try:
+        note = auth.fetch_note(url)
+    except ValueError as exc:
+        return {"ok": False, "platform": "xiaohongshu", "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("inspect 小红书失败: %s", exc)
+        return {"ok": False, "platform": "xiaohongshu", "error": str(exc)}
+    finally:
+        auth.close()
+
+    vid = note.note_id or extract_video_id(note.page_url or url, "xiaohongshu")
+    page_url = note.page_url or url
+    if not note.video_url:
+        return {
+            "ok": False,
+            "platform": "xiaohongshu",
+            "kind": "single",
+            "title": note.title,
+            "video_id": vid,
+            "error": "该笔记不是视频（图文笔记无法转写）",
+        }
+    return {
+        "ok": True,
+        "platform": "xiaohongshu",
+        "kind": "single",
+        "title": note.title,
+        "video_id": vid,
+        "total": 1,
+        "truncated": False,
+        "entries": [
+            {
+                "p": 1,
+                "title": note.title,
+                "duration": note.duration or None,
+                "url": page_url,
+                "video_id": vid,
+            }
+        ],
     }
 
 

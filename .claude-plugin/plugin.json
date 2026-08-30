@@ -1,7 +1,7 @@
 {
   "name": "videonote",
-  "version": "0.1.21",
-  "description": "Generate AI Markdown notes from video links (Bilibili/YouTube/Douyin/Kuaishou/Xiaoyuzhou/local)",
+  "version": "0.1.22",
+  "description": "Generate AI Markdown notes from video links (Bilibili/YouTube/Douyin/Kuaishou/Xiaoyuzhou/Xiaohongshu/local)",
   "author": {
     "name": "HuangYincan",
     "url": "https://github.com/HuangYincan"

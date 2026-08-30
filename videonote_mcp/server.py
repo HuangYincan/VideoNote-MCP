@@ -1842,7 +1842,7 @@ def get_config(provider_id: str = "") -> str:
 
     配置修改一律走 CLI（MCP 面不提供写配置工具，凭证红线最干净）：
     `! videonote providers set <id> --api-key '...'` / `! videonote login bilibili` /
-    `! videonote transcriber set ...` / `! videonote transcriber download ...`
+    `! videonote login xiaohongshu` / `! videonote transcriber set ...` / `! videonote transcriber download ...`
     """
     raw = get_app_config()
     _blocked = ("token", "cookie", "api_key", "secret", "password")

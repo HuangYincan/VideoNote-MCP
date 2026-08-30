@@ -291,6 +291,22 @@ class TestCookieCli:
             cli._cookie_cli(["from-browser", "xiaoyuzhou", "safari"])
         assert ei.value.code == 2
 
+    def test_from_browser_rejects_xiaohongshu(self):
+        with pytest.raises(SystemExit) as ei:
+            cli._cookie_cli(["from-browser", "xiaohongshu", "safari"])
+        assert ei.value.code == 2
+
+    def test_set_xiaohongshu_masks_value(self, capsys):
+        cli._cookie_cli(["set", "xiaohongshu", "web_session=secret-sess; a1=aaa"])
+        assert "已保存 xiaohongshu" in _cli_out(capsys)
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        out = _cli_out(capsys)
+        assert "xiaohongshu" in out
+        assert "secret-sess" not in out
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "xiaohongshu"])
+
 
 class TestLoginYoutube:
     def test_browser_success_saves_and_verifies(self, capsys, monkeypatch):
@@ -332,6 +348,7 @@ class TestLoginYoutube:
         err = capsys.readouterr().err
         assert "未知平台" in err
         assert "xiaoyuzhou" in err
+        assert "xiaohongshu" in err
 
 
 class _FakeXyzResp:
@@ -457,6 +474,107 @@ class TestLoginXiaoyuzhou:
         monkeypatch.setattr(requests, "Session", lambda: session)
         with pytest.raises(SystemExit) as ei:
             cli._login_xiaoyuzhou([])
+        assert ei.value.code == 1
+        assert "生成二维码失败" in capsys.readouterr().err
+
+
+class TestLoginXiaohongshu:
+    def test_cookie_flag_saves_without_printing(self, capsys, monkeypatch):
+        import InquirerPy.inquirer as inq_mod
+
+        def _secret(message="", **kwargs):
+            box = mock.Mock()
+            box.execute.return_value = "web_session=sess-tok; a1=aaa"
+            return box
+
+        monkeypatch.setattr(inq_mod, "secret", _secret)
+        monkeypatch.setattr(
+            "app.downloaders.xiaohongshu_auth.verify_xiaohongshu_login",
+            lambda: "",
+        )
+        cli._login_xiaohongshu(["--cookie"])
+        out = _cli_out(capsys)
+        assert "登录态有效" in out
+        assert "sess-tok" not in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        listed = _cli_out(capsys)
+        assert "xiaohongshu" in listed
+        assert "sess-tok" not in listed
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "xiaohongshu"])
+
+    def test_cookie_empty_cancels(self, capsys, monkeypatch):
+        import InquirerPy.inquirer as inq_mod
+
+        def _secret(message="", **kwargs):
+            box = mock.Mock()
+            box.execute.return_value = ""
+            return box
+
+        monkeypatch.setattr(inq_mod, "secret", _secret)
+        cli._login_xiaohongshu(["--cookie"])
+        assert "已取消" in _cli_out(capsys)
+
+    def test_qr_saves_without_printing_session(self, capsys, monkeypatch):
+        class _Auth:
+            def create_qr(self):
+                return {"qr_id": "qid", "code": "c1", "url": "xhsdiscover://login?qid=qid"}
+
+            def poll_qr(self, qr_id, code):
+                return {"code_status": 2, "login_info": {"session": "sess-from-qr"}}
+
+            def persist(self):
+                from app.services.cookie_manager import CookieConfigManager
+
+                CookieConfigManager().set("xiaohongshu", "web_session=sess-from-qr; a1=aaa")
+                return ""
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("app.downloaders.xiaohongshu_auth.XiaohongshuAuth", _Auth)
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: print(f"QR:{data}", file=sys.stdout))
+        monkeypatch.setattr("builtins.input", lambda *_: "")
+        cli._login_xiaohongshu([])
+        out = _cli_out(capsys)
+        assert "已保存小红书登录态" in out
+        assert "sess-from-qr" not in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        listed = _cli_out(capsys)
+        assert "xiaohongshu" in listed
+        assert "sess-from-qr" not in listed
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "xiaohongshu"])
+
+    def test_qr_expired(self, capsys, monkeypatch):
+        class _Auth:
+            def create_qr(self):
+                return {"qr_id": "qid", "code": "c1", "url": "xhsdiscover://x"}
+
+            def poll_qr(self, qr_id, code):
+                return {"code_status": 3}
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("app.downloaders.xiaohongshu_auth.XiaohongshuAuth", _Auth)
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: None)
+        monkeypatch.setattr("builtins.input", lambda *_: "")
+        cli._login_xiaohongshu([])
+        assert "已过期" in _cli_out(capsys)
+
+    def test_qr_create_failure_exits(self, capsys, monkeypatch):
+        class _Auth:
+            def create_qr(self):
+                raise RuntimeError("sign error")
+
+        monkeypatch.setattr("app.downloaders.xiaohongshu_auth.XiaohongshuAuth", _Auth)
+        with pytest.raises(SystemExit) as ei:
+            cli._login_xiaohongshu([])
         assert ei.value.code == 1
         assert "生成二维码失败" in capsys.readouterr().err
 

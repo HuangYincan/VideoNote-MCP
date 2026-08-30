@@ -15,7 +15,7 @@ def extract_video_id(url: str, platform: str) -> Optional[str]:
     从视频链接中提取视频 ID
 
     :param url: 视频链接
-    :param platform: 平台名（bilibili / youtube / douyin / xiaoyuzhou）
+    :param platform: 平台名（bilibili / youtube / douyin / xiaoyuzhou / xiaohongshu）
     :return: 提取到的视频 ID 或 None
     """
     if platform == "bilibili":
@@ -48,6 +48,18 @@ def extract_video_id(url: str, platform: str) -> Optional[str]:
     elif platform == "xiaoyuzhou":
         # https://www.xiaoyuzhoufm.com/episode/{24-hex} ；播客页 /podcast/ 不是单集
         match = re.search(r"/episode/([0-9a-fA-F]{16,})", url)
+        return match.group(1) if match else None
+
+    elif platform == "xiaohongshu":
+        if "xhslink." in url.lower():
+            resolved_url = resolve_xiaohongshu_short_url(url)
+            if resolved_url:
+                url = resolved_url
+        # /explore/{id} / discovery/item/{id} / notes/{id} / user/profile/{uid}/{noteId}
+        match = re.search(r"(?:explore|discovery/item|notes)/([0-9a-fA-F]{16,})", url)
+        if match:
+            return match.group(1)
+        match = re.search(r"/user/profile/[0-9a-fA-F]+/([0-9a-fA-F]{16,})", url)
         return match.group(1) if match else None
 
     return None
@@ -88,6 +100,21 @@ def resolve_douyin_short_url(short_url: str) -> Optional[str]:
         return response.url
     except requests.RequestException as e:
         logger.warning("Error resolving douyin short URL: %s", e)
+        return None
+
+
+@functools.lru_cache(maxsize=64)
+def resolve_xiaohongshu_short_url(short_url: str) -> Optional[str]:
+    """解析小红书短链（xhslink.com / xhslink.cn，App 分享默认形态）。
+
+    HEAD 跟随到带 xsec_token 的长链；失败返回 None（调用方保持「解析不出 → 不命中缓存」）。
+    """
+    assert_public_http_url(short_url)
+    try:
+        response = public_head(short_url, timeout=(5, 10))
+        return response.url
+    except requests.RequestException as e:
+        logger.warning("Error resolving xiaohongshu short URL: %s", e)
         return None
 
 
