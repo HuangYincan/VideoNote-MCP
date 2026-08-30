@@ -788,3 +788,11 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **后备**：`--token` 仍可粘贴 access/refresh；非交互继续 `cookie set`。凭证不进 MCP / 不打印明文。
 - **setup 向导**「小宇宙登录」改为扫码。
 - Skill / 04 / troubleshooting 同步；改 Skill 后需刷新插件。
+
+## 小红书原生支持（2026-08-31 · `login xiaohongshu` 默认扫码，805→841 tests）
+
+- **一等平台**：`xiaohongshu.com` / `xhslink.com` / `rednote.com` 不再落入 generic；`detect_platform` 返回 `xiaohongshu`。
+- **原生下载**：解析笔记页 `__INITIAL_STATE__` 取视频直链（与 yt-dlp XiaoHongShuIE 同源字段），图文笔记明确报错。无官方字幕，走本地/云端 ASR。
+- **登录**：`videonote login xiaohongshu` 默认扫码（edith `qrcode/create` + `qrcode/status`）；`--cookie` 粘贴浏览器 Cookie。凭证走 CLI，不进 MCP。
+- **inspect / 转写缓存**：`inspect_video` 原生解析单条笔记；`note_cache` 按笔记 id 命中。
+- Skill / 04 / VENDOR 同步；改 Skill 后需刷新插件。

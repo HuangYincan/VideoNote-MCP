@@ -7,6 +7,7 @@ from app.downloaders.douyin_downloader import DouyinDownloader
 from app.downloaders.generic_downloader import GenericDownloader
 from app.downloaders.kuaishou_downloader import KuaiShouDownloader
 from app.downloaders.local_downloader import LocalDownloader
+from app.downloaders.xiaohongshu_downloader import XiaohongshuDownloader
 from app.downloaders.xiaoyuzhou_downloader import XiaoyuzhouDownloader
 from app.downloaders.youtube_downloader import YoutubeDownloader
 
@@ -21,6 +22,7 @@ _DOWNLOADER_FACTORY: Dict[str, Callable] = {
     'kuaishou': KuaiShouDownloader,
     'douyin': DouyinDownloader,
     'xiaoyuzhou': XiaoyuzhouDownloader,
+    'xiaohongshu': XiaohongshuDownloader,
     'local': LocalDownloader,
     'generic': GenericDownloader,
 }

@@ -87,6 +87,13 @@ class IdentityTest(unittest.TestCase):
             ),
             "69b3b675772ac2295bfc01d0",
         )
+        self.assertEqual(
+            note_cache.derive_video_id(
+                "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9",
+                "xiaohongshu",
+            ),
+            "6411cf99000000001300b6d9",
+        )
 
     def test_local_sha256_changes_with_content(self):
         with tempfile.TemporaryDirectory() as td:

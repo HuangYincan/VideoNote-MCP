@@ -630,6 +630,7 @@ def _wizard_other(inq) -> None:
                 choices=[
                     {"name": "B 站扫码登录（自动获取 SESSDATA，AI 字幕用）", "value": "bili-login"},
                     {"name": "小宇宙扫码登录（官方文稿用，App 扫一扫）", "value": "xyz-login"},
+                    {"name": "小红书扫码登录（下载视频笔记用，App 扫一扫）", "value": "xhs-login"},
                     {"name": "平台 Cookie（手动填，B 站等需登录内容）", "value": "cookie"},
                     {"name": f"默认笔记位置（图片模式）：{notes_dir}", "value": "notes"},
                     {"name": f"视频理解默认（{'开' if vu_on else '关'} / {vu_int}s，需多模态模型）", "value": "video"},
@@ -646,6 +647,8 @@ def _wizard_other(inq) -> None:
                 _login_cli([], exit_on_fail=False)
             elif pick == "xyz-login":
                 _login_xiaoyuzhou([], exit_on_fail=False)
+            elif pick == "xhs-login":
+                _login_xiaohongshu([], exit_on_fail=False)
             elif pick == "cookie":
                 _show_header("平台 Cookie")
                 platform = inq.select(
@@ -656,6 +659,7 @@ def _wizard_other(inq) -> None:
                         {"name": "douyin", "value": "douyin"},
                         {"name": "kuaishou", "value": "kuaishou"},
                         {"name": "xiaoyuzhou", "value": "xiaoyuzhou"},
+                        {"name": "xiaohongshu", "value": "xiaohongshu"},
                         {"name": "其他（手动输入）", "value": "other"},
                         {"name": "← 返回", "value": "back"},
                     ],
@@ -1438,7 +1442,7 @@ def _proxy_cli(argv) -> None:
         print("✅ 代理已关闭（回退环境变量）", file=sys.stdout)
 
 
-_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou", "xiaoyuzhou")
+_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou", "xiaoyuzhou", "xiaohongshu")
 _BROWSER_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou")
 
 
@@ -1450,6 +1454,7 @@ def _cookie_cli(argv) -> None:
     - `set`：手动粘贴浏览器复制出来的完整 Cookie 字符串
     B 站推荐 `videonote login bilibili` 扫码登录（AI 字幕需要 SESSDATA）。
     小宇宙官方文稿需要登录态（推荐 `videonote login xiaoyuzhou` 扫码）。
+    小红书视频下载推荐 `videonote login xiaohongshu` 扫码（登录墙/验证码时需要）。
     """
     parser = argparse.ArgumentParser(
         prog="videonote cookie",
@@ -1792,12 +1797,147 @@ def _login_xiaoyuzhou(args, exit_on_fail: bool = True) -> None:
     _login_xiaoyuzhou_qr(exit_on_fail)
 
 
+def _login_xiaohongshu_cookie(exit_on_fail: bool = True) -> None:
+    print("请在电脑浏览器登录 https://www.xiaohongshu.com 后：", file=sys.stdout)
+    print("1. 按 F12 → Network → 刷新 → 点任意 www.xiaohongshu.com 请求", file=sys.stdout)
+    print("2. Request Headers 里复制完整 Cookie 行（需含 web_session）", file=sys.stdout)
+    try:
+        from InquirerPy import inquirer as inq
+    except ImportError:
+        print("需要 InquirerPy：`uv sync` 后重试", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    cookie = inq.secret(message="小红书 Cookie 字符串（留空取消）", keybindings=_KB).execute()
+    if not cookie or not cookie.strip():
+        print("已取消", file=sys.stdout)
+        return
+    from app.downloaders.xiaohongshu_auth import (
+        parse_cookie_string,
+        verify_xiaohongshu_login,
+    )
+    from app.services.cookie_manager import CookieConfigManager
+
+    if not parse_cookie_string(cookie).get("web_session"):
+        print("未发现 web_session，请复制完整 Cookie 行后重试", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    CookieConfigManager().set("xiaohongshu", cookie.strip())
+    err = verify_xiaohongshu_login()
+    if not err:
+        print(f"{_GREEN}✓ 小红书登录态有效{_RESET}", file=sys.stdout)
+        return
+    print(f"{_YELLOW}⚠ {err}（配置已保存，下载时若仍失败可重试扫码）{_RESET}", file=sys.stdout)
+
+
+def _login_xiaohongshu_qr(exit_on_fail: bool = True) -> None:
+    import time
+
+    try:
+        import qrcode  # noqa: F401
+    except ImportError:
+        print("需要 qrcode 库：`uv sync` 后重试", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+
+    from app.downloaders.xiaohongshu_auth import (
+        QR_EXPIRED,
+        QR_SCANNED,
+        QR_SUCCESS,
+        XiaohongshuAuth,
+    )
+
+    auth = XiaohongshuAuth()
+    try:
+        created = auth.create_qr()
+    except Exception as e:
+        print(f"生成二维码失败（网络？）: {e}", file=sys.stderr)
+        print("扫不了可改用 `videonote login xiaohongshu --cookie` 粘贴 Cookie", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    qr_url = created.get("url") or ""
+    qr_id = created.get("qr_id") or ""
+    code = created.get("code") or ""
+    if not qr_url or not qr_id:
+        print("生成二维码失败：接口未返回 url/qr_id", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+
+    _show_header("小红书扫码登录")
+    print(f"{_YELLOW}请用小红书 App「扫一扫」扫描下方二维码（约 3 分钟内有效）{_RESET}", file=sys.stdout)
+    print("扫不了可改用 `videonote login xiaohongshu --cookie` 粘贴 Cookie", file=sys.stdout)
+    _print_ascii_qr(qr_url)
+
+    last_status = None
+    try:
+        for _ in range(90):
+            time.sleep(2)
+            try:
+                poll = auth.poll_qr(qr_id, code)
+            except Exception as e:
+                print(f"轮询失败（网络？）: {e}", file=sys.stderr)
+                continue
+            st = poll.get("code_status")
+            if st == QR_SUCCESS:
+                err = auth.persist()
+                if err and err.startswith("未配置"):
+                    print("登录成功但未取到 web_session，请改用 `videonote login xiaohongshu --cookie`", file=sys.stderr)
+                    if exit_on_fail:
+                        sys.exit(1)
+                    return
+                if err and err.startswith("请求失败"):
+                    print(f"{_YELLOW}⚠ {err}（cookie 已保存）{_RESET}", file=sys.stdout)
+                elif err and "无效" in err:
+                    print(f"{_YELLOW}⚠ {err}{_RESET}", file=sys.stdout)
+                else:
+                    print(f"{_GREEN}✓ 已保存小红书登录态 —— 下载视频笔记可用了{_RESET}", file=sys.stdout)
+                try:
+                    input("（按回车返回）")
+                except (EOFError, KeyboardInterrupt):
+                    pass
+                return
+            if st == QR_SCANNED and last_status != QR_SCANNED:
+                print("已扫码，请在手机上确认登录…", file=sys.stdout)
+                last_status = QR_SCANNED
+            elif st == QR_EXPIRED:
+                print(f"{_YELLOW}二维码已过期，请重新运行 `videonote login xiaohongshu`{_RESET}", file=sys.stdout)
+                try:
+                    input("（按回车返回）")
+                except (EOFError, KeyboardInterrupt):
+                    pass
+                return
+        print(f"{_YELLOW}二维码已过期，请重新运行 `videonote login xiaohongshu`{_RESET}", file=sys.stdout)
+    except KeyboardInterrupt:
+        print("（已取消）", file=sys.stdout)
+    finally:
+        auth.close()
+
+
+def _login_xiaohongshu(args, exit_on_fail: bool = True) -> None:
+    """`videonote login xiaohongshu`：默认扫码；`--cookie` 粘贴浏览器 Cookie。"""
+    parser = argparse.ArgumentParser(
+        prog="videonote login xiaohongshu",
+        description="小红书登录：默认扫码；--cookie 改粘贴浏览器 Cookie",
+    )
+    parser.add_argument("--cookie", action="store_true", help="粘贴 Cookie 而不是扫码")
+    opts = parser.parse_args(args)
+    if opts.cookie:
+        _login_xiaohongshu_cookie(exit_on_fail)
+        return
+    _login_xiaohongshu_qr(exit_on_fail)
+
+
 def _login_cli(argv, exit_on_fail: bool = True) -> None:
-    """`videonote login [bilibili|youtube|xiaoyuzhou]`：平台登录配置。
+    """`videonote login [bilibili|youtube|xiaoyuzhou|xiaohongshu]`：平台登录配置。
 
     - bilibili：扫码登录，自动获取并保存 SESSDATA（AI 字幕用）
     - youtube：读浏览器登录态或手动粘贴 Cookie（--browser 时实测验证）
     - xiaoyuzhou：扫码登录（`--token` 改粘贴 x-jike token）
+    - xiaohongshu：扫码登录（`--cookie` 改粘贴浏览器 Cookie）
 
     exit_on_fail=False 时失败路径只返回不杀进程（setup 向导内调用，#120：
     登录失败不再让整个向导带 traceback/退出，已配的其它设置不丢失）。
@@ -1808,8 +1948,11 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
     if argv and argv[0] == "xiaoyuzhou":
         _login_xiaoyuzhou(argv[1:], exit_on_fail)
         return
+    if argv and argv[0] == "xiaohongshu":
+        _login_xiaohongshu(argv[1:], exit_on_fail)
+        return
     if argv and argv[0] != "bilibili":
-        print(f"未知平台: {argv[0]}（支持 bilibili / youtube / xiaoyuzhou）", file=sys.stderr)
+        print(f"未知平台: {argv[0]}（支持 bilibili / youtube / xiaoyuzhou / xiaohongshu）", file=sys.stderr)
         sys.exit(2)
     import time
     import urllib.parse

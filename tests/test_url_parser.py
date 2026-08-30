@@ -106,6 +106,15 @@ class XiaoyuzhouEpisodeIdTest(unittest.TestCase):
             )
         )
 
+    def test_xiaohongshu_explore(self):
+        self.assertEqual(
+            extract_video_id(
+                "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9",
+                "xiaohongshu",
+            ),
+            "6411cf99000000001300b6d9",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

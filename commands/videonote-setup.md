@@ -1,6 +1,6 @@
 ---
 name: videonote-setup
-description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默认值 / B站扫码 / 数据管理
+description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默认值 / 平台扫码 / 数据管理
 ---
 
 # VideoNote-MCP 配置向导
@@ -50,12 +50,13 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 - 安装时 `/plugin` 的 userConfig 已收过默认值，这里主要是**展示确认**。
 - 要修改 → 让用户输 `! videonote setup`（全屏向导，独立终端更稳），或编辑该 JSON。
 
-## 5. B站扫码（可选，需要 AI 字幕 / 评论时）
+## 5. 平台扫码登录（可选）
 
-让用户在本会话输入：
-`! videonote login bilibili`
-- 二维码会**直接渲染进会话终端**，手机 B 站 App 扫码后自动保存 SESSDATA（进 `downloader.json`）。
-- 没配 SESSDATA 时 B 站视频仍可转写（走语音识别），只是拿不到 AI 字幕 / 弹幕评论。
+二维码会**直接渲染进会话终端**，手机 App 扫码后自动保存登录态（进 `downloader.json`）。凭证不进对话。
+
+- **B 站**（AI 字幕 / 评论）：`! videonote login bilibili`。没配 SESSDATA 时仍可转写（走语音识别），只是拿不到 AI 字幕 / 弹幕评论。
+- **小宇宙**（官方文稿）：`! videonote login xiaoyuzhou`。未登录会回退本地下载 + ASR，长节目会很慢。
+- **小红书**（视频笔记）：`! videonote login xiaohongshu`。公开视频有时无需登录；遇登录墙 / 验证码时需要。图文笔记无法转写。扫不了可用 `--cookie` 粘贴。
 
 ## 6. 数据管理（可选）
 
