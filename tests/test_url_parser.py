@@ -88,5 +88,24 @@ class DouyinShortUrlTest(unittest.TestCase):
         )
 
 
+class XiaoyuzhouEpisodeIdTest(unittest.TestCase):
+    def test_episode_path(self):
+        self.assertEqual(
+            extract_video_id(
+                "https://www.xiaoyuzhoufm.com/episode/69b3b675772ac2295bfc01d0",
+                "xiaoyuzhou",
+            ),
+            "69b3b675772ac2295bfc01d0",
+        )
+
+    def test_podcast_path_not_episode(self):
+        self.assertIsNone(
+            extract_video_id(
+                "https://www.xiaoyuzhoufm.com/podcast/6013f9f58e2f7ee375cf4216",
+                "xiaoyuzhou",
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

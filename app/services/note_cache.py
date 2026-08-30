@@ -113,7 +113,7 @@ def derive_video_id(url: str, platform: str) -> Optional[str]:
     """从 URL 预解析稳定视频 id（免下载优先）。解析不出返回 None（不命中缓存）。
 
     - bilibili：BV + p（`BV...:pN`，无 p 就是 `BV...`），分 P 之间身份互不污染；
-    - youtube / douyin / tiktok：URL 内 id；
+    - youtube / douyin / tiktok / xiaoyuzhou：URL 内 id；
     - local：文件 sha256（内容变了就换身份，正确性优先）；
     - 其余（kuaishou / generic 等）：None。
     """

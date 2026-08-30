@@ -14,8 +14,9 @@
 | 任务 FAILED、message 是 Python 异常原文（如 `missing 1 required positional argument: 'self'` / `TypeError`） | 疑似 #32 同族绑定回归（装饰器误绑实例方法）——仓库已加守卫测试 `tests/test_binding_guard.py` 拦截；升级到最新版（`uvx videonote@latest` 会话自动取新版），仍现则报 issue 附完整 FAILED message |
 | B 站下载报 `fatal` / playurl 412 | 已修复（yt-dlp fatal 透传）；仍失败则让用户 `videonote login bilibili`（扫码存 SESSDATA）后重试 |
 | 想用 B 站 **AI 字幕**跳过语音识别 | 引导用户跑 `videonote login bilibili`（扫码自动存 SESSDATA）。AI 字幕需登录态；`raw_info.subtitles={}` 只反映手动 CC，AI 字幕在 automatic_captions |
+| 小宇宙长时间卡在转写 / 想用官方文稿 | 未配登录态会走本地下载+ASR。引导用户 `! videonote login xiaoyuzhou`（粘贴 x-jike-access-token，建议带 refresh-token）后重试；`inspect_video` 应返回 `platform:"xiaoyuzhou"` |
 | 整合评论/弹幕时评论拿不到 | 未配 B 站 SESSDATA —— 引导用户 `videonote login bilibili`；抓取失败**不阻断**笔记生成（跳过该部分） |
-| 其他平台（非内置 6 平台） | `inspect_video` 返回 `platform:"generic"` → 自动走 **yt-dlp 通用提取**（覆盖 1800+ 站点）；若也失败任务报错 → Agent 接手：WebFetch/浏览器解析视频源后 `generate_note(video_url="/绝对/路径/x.mp4", platform="local")` |
+| 其他平台（非内置平台） | `inspect_video` 返回 `platform:"generic"` → 自动走 **yt-dlp 通用提取**（覆盖 1800+ 站点）；若也失败任务报错 → Agent 接手：WebFetch/浏览器解析视频源后 `generate_note(video_url="/绝对/路径/x.mp4", platform="local")` |
 | generic 下载报需登录/JS 渲染 | 该站点 yt-dlp 无法直接提取 —— Agent 用 WebFetch/浏览器处理登录/验证，或让用户 `videonote setup` 向导里配「平台 Cookie」后重试 |
 | `process_media(action="diarize")` 报需安装 pyannote / 缺 HF_TOKEN | 引导用户 `transcriber diarization on`（给安装指引 + 存 HF_TOKEN）；pyannote 模型需先在 huggingface.co 同意授权 |
 | 转写输出异常（开预处理后） | 预处理默认关；若开了又出问题，`! videonote transcriber preprocess off` 关闭对比 |

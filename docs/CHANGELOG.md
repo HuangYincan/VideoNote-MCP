@@ -773,3 +773,11 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **YouTube EJS 开关（A4，中低）**：`VIDEONOTE_YTDLP_EJS`（默认开——2026+ YouTube JS challenge 硬要求）控制 `remote_components` 远程脚本拉取；组件名不可经 env 注入。
 - **MD5 FIPS 兼容（A6，低）**：帧去重 MD5 加 `usedforsecurity=False`。
 - **文档**：docs/05 #142 条目、docs/06 登记、04 手册「本地文件与安全边界」章节 + 环境变量表、skills tools.md 同步、VENDOR.md 冻结清单（whisper/mlx_whisper_transcriber/model_status/youtube_downloader）、00 基线更新（771 tests）。
+
+## 小宇宙官方文稿（2026-08-30 · 一等平台接入，771→802 tests）
+
+- **平台识别**：`xiaoyuzhoufm.com` / `xiaoyuzhou.fm` 不再落入 generic，`detect_platform` 返回 `xiaoyuzhou`。
+- **官方文稿优先**：`POST /v1/episode-transcript/get` + Android UA 拉签名 CDN；有文稿则跳过本地下载+ASR（长节目不再卡在 fast-whisper）。RSS 转载优先 `transcriptMediaId`。
+- **登录态**：access token 约 2 小时过期，配 refresh token 后 401 自动续期并写回 `downloader.json`。凭证走 `videonote login xiaoyuzhou` / `cookie set`，不进 MCP 工具。
+- **回退**：未登录或该期无文稿 → yt-dlp 下音频 + 本地 ASR（原 generic 行为）。
+- **文档 / Skill / VENDOR** 同步；改 Skill 后需刷新插件。

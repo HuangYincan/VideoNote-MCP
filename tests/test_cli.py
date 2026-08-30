@@ -275,6 +275,20 @@ class TestCookieCli:
             cli._cookie_cli(["set", "vimeo", "x=1"])
         assert ei.value.code == 2
 
+    def test_set_xiaoyuzhou_masks_value(self, capsys):
+        cli._cookie_cli(["set", "xiaoyuzhou", "x-jike-access-token=secret-jwt"])
+        assert "已保存 xiaoyuzhou" in _cli_out(capsys)
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        out = _cli_out(capsys)
+        assert "xiaoyuzhou" in out
+        assert "secret-jwt" not in out
+
+    def test_from_browser_rejects_xiaoyuzhou(self):
+        with pytest.raises(SystemExit) as ei:
+            cli._cookie_cli(["from-browser", "xiaoyuzhou", "safari"])
+        assert ei.value.code == 2
+
 
 class TestLoginYoutube:
     def test_browser_success_saves_and_verifies(self, capsys, monkeypatch):
@@ -313,7 +327,48 @@ class TestLoginYoutube:
         with pytest.raises(SystemExit) as ei:
             cli._login_cli(["vimeo"])
         assert ei.value.code == 2
-        assert "未知平台" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "未知平台" in err
+        assert "xiaoyuzhou" in err
+
+
+class TestLoginXiaoyuzhou:
+    def test_saves_tokens_and_verifies(self, capsys, monkeypatch):
+        import InquirerPy.inquirer as inq_mod
+
+        def _secret(message="", **kwargs):
+            box = mock.Mock()
+            box.execute.return_value = "ref-tok" if "refresh" in message else "acc-tok"
+            return box
+
+        monkeypatch.setattr(inq_mod, "secret", _secret)
+        monkeypatch.setattr(
+            "app.downloaders.xiaoyuzhou_subtitle.verify_xiaoyuzhou_login",
+            lambda: "",
+        )
+        cli._login_xiaoyuzhou([])
+        out = _cli_out(capsys)
+        assert "登录态有效" in out
+        assert "acc-tok" not in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        listed = _cli_out(capsys)
+        assert "xiaoyuzhou" in listed
+        assert "acc-tok" not in listed
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "xiaoyuzhou"])
+
+    def test_empty_access_cancels(self, capsys, monkeypatch):
+        import InquirerPy.inquirer as inq_mod
+
+        def _secret(message="", **kwargs):
+            box = mock.Mock()
+            box.execute.return_value = ""
+            return box
+
+        monkeypatch.setattr(inq_mod, "secret", _secret)
+        cli._login_xiaoyuzhou([])
+        assert "已取消" in _cli_out(capsys)
 
 
 class TestExportCli:

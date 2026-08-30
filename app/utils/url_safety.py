@@ -13,7 +13,7 @@ scheme 与目标主机，拦截指向私网/环回/链路本地/保留地址的�
 - DNS 解析失败：放行交由 yt-dlp 正常报错，不因解析器抖动误杀合法链接。
 
 覆盖层次（#140：#133 A1 只校验入口 URL 的缺口收尾）：
-- `PublicOnlySession` / `public_get` / `public_head`：requests 系出站请求的
+- `PublicOnlySession` / `public_get` / `public_head` / `public_post`：requests 系出站请求的
   **逐跳**校验——重写 `Session.send` 覆盖初始 URL 与每次重定向跳点
   （requests 的 `resolve_redirects` 经 `self.send` 发出下一跳），
   短链解析（url_parser）、快手/抖音视频页跟随、B 站 API 返回的资源 URL 均走这里。
@@ -156,3 +156,9 @@ def public_head(url: str, **kwargs) -> "requests.Response":
     """`requests.head` 的逐跳 SSRF 校验版（短链解析等 HEAD 跟随场景）。"""
     with PublicOnlySession() as session:
         return session.request("HEAD", url, **kwargs)
+
+
+def public_post(url: str, **kwargs) -> "requests.Response":
+    """`requests.post` 的逐跳 SSRF 校验版（平台官方 API 出站）。"""
+    with PublicOnlySession() as session:
+        return session.request("POST", url, **kwargs)
