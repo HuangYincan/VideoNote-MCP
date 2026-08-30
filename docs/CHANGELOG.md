@@ -781,3 +781,10 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **登录态**：access token 约 2 小时过期，配 refresh token 后 401 自动续期并写回 `downloader.json`。凭证走 `videonote login xiaoyuzhou` / `cookie set`，不进 MCP 工具。
 - **回退**：未登录或该期无文稿 → yt-dlp 下音频 + 本地 ASR（原 generic 行为）。
 - **文档 / Skill / VENDOR** 同步；改 Skill 后需刷新插件。
+
+## 小宇宙扫码登录（2026-08-30 · `login xiaoyuzhou` 默认扫码，802→805 tests）
+
+- **默认扫码**：`videonote login xiaoyuzhou` 走官网统一登录 `web-api.xiaoyuzhoufm.com/v1/auth/qrcode/create` + `/login`（clientId `xyz-web`），终端 ASCII 二维码，小宇宙 App 扫确认后保存 x-jike token。
+- **后备**：`--token` 仍可粘贴 access/refresh；非交互继续 `cookie set`。凭证不进 MCP / 不打印明文。
+- **setup 向导**「小宇宙登录」改为扫码。
+- Skill / 04 / troubleshooting 同步；改 Skill 后需刷新插件。
