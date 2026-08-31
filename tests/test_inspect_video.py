@@ -43,7 +43,7 @@ class InspectBilibiliTest(unittest.TestCase):
     def test_multi_p_lists_urls(self):
         fake = mock.Mock()
         fake.json.return_value = VIEW_MULTI
-        with mock.patch("requests.get", return_value=fake):
+        with mock.patch("app.services.inspect.public_get_retry", return_value=fake):
             out = inspect_mod.inspect_video("https://www.bilibili.com/video/BV1xx411c7mD?p=2")
         self.assertTrue(out["ok"])
         self.assertEqual(out["kind"], "multi")
@@ -62,7 +62,7 @@ class InspectBilibiliTest(unittest.TestCase):
     def test_single_is_kind_single(self):
         fake = mock.Mock()
         fake.json.return_value = VIEW_SINGLE
-        with mock.patch("requests.get", return_value=fake):
+        with mock.patch("app.services.inspect.public_get_retry", return_value=fake):
             out = inspect_mod.inspect_video("https://www.bilibili.com/video/BV1aa411c7mD")
         self.assertTrue(out["ok"])
         self.assertEqual(out["kind"], "single")
@@ -72,7 +72,7 @@ class InspectBilibiliTest(unittest.TestCase):
     def test_view_error(self):
         fake = mock.Mock()
         fake.json.return_value = {"code": -404, "message": "啥都木有"}
-        with mock.patch("requests.get", return_value=fake):
+        with mock.patch("app.services.inspect.public_get_retry", return_value=fake):
             out = inspect_mod.inspect_video("https://www.bilibili.com/video/BV1xx411c7mD")
         self.assertFalse(out["ok"])
         self.assertIn("-404", out["error"])

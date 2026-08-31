@@ -6,7 +6,7 @@ from typing import Any, Callable, Optional
 
 import requests
 
-from app.utils.url_safety import assert_public_http_url
+from app.utils.url_safety import assert_public_http_url, public_get
 
 
 def ytdlp_cancel_hook(cancel_event: Optional[threading.Event]) -> Callable[[dict], None]:
@@ -24,6 +24,55 @@ def ytdlp_cancel_hook(cancel_event: Optional[threading.Event]) -> Callable[[dict
             raise TaskCancelledError("任务已取消")
 
     return _hook
+
+
+def public_get_retry(
+    url: str,
+    *,
+    attempts: int = 3,
+    base_delay: float = 0.5,
+    deadline: float = 30.0,
+    **kwargs,
+) -> requests.Response:
+    """GET a public URL with bounded retries for transient network responses.
+
+    Each attempt goes through ``public_get`` so the initial URL and every redirect
+    hop retain the SSRF guard.  Only connection/timeout failures, HTTP 429, and
+    HTTP 5xx responses are retried; the final response is returned unchanged so
+    existing callers keep their current JSON/business-error handling.
+    """
+    if attempts <= 0:
+        raise ValueError(f"attempts 必须为正整数，收到: {attempts}")
+    if deadline <= 0:
+        raise ValueError(f"deadline 必须为正数，收到: {deadline}")
+    deadline_at = time.monotonic() + deadline
+    last_error = None
+
+    for i in range(attempts):
+        try:
+            response = public_get(url, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            last_error = exc
+            if i == attempts - 1:
+                raise
+        else:
+            status = getattr(response, "status_code", 200)
+            if status not in (429,) and not 500 <= status < 600:
+                return response
+            if i == attempts - 1 or time.monotonic() >= deadline_at:
+                return response
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(base_delay * (2**i), remaining))
+
+    if last_error is not None:
+        raise last_error
+    raise requests.exceptions.Timeout("GET 重试达到总 deadline")
 
 
 def stream_download(

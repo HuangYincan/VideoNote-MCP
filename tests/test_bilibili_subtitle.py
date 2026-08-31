@@ -45,18 +45,18 @@ class SubtitlePOutOfRangeTest(unittest.TestCase):
 
     def test_p_out_of_range_returns_none(self):
         # p=3 但只有 2 集：返回 None（上层走语音转写），绝不静默取第 1 集字幕
-        with mock.patch("app.downloaders.bilibili_subtitle.requests.get", side_effect=_fake_get):
+        with mock.patch("app.downloaders.bilibili_subtitle.public_get_retry", side_effect=_fake_get):
             cid = self.fetcher._get_cid("BV1xx411c7mD", p=3)
         self.assertIsNone(cid)
 
     def test_p_within_range_resolves(self):
-        with mock.patch("app.downloaders.bilibili_subtitle.requests.get", side_effect=_fake_get):
+        with mock.patch("app.downloaders.bilibili_subtitle.public_get_retry", side_effect=_fake_get):
             cid = self.fetcher._get_cid("BV1xx411c7mD", p=2)
         self.assertEqual(cid, 67891)  # pages[1]
 
     def test_no_p_defaults_to_first_page(self):
         # 没给 p（或 p<1）：默认第 1 集，行为不变
-        with mock.patch("app.downloaders.bilibili_subtitle.requests.get", side_effect=_fake_get):
+        with mock.patch("app.downloaders.bilibili_subtitle.public_get_retry", side_effect=_fake_get):
             cid = self.fetcher._get_cid("BV1xx411c7mD")
         self.assertEqual(cid, 67890)
 

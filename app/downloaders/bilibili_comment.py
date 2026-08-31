@@ -18,8 +18,7 @@ from collections import Counter
 from typing import List, Optional, Tuple
 from xml.etree import ElementTree
 
-import requests
-
+from app.downloaders.common import public_get_retry
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
 from app.utils.url_parser import (
@@ -76,7 +75,7 @@ class BilibiliCommentFetcher:
         if p is not None and p >= 1:
             params["p"] = p
         try:
-            resp = requests.get(url, params=params, headers=self._headers(), timeout=10)
+            resp = public_get_retry(url, params=params, headers=self._headers(), timeout=10)
             data = resp.json()
         except Exception as e:
             logger.warning(f"获取视频元信息失败: {sanitize_error_text(e)}")
@@ -200,7 +199,7 @@ class BilibiliCommentFetcher:
         aid, cid = meta
 
         try:
-            resp = requests.get(
+            resp = public_get_retry(
                 "https://api.bilibili.com/x/v1/dm/list.so",
                 params={"oid": cid},
                 headers=self._headers(),
@@ -263,7 +262,7 @@ class BilibiliCommentFetcher:
         page = 0
         for _ in range(2):  # 最多翻 2 页
             try:
-                resp = requests.get(
+                resp = public_get_retry(
                     url,
                     params={"type": 1, "oid": aid, "mode": 3, "next": page},
                     headers=self._headers(),

@@ -16,8 +16,7 @@ AI 字幕需要登录态 cookie（SESSDATA）；通过 CookieConfigManager 注�
 
 from typing import List, Optional
 
-import requests
-
+from app.downloaders.common import public_get_retry
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
@@ -26,7 +25,7 @@ from app.utils.url_parser import (
     extract_video_id,
     resolve_bilibili_short_url,
 )
-from app.utils.url_safety import public_get, sanitize_error_text
+from app.utils.url_safety import sanitize_error_text
 
 logger = get_logger(__name__)
 
@@ -57,7 +56,7 @@ class BilibiliSubtitleFetcher:
         if p is not None and p >= 1:
             params["p"] = p
         try:
-            resp = requests.get(url, params=params, headers=self._headers(), timeout=10)
+            resp = public_get_retry(url, params=params, headers=self._headers(), timeout=10)
             data = resp.json()
         except Exception as e:
             logger.warning(f"获取 cid 失败: {sanitize_error_text(e)}")
@@ -90,7 +89,9 @@ class BilibiliSubtitleFetcher:
     def _list_subtitles(self, bvid: str, cid: int) -> List[dict]:
         url = "https://api.bilibili.com/x/player/wbi/v2"
         try:
-            resp = requests.get(url, params={"bvid": bvid, "cid": cid}, headers=self._headers(), timeout=10)
+            resp = public_get_retry(
+                url, params={"bvid": bvid, "cid": cid}, headers=self._headers(), timeout=10
+            )
             data = resp.json()
         except Exception as e:
             logger.warning(f"获取字幕列表失败: {sanitize_error_text(e)}")
@@ -133,7 +134,7 @@ class BilibiliSubtitleFetcher:
         try:
             # public_get 逐跳校验（#140）：subtitle_url 来自 B 站 API 返回（已签 auth_key
             # 的完整地址），与抖音/快手资源 URL 同类——入口校验覆盖不到，出站前校验
-            resp = public_get(
+            resp = public_get_retry(
                 BilibiliSubtitleFetcher._normalize_url(subtitle_url),
                 headers=self._headers(),
                 timeout=15,

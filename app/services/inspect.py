@@ -9,6 +9,7 @@ import logging
 from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
+from app.downloaders.common import public_get_retry
 from app.services.pipeline import detect_platform
 from app.utils.url_safety import assert_public_http_url, sanitize_error_text
 
@@ -96,8 +97,6 @@ def _bili_headers() -> dict:
 
 
 def _inspect_bilibili(url: str) -> dict:
-    import requests
-
     from app.utils.url_parser import (
         extract_bilibili_p_number,
         extract_video_id,
@@ -112,7 +111,7 @@ def _inspect_bilibili(url: str) -> dict:
         return {"ok": False, "platform": "bilibili", "error": "无法从链接提取 BV 号"}
     current_p = extract_bilibili_p_number(resolved)
 
-    resp = requests.get(
+    resp = public_get_retry(
         "https://api.bilibili.com/x/web-interface/view",
         params={"bvid": bvid},
         headers=_bili_headers(),
