@@ -400,6 +400,28 @@ def _absolutize_images(markdown: Optional[str], base_dir: Optional[str] = None) 
     return out
 
 
+def _public_audio_meta(audio_meta) -> Optional[dict]:
+    """Project downloader metadata to fields safe to return through MCP.
+
+    ``AudioDownloadResult.raw_info`` is an internal pipeline/cache detail.  yt-dlp
+    may put signed media URLs, request headers, or cookie material in it, so it
+    must never cross the task-result boundary (including results written by older
+    versions, which are projected again when read).
+    """
+    if audio_meta is None:
+        return None
+    if isinstance(audio_meta, dict):
+        return {
+            key: audio_meta[key]
+            for key in ("file_path", "title", "duration", "platform", "video_id", "video_path")
+            if key in audio_meta
+        }
+    return {
+        key: getattr(audio_meta, key, None)
+        for key in ("file_path", "title", "duration", "platform", "video_id", "video_path")
+    }
+
+
 def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None, **params) -> None:
     """在后台线程执行 NoteGenerator.generate，并落盘最终结果。"""
     try:
@@ -427,7 +449,7 @@ def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None,
             payload = {
                 "markdown": result.markdown,
                 "transcript": asdict(result.transcript) if result.transcript else None,
-                "audio_meta": asdict(result.audio_meta) if result.audio_meta else None,
+                "audio_meta": _public_audio_meta(result.audio_meta),
             }
         # 每任务文件夹统一根；payload 补语义标题（所有任务形态暴露统一 title）
         task_dir = NOTE_OUTPUT_DIR / task_id
@@ -1030,6 +1052,10 @@ def _task_status(task_id: str) -> str:
     if status == "SUCCESS" and result_file.exists():
         try:
             result = json.loads(result_file.read_text(encoding="utf-8"))
+            if isinstance(result, dict) and isinstance(result.get("audio_meta"), dict):
+                # 兼容旧任务：历史 result.json 可能含完整 yt-dlp raw_info。
+                # 读取时投影而不改写磁盘，避免旧签名 URL 再经 MCP 返回。
+                result["audio_meta"] = _public_audio_meta(result["audio_meta"])
             if result:
                 # 轻量结果：默认剥掉完整转写/评论，避免一次工具调用灌入数十万 token
                 # （prepare_note_material 的转写就是主产物，剥掉后状态查询对它只剩空壳；

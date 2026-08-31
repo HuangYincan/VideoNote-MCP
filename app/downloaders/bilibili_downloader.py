@@ -124,7 +124,11 @@ class BilibiliDownloader(Downloader, ABC):
             cover_url=cover_url,
             platform="bilibili",
             video_id=video_id,
-            raw_info=info,
+            raw_info={
+                # 仅保留总结流程需要的标签；yt-dlp info 可能包含签名 URL、headers
+                # 和 Cookie，不能进入音频缓存或 MCP 任务结果。
+                "tags": [tag for tag in (info.get("tags") or []) if isinstance(tag, str)],
+            },
             video_path=None  # ❗音频下载不包含视频路径
         )
 

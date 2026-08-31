@@ -22,7 +22,7 @@ from app.exceptions.note import NoteError
 from app.exceptions.provider import ProviderError
 from app.gpt.base import GPT
 from app.gpt.gpt_factory import GPTFactory
-from app.models.audio_model import AudioDownloadResult
+from app.models.audio_model import AudioDownloadResult, safe_audio_download_result_dict
 from app.models.model_config import ModelConfig
 from app.models.notes_model import NoteResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
@@ -728,7 +728,7 @@ class NoteGenerator:
                     if not audio.file_path or not Path(audio.file_path).is_file():
                         audio.file_path = None
                         logger.info("媒体缓存未命中，audio_path 置空（%s）", video_url)
-                write_json_atomic(audio_cache_file, asdict(audio))
+                write_json_atomic(audio_cache_file, safe_audio_download_result_dict(audio))
                 logger.info(f"元信息提取完成 ({audio_cache_file})")
                 return audio
             except Exception as exc:
@@ -783,7 +783,7 @@ class NoteGenerator:
                 )
                 audio.file_path = _extract_audio_from_video(str(self.video_path), dl_dir, cancel_event)
                 audio.video_path = str(self.video_path)
-                write_json_atomic(audio_cache_file, asdict(audio))
+                write_json_atomic(audio_cache_file, safe_audio_download_result_dict(audio))
                 logger.info(f"视频下载完成，音频从视频提取（免二次下载）({audio_cache_file})")
                 return audio
             except Exception as exc:
@@ -800,7 +800,7 @@ class NoteGenerator:
                 need_video=need_video,
                 cancel_event=cancel_event,
             )
-            write_json_atomic(audio_cache_file, asdict(audio))
+            write_json_atomic(audio_cache_file, safe_audio_download_result_dict(audio))
             logger.info(f"音频下载并缓存成功 ({audio_cache_file})")
             return audio
         except Exception as exc:
