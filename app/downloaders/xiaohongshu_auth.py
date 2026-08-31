@@ -29,7 +29,6 @@ HOME = "https://www.xiaohongshu.com"
 QR_CREATE = "/api/sns/web/v1/login/qrcode/create"
 QR_STATUS = "/api/sns/web/v1/login/qrcode/status"
 ACTIVATE = "/api/sns/web/v1/login/activate"
-USER_ME = "/api/sns/web/v2/user/me"
 ORIGIN_CDN = "https://sns-video-bd.xhscdn.com"
 _LOGIN_HINT = (
     "配置请走 CLI：`! videonote login xiaohongshu` 或 "
@@ -314,6 +313,12 @@ class XiaohongshuAuth:
             msg = ""
             if isinstance(body, dict):
                 msg = body.get("msg") or body.get("message") or ""
+            if resp.status_code == 406:
+                raise RuntimeError(
+                    "小红书拒绝了旧版请求签名（HTTP 406）。"
+                    "请安装 Google Chrome 后重试扫码，或 "
+                    "`videonote login xiaohongshu --cookie`"
+                )
             raise RuntimeError(f"生成二维码失败: {msg or resp.status_code}")
         return {
             "qr_id": data.get("qr_id") or "",
@@ -411,25 +416,20 @@ def verify_xiaohongshu_login(cookie_mgr: Optional[CookieConfigManager] = None) -
     auth = XiaohongshuAuth(cookie_mgr=mgr)
     try:
         auth._apply_cookie_string(format_cookie(cookies))
-        if not auth._a1():
-            auth._seed_device()
-        resp = auth._request("GET", f"{EDITH}{USER_ME}", uri=USER_ME)
-        if resp.status_code == 200:
-            try:
-                body = resp.json()
-            except ValueError:
-                body = {}
-            data = body.get("data") if isinstance(body, dict) else None
-            if isinstance(data, dict) and (data.get("user_id") or data.get("userid") or data.get("nickname")):
-                return ""
-            if isinstance(body, dict) and body.get("success"):
-                return ""
-            # 200 但无用户字段：cookie 在，接口形状变了——视为已保存
-            if resp.status_code == 200:
-                return ""
+        session = auth._session_obj()
+        headers = {
+            "User-Agent": _UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": f"{HOME}/",
+        }
+        # 不用 edith user/me：旧版 x-s 会被 406，误报登录失败。
+        resp = session.get(HOME, headers=headers, timeout=15, proxies=_proxies())
         if resp.status_code in (401, 403, 471):
             return "登录态无效或已过期，请重新 `videonote login xiaohongshu`"
-        return f"HTTP {resp.status_code}"
+        if resp.status_code != 200:
+            return f"HTTP {resp.status_code}"
+        return ""
     except Exception as exc:  # noqa: BLE001
         logger.info("小红书登录探测失败: %s", exc)
         return "请求失败（网络？检查 `videonote proxy list`）"

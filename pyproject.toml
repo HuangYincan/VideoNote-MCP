@@ -37,8 +37,10 @@ dependencies = [
     "gmssl>=3.2.2",
     # 交互式 setup 向导（方向键选择/高亮；无则回退纯文本提示）
     "InquirerPy>=0.3.4",
-    # B 站扫码登录（终端 ASCII 二维码）
+    # B 站 / 小红书扫码登录（终端 ASCII 二维码）
     "qrcode>=8.0",
+    # 小红书扫码：edith 已拒旧版 x-s（406），需本机 Chrome 跑官网 JS 出码
+    "playwright>=1.48.0",
 ]
 
 [project.optional-dependencies]

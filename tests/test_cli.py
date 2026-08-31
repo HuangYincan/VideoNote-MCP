@@ -533,7 +533,7 @@ class TestLoginXiaohongshu:
             def close(self):
                 pass
 
-        monkeypatch.setattr("app.downloaders.xiaohongshu_auth.XiaohongshuAuth", _Auth)
+        monkeypatch.setattr(cli, "_open_xiaohongshu_qr_session", lambda: _Auth())
         monkeypatch.setattr(time, "sleep", lambda *_: None)
         monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: print(f"QR:{data}", file=sys.stdout))
         monkeypatch.setattr("builtins.input", lambda *_: "")
@@ -560,7 +560,7 @@ class TestLoginXiaohongshu:
             def close(self):
                 pass
 
-        monkeypatch.setattr("app.downloaders.xiaohongshu_auth.XiaohongshuAuth", _Auth)
+        monkeypatch.setattr(cli, "_open_xiaohongshu_qr_session", lambda: _Auth())
         monkeypatch.setattr(time, "sleep", lambda *_: None)
         monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: None)
         monkeypatch.setattr("builtins.input", lambda *_: "")
@@ -572,7 +572,7 @@ class TestLoginXiaohongshu:
             def create_qr(self):
                 raise RuntimeError("sign error")
 
-        monkeypatch.setattr("app.downloaders.xiaohongshu_auth.XiaohongshuAuth", _Auth)
+        monkeypatch.setattr(cli, "_open_xiaohongshu_qr_session", lambda: _Auth())
         with pytest.raises(SystemExit) as ei:
             cli._login_xiaohongshu([])
         assert ei.value.code == 1

@@ -56,7 +56,7 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 
 - **B 站**（AI 字幕 / 评论）：`! videonote login bilibili`。没配 SESSDATA 时仍可转写（走语音识别），只是拿不到 AI 字幕 / 弹幕评论。
 - **小宇宙**（官方文稿）：`! videonote login xiaoyuzhou`。未登录会回退本地下载 + ASR，长节目会很慢。
-- **小红书**（视频笔记）：`! videonote login xiaohongshu`。公开视频有时无需登录；遇登录墙 / 验证码时需要。图文笔记无法转写。扫不了可用 `--cookie` 粘贴。
+- **小红书**（视频笔记）：`! videonote login xiaohongshu`（本机需 Chrome/Edge）。公开视频有时无需登录；遇登录墙 / 验证码时需要。图文笔记无法转写。扫不了可用 `--cookie` 粘贴。
 
 ## 6. 数据管理（可选）
 
