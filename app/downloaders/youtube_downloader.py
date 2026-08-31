@@ -213,7 +213,7 @@ class YoutubeDownloader(Downloader, ABC):
             output_dir = get_data_dir()
         video_id = extract_video_id(video_url, "youtube")
         if not video_id:
-            raise ValueError(f"无法从链接提取 YouTube 视频 ID: {video_url}")
+            raise ValueError(f"无法从链接提取 YouTube 视频 ID: {sanitize_url(video_url)}")
         video_path = os.path.join(output_dir, f"{video_id}.mp4")
         if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
             return video_path

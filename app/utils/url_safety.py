@@ -27,6 +27,7 @@ from __future__ import annotations
 import functools
 import ipaddress
 import logging
+import re
 import socket
 from typing import Optional
 from urllib.parse import urlsplit
@@ -49,10 +50,78 @@ def sanitize_url(url: Optional[str]) -> str:
     if not parts.scheme:
         # 非 URL（防御输入）：本无凭据可剥离，原样返回便于日志排查
         return url
-    host = parts.hostname or ""
-    if parts.port:
-        host = f"{host}:{parts.port}"
+    try:
+        host = parts.hostname or ""
+        port = parts.port
+    except ValueError:
+        # 畸形端口/IPv6 不能让「日志脱敏」自身抛错；保守地只保留 scheme、path，
+        # 绝不把原始 netloc（可能含 userinfo）或 query 带回错误消息。
+        host = ""
+        port = None
+    if port:
+        host = f"{host}:{port}"
     return f"{parts.scheme}://{host}{parts.path or '/'}"
+
+
+def sanitize_error_url(url: Optional[str]) -> str:
+    """Sanitize a URL for compact error payloads while preserving host-only shape."""
+    safe = sanitize_url(url)
+    if not url:
+        return safe
+    try:
+        path = urlsplit(str(url).strip()).path
+    except ValueError:
+        return safe
+    if path in ("", "/"):
+        return safe.rstrip("/")
+    return safe
+
+
+_URL_IN_TEXT_RE = re.compile(r"(?i)(?<![\w@])https?://[^\s<>\"'`]+")
+_CREDENTIAL_ASSIGNMENT_RE = re.compile(
+    r"(?ix)(?P<key>\b(?:authorization|proxy-authorization|cookie|set-cookie)\b)"
+    r"(?P<sep>\s*['\"]?\s*[:=]\s*(?:['\"])?)(?:bearer\s+)?"
+    r"(?P<value>[^\s,;'\"}\]]+)"
+)
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?ix)(?P<key>(?<![\w-])"
+    r"(?:access[_-]?token|api[_-]?key|auth[_-]?(?:key|token)|id[_-]?token|"
+    r"refresh[_-]?token|session[_-]?(?:id|token)|client[_-]?secret|"
+    r"(?:x-amz-)?signature|sig|token|secret|sessdata|web[_-]?session))"
+    r"(?P<sep>\s*['\"]?\s*[:=]\s*(?:['\"])?)(?P<value>[^\s,;&}\]]+)"
+)
+_URL_TRAILING_CHARS = ".,;:!?)]}'"
+
+
+def sanitize_error_text(error: object) -> str:
+    """Remove URLs' query/fragment and common credential assignments from errors.
+
+    Downloader and task errors often embed a signed media URL or request headers.
+    Keep the scheme/host/path and the error's type-specific context, but never let
+    query tokens, cookies, authorization values, or standalone token assignments
+    cross a log/status/MCP boundary.
+    """
+    if error is None:
+        return ""
+    text = str(error)
+
+    def _url_repl(match: re.Match) -> str:
+        raw = match.group(0)
+        trailing = ""
+        while raw and raw[-1] in _URL_TRAILING_CHARS:
+            trailing = raw[-1] + trailing
+            raw = raw[:-1]
+        return sanitize_url(raw) + trailing
+
+    text = _URL_IN_TEXT_RE.sub(_url_repl, text)
+    text = _CREDENTIAL_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group('key')}{match.group('sep')}<redacted>",
+        text,
+    )
+    return _SENSITIVE_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group('key')}{match.group('sep')}<redacted>",
+        text,
+    )
 
 
 # fake-ip 代理（Clash/Surge/Stash 等 macOS 常用）把 DNS 解析结果返回保留段，

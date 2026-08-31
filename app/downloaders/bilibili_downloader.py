@@ -19,7 +19,11 @@ from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.path_helper import get_data_dir
 from app.utils.url_parser import extract_bilibili_p_number, extract_video_id
-from app.utils.url_safety import assert_public_http_url, sanitize_url
+from app.utils.url_safety import (
+    assert_public_http_url,
+    sanitize_error_text,
+    sanitize_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +154,7 @@ class BilibiliDownloader(Downloader, ABC):
         logger.debug("video_url=%s", sanitize_url(video_url))
         video_id=extract_video_id(video_url, "bilibili")
         if not video_id:
-            raise ValueError(f"无法从链接提取 B 站视频 ID: {video_url}")
+            raise ValueError(f"无法从链接提取 B 站视频 ID: {sanitize_url(video_url)}")
         # 多 P 视频 yt-dlp 的 id 是 {BV}_pN（缓存名 {BV}_pN.mp4），N 与 URL 的 p 参数一致。
         # 旧前缀 glob（{BV}*.mp4）会误配别的视频（BV12345_p1.mp4 命中 BV1234 的查询）；
         # #121 B5 改 `{BV}_p*.mp4` 仍跨 P 通配——?p=2 请求可能命中 BV_p1.mp4（拿错集视频）。
@@ -223,7 +227,7 @@ class BilibiliDownloader(Downloader, ABC):
             if result and result.segments:
                 return result
         except Exception as e:
-            logger.warning(f"player API 直拉字幕异常，回退到 yt-dlp: {e}")
+            logger.warning(f"player API 直拉字幕异常，回退到 yt-dlp: {sanitize_error_text(e)}")
 
         # 2) Fallback：原 yt-dlp 路径（更脆弱，遇到签名/Cookie 问题失败概率较高）。
         # 调用方没给 output_dir 时落专属临时目录、解析后整体清理——yt-dlp 字幕文件
@@ -308,7 +312,7 @@ class BilibiliDownloader(Downloader, ABC):
                         return self._parse_srt_content(f.read(), detected_lang)
 
         except Exception as e:
-            logger.warning(f"获取B站字幕失败: {e}")
+            logger.warning(f"获取B站字幕失败: {sanitize_error_text(e)}")
             return None
         finally:
             # 自建临时目录：成功（字幕已解析进内存）/失败都清掉，不留垃圾
@@ -362,7 +366,7 @@ class BilibiliDownloader(Downloader, ABC):
             )
 
         except Exception as e:
-            logger.warning(f"解析SRT字幕失败: {e}")
+            logger.warning(f"解析SRT字幕失败: {sanitize_error_text(e)}")
             return None
 
     def _parse_json3_subtitle(self, subtitle_file: str, language: str) -> Optional[TranscriptResult]:
@@ -410,5 +414,5 @@ class BilibiliDownloader(Downloader, ABC):
             )
 
         except Exception as e:
-            logger.warning(f"解析字幕文件失败: {e}")
+            logger.warning(f"解析字幕文件失败: {sanitize_error_text(e)}")
             return None

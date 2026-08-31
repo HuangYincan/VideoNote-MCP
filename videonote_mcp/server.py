@@ -115,7 +115,12 @@ from app.utils.task_manifest import (
     list_task_files,
     record_task_paths,
 )
-from app.utils.url_safety import assert_public_http_url, sanitize_url
+from app.utils.url_safety import (
+    assert_public_http_url,
+    sanitize_error_text,
+    sanitize_error_url,
+    sanitize_url,
+)
 from videonote_mcp.provider_probe import probe_models
 
 logger = get_logger(__name__)
@@ -268,8 +273,9 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
     except Exception:
         started = None
     data = {"status": status.value if isinstance(status, TaskStatus) else str(status)}
-    if message:
-        data["message"] = message
+    safe_message = sanitize_error_text(message) if message else ""
+    if safe_message:
+        data["message"] = safe_message
     data["started_at"] = started if started is not None else time.time()
     # 写盘前更新内存快照：磁盘满/权限故障时状态查询可回退（见 #118）
     with _tasks_lock:
@@ -295,12 +301,12 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
                 _status_memory.pop(task_id, None)
     except Exception as exc:  # noqa: BLE001 —— 环境故障（磁盘满/只读）：不裸抛
         # （裸抛会进后台线程被吞，且 FAILED 重写循环同样失败），内存快照已可查
-        logger.error(f"写状态文件失败 task_id={task_id}: {exc}")
+        logger.error(f"写状态文件失败 task_id={task_id}: {sanitize_error_text(exc)}")
     # 同步全局索引（尽力而为）
     try:
         from app.db.video_task_dao import update_task_status
 
-        update_task_status(str(task_id), data["status"], message=message or "")
+        update_task_status(str(task_id), data["status"], message=safe_message)
     except Exception:
         pass
 
@@ -491,8 +497,9 @@ def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None,
         logger.info(f"任务已取消 task_id={task_id}")
         _write_status(task_id, TaskStatus.CANCELLED, message="任务已取消")
     except Exception as e:
-        logger.error(f"任务异常 task_id={task_id}: {e}", exc_info=True)
-        _write_status(task_id, TaskStatus.FAILED, message=str(e))
+        safe_error = sanitize_error_text(e)
+        logger.error("任务异常 task_id=%s: %s", task_id, safe_error)
+        _write_status(task_id, TaskStatus.FAILED, message=safe_error)
     finally:
         with _tasks_lock:
             _task_futures.pop(task_id, None)
@@ -518,7 +525,7 @@ def _auto_export_transcript(task_id: str, transcript) -> None:
             task_id=task_id,
         )
     except Exception as exc:
-        logger.warning(f"自动导出失败 task_id={task_id}: {exc}")
+        logger.warning(f"自动导出失败 task_id={task_id}: {sanitize_error_text(exc)}")
 
 
 def _guard_concurrency() -> None:
@@ -560,7 +567,7 @@ def _index_step_task(task_id: str, kind: str, title: str = "") -> None:
             note_dir=str(NOTE_OUTPUT_DIR / task_id),
         )
     except Exception as exc:  # noqa: BLE001 —— 索引失败不阻断提交，但留痕（list_tasks 会缺任务）
-        logger.warning(f"任务入索引失败 task_id={task_id}: {exc}")
+        logger.warning(f"任务入索引失败 task_id={task_id}: {sanitize_error_text(exc)}")
 
 
 def _coerce_local_path(p: str) -> Path:
@@ -1080,8 +1087,8 @@ def _task_status(task_id: str) -> str:
             # result.json 损坏（写盘中断/磁盘故障）：status 是 SUCCESS 但内容不可读。
             # 与 status.json 的 #118 快照回退不同，result 无法重建——显式标 result_error，
             # 让 Agent 能区分「成功但内容不可读」与「任务不存在」（#124 A10）
-            logger.error(f"读取结果文件失败 task_id={task_id}: {e}")
-            result_error = f"结果文件读取失败（可能写盘中断）: {e}"
+            logger.error(f"读取结果文件失败 task_id={task_id}: {sanitize_error_text(e)}")
+            result_error = f"结果文件读取失败（可能写盘中断）: {sanitize_error_text(e)}"
     elif status == "SUCCESS":
         # SUCCESS 但 result.json 不存在（结果尚未落盘/被手动删/旧版本任务）：
         # 不静默 result:null——Agent 无法区分「无结果」与「任务失败」（#125 C3）
@@ -1091,7 +1098,7 @@ def _task_status(task_id: str) -> str:
         "status": status,
         "stage": _stage_label(status),
         "elapsed_secs": elapsed,
-        "message": data.get("message", ""),
+        "message": sanitize_error_text(data.get("message", "")),
         "task_id": task_id,
         "result": result,
     }
@@ -1153,7 +1160,7 @@ def _load_task_transcript(task_id: str) -> Optional[dict]:
         try:
             return json.loads(cache.read_text(encoding="utf-8"))
         except Exception as e:
-            logger.warning(f"读取转写缓存失败 task_id={task_id}: {e}")
+            logger.warning(f"读取转写缓存失败 task_id={task_id}: {sanitize_error_text(e)}")
     result_file = task_dir / "result.json"
     if result_file.exists():
         try:
@@ -1230,7 +1237,7 @@ def _task_transcript(task_id: str, segment_range: str = "") -> str:
         lo, hi = _parse_segment_range(segment_range, total)
     except ValueError as e:
         return json.dumps(
-            {"task_id": task_id, "ok": False, "status": _read_task_status(task_id), "message": str(e)},
+            {"task_id": task_id, "ok": False, "status": _read_task_status(task_id), "message": sanitize_error_text(e)},
             ensure_ascii=False,
         )
     if (lo, hi) == (0, total):
@@ -1592,7 +1599,7 @@ def health_check(
         with get_engine().connect():
             pass
     except Exception as e:
-        db_ok, db_err = False, str(e)
+        db_ok, db_err = False, sanitize_error_text(e)
     checks.append(
         {"name": "db", "ok": db_ok, "detail": "" if db_ok else f"error: {db_err}"}
     )
@@ -1625,7 +1632,7 @@ def health_check(
             }
         )
     except OSError as e:
-        checks.append({"name": "disk", "ok": False, "detail": f"无法读取磁盘信息: {e}"})
+        checks.append({"name": "disk", "ok": False, "detail": f"无法读取磁盘信息: {sanitize_error_text(e)}"})
 
     ready = TranscriberConfigManager().is_model_ready()
     checks.append(
@@ -1695,7 +1702,7 @@ def health_check(
                 {
                     "name": "duration",
                     "ok": True,
-                    "detail": f"无法预解析时长（{e}）；提交后任务内会重试",
+                    "detail": f"无法预解析时长（{sanitize_error_text(e)}）；提交后任务内会重试",
                 }
             )
 
@@ -1915,7 +1922,7 @@ def get_config(provider_id: str = "") -> str:
         if r["ok"]:
             result["probe"]["models"] = sorted(set(r["models"]))[:50]
         else:
-            result["probe"]["error"] = r.get("error", "连接失败")
+            result["probe"]["error"] = sanitize_error_text(r.get("error", "连接失败"))
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -1975,7 +1982,7 @@ def batch_generate_notes(
                 "ok": False,
                 "total": 0,
                 "submitted": 0,
-                "errors": [{"p": None, "title": None, "url": video_url, "error": parsed.get("error") or "解析视频失败"}],
+                "errors": [{"p": None, "title": None, "url": sanitize_error_url(video_url), "error": sanitize_error_text(parsed.get("error") or "解析视频失败")}],
                 "tasks": [],
                 "platform": parsed.get("platform"),
                 "kind": parsed.get("kind"),
@@ -2028,7 +2035,7 @@ def batch_generate_notes(
                     "remaining": 0,
                     "platform": parsed.get("platform"),
                     "kind": parsed.get("kind"),
-                    "errors": [{"p": 1, "title": parsed.get("title"), "url": video_url, "error": str(exc)}],
+                    "errors": [{"p": 1, "title": parsed.get("title"), "url": sanitize_error_url(video_url), "error": sanitize_error_text(exc)}],
                     "tasks": [],
                 },
                 ensure_ascii=False,
@@ -2052,7 +2059,12 @@ def batch_generate_notes(
                 submitted += 1
             except Exception as exc:  # noqa: BLE001 —— 单条失败收集继续
                 errors.append(
-                    {"p": e.get("p"), "title": e.get("title"), "url": e.get("url"), "error": str(exc)}
+                    {
+                        "p": e.get("p"),
+                        "title": e.get("title"),
+                        "url": sanitize_error_url(e.get("url")),
+                        "error": sanitize_error_text(exc),
+                    }
                 )
     finally:
         _batch_ctx.bypass_guard = False
@@ -2209,8 +2221,8 @@ def _merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
         merged = _merge([str(p) for p in paths], out_dir=out)
         return json.dumps({"ok": True, "path": Path(merged).as_uri()}, ensure_ascii=False)
     except Exception as exc:
-        logger.warning(f"merge_audio 失败: {exc}")
-        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        logger.warning(f"merge_audio 失败: {sanitize_error_text(exc)}")
+        return json.dumps({"ok": False, "error": sanitize_error_text(exc)}, ensure_ascii=False)
 
 
 def _diarize_media(audio_file: str, num_speakers: Optional[int] = None) -> str:
@@ -2247,8 +2259,8 @@ def _diarize_media(audio_file: str, num_speakers: Optional[int] = None) -> str:
             ensure_ascii=False,
         )
     except Exception as exc:
-        logger.warning(f"diarize 分支失败: {exc}")
-        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        logger.warning(f"diarize 分支失败: {sanitize_error_text(exc)}")
+        return json.dumps({"ok": False, "error": sanitize_error_text(exc)}, ensure_ascii=False)
 
 
 @mcp.tool()

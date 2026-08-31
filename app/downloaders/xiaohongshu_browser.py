@@ -13,6 +13,7 @@ from app.downloaders.xiaohongshu_auth import HOME, QR_SUCCESS, QR_WAIT, format_c
 from app.services.cookie_manager import CookieConfigManager
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.logger import get_logger
+from app.utils.url_safety import sanitize_error_text
 
 logger = get_logger(__name__)
 
@@ -131,7 +132,7 @@ class XiaohongshuBrowserQr:
                 break
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
-                logger.info("启动浏览器失败 %s: %s", kwargs, exc)
+                logger.info("启动浏览器失败 %s: %s", kwargs, sanitize_error_text(exc))
         if self._browser is None:
             raise BrowserQrUnavailable(
                 f"无法启动 Chrome/Edge（{last_err}）。请安装 Google Chrome，或改用 "
@@ -162,7 +163,7 @@ class XiaohongshuBrowserQr:
         try:
             self._page.goto(_EXPLORE, wait_until="domcontentloaded", timeout=45000)
         except Exception as exc:
-            raise RuntimeError(f"打开小红书失败: {exc}") from exc
+            raise RuntimeError(f"打开小红书失败: {sanitize_error_text(exc)}") from exc
         self._page.wait_for_timeout(1500)
         self._guest_session = self._cookies().get("web_session") or ""
         clicked = False

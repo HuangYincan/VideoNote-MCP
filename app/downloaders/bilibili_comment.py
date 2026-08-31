@@ -27,6 +27,7 @@ from app.utils.url_parser import (
     extract_video_id,
     resolve_bilibili_short_url,
 )
+from app.utils.url_safety import sanitize_error_text
 
 logger = get_logger(__name__)
 
@@ -78,10 +79,12 @@ class BilibiliCommentFetcher:
             resp = requests.get(url, params=params, headers=self._headers(), timeout=10)
             data = resp.json()
         except Exception as e:
-            logger.warning(f"获取视频元信息失败: {e}")
+            logger.warning(f"获取视频元信息失败: {sanitize_error_text(e)}")
             return None
         if data.get("code") != 0:
-            logger.warning(f"view API 返回错误: code={data.get('code')}, msg={data.get('message')}")
+            logger.warning(
+                f"view API 返回错误: code={data.get('code')}, msg={sanitize_error_text(data.get('message'))}"
+            )
             return None
 
         d = data.get("data") or {}
@@ -212,19 +215,19 @@ class BilibiliCommentFetcher:
                 }
             xml_text = resp.content.decode("utf-8", errors="ignore")
         except Exception as e:
-            logger.warning(f"获取弹幕失败: {e}")
+            logger.warning(f"获取弹幕失败: {sanitize_error_text(e)}")
             return {
                 "ok": False, "source": "bilibili", "bvid": bvid, "cid": cid,
-                "danmaku_summary": "", "error": str(e),
+                "danmaku_summary": "", "error": sanitize_error_text(e),
             }
 
         try:
             danmaku = BilibiliCommentFetcher._parse_danmaku_xml(xml_text)
         except Exception as e:
-            logger.warning(f"解析弹幕 XML 失败: {e}")
+            logger.warning(f"解析弹幕 XML 失败: {sanitize_error_text(e)}")
             return {
                 "ok": False, "source": "bilibili", "bvid": bvid, "cid": cid,
-                "danmaku_summary": "", "error": f"弹幕 XML 解析失败: {e}",
+                "danmaku_summary": "", "error": f"弹幕 XML 解析失败: {sanitize_error_text(e)}",
             }
 
         summary = self._build_danmaku_summary(danmaku)
@@ -268,16 +271,18 @@ class BilibiliCommentFetcher:
                 )
                 data = resp.json()
             except Exception as e:
-                logger.warning(f"获取评论失败: {e}")
+                logger.warning(f"获取评论失败: {sanitize_error_text(e)}")
                 return {
                     "ok": False, "source": "bilibili", "bvid": bvid, "aid": aid,
-                    "comments": [], "error": str(e),
+                    "comments": [], "error": sanitize_error_text(e),
                 }
             if data.get("code") != 0:
-                logger.warning(f"评论 API 返回错误: code={data.get('code')}, msg={data.get('message')}")
+                logger.warning(
+                    f"评论 API 返回错误: code={data.get('code')}, msg={sanitize_error_text(data.get('message'))}"
+                )
                 return {
                     "ok": False, "source": "bilibili", "bvid": bvid, "aid": aid,
-                    "comments": [], "error": f"评论 API 返回错误: {data.get('message')}",
+                    "comments": [], "error": f"评论 API 返回错误: {sanitize_error_text(data.get('message'))}",
                 }
 
             d = data.get("data") or {}

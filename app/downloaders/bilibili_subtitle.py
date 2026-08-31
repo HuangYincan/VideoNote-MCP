@@ -26,7 +26,7 @@ from app.utils.url_parser import (
     extract_video_id,
     resolve_bilibili_short_url,
 )
-from app.utils.url_safety import public_get
+from app.utils.url_safety import public_get, sanitize_error_text
 
 logger = get_logger(__name__)
 
@@ -60,10 +60,12 @@ class BilibiliSubtitleFetcher:
             resp = requests.get(url, params=params, headers=self._headers(), timeout=10)
             data = resp.json()
         except Exception as e:
-            logger.warning(f"获取 cid 失败: {e}")
+            logger.warning(f"获取 cid 失败: {sanitize_error_text(e)}")
             return None
         if data.get("code") != 0:
-            logger.warning(f"view API 返回错误: code={data.get('code')}, msg={data.get('message')}")
+            logger.warning(
+                f"view API 返回错误: code={data.get('code')}, msg={sanitize_error_text(data.get('message'))}"
+            )
             return None
         # 分 P 视频：data.pages[N-1] 对应第 N 集
         pages = data.get("data", {}).get("pages", [])
@@ -91,10 +93,12 @@ class BilibiliSubtitleFetcher:
             resp = requests.get(url, params={"bvid": bvid, "cid": cid}, headers=self._headers(), timeout=10)
             data = resp.json()
         except Exception as e:
-            logger.warning(f"获取字幕列表失败: {e}")
+            logger.warning(f"获取字幕列表失败: {sanitize_error_text(e)}")
             return []
         if data.get("code") != 0:
-            logger.warning(f"player API 返回错误: code={data.get('code')}, msg={data.get('message')}")
+            logger.warning(
+                f"player API 返回错误: code={data.get('code')}, msg={sanitize_error_text(data.get('message'))}"
+            )
             return []
         subtitles = data.get("data", {}).get("subtitle", {}).get("subtitles", [])
         return subtitles or []
@@ -137,7 +141,7 @@ class BilibiliSubtitleFetcher:
             data = resp.json()
             return data.get("body") or []
         except Exception as e:
-            logger.warning(f"下载字幕 JSON 失败: {e}")
+            logger.warning(f"下载字幕 JSON 失败: {sanitize_error_text(e)}")
             return None
 
     def fetch_subtitles(self, video_url: str) -> Optional[TranscriptResult]:

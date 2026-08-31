@@ -12,6 +12,7 @@ import requests
 from app.utils.url_safety import (
     assert_public_http_url,
     is_public_http_url,
+    sanitize_error_text,
     sanitize_url,
 )
 
@@ -148,7 +149,29 @@ class TestSanitizeUrl:
         assert sanitize_url(raw) == expected
 
 
-class TestShortUrlResolverGuard:
+class TestSanitizeErrorText:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (
+                "GET https://cdn.example/video.mp4?token=secret&sig=abc failed",
+                "GET https://cdn.example/video.mp4 failed",
+            ),
+            (
+                "headers={'Authorization': 'Bearer secret', 'Cookie': 'SESSDATA=secret'}",
+                "headers={'Authorization': '<redacted>', 'Cookie': '<redacted>'}",
+            ),
+            ("request token=secret signature=abc", "request token=<redacted> signature=<redacted>"),
+            ("x-amz-signature=abc", "x-amz-signature=<redacted>"),
+        ],
+    )
+    def test_redacts_urls_and_credential_assignments(self, raw, expected):
+        assert sanitize_error_text(raw) == expected
+
+    def test_preserves_non_sensitive_diagnostic_context(self):
+        assert sanitize_error_text("HTTP 503 from cdn.example/path") == "HTTP 503 from cdn.example/path"
+
+
     """#133 A1：短链解析器对任意 URL 直连 requests.head——调用方只按
     "b23.tv" / "v.douyin.com" 子串分流，攻击者 URL 会原样进来，须先过 SSRF 守卫。
     """

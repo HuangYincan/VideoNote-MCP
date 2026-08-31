@@ -21,7 +21,7 @@ from app.downloaders.youtube_downloader import _apply_browser_headers, _apply_pr
 from app.models.notes_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.path_helper import get_data_dir
-from app.utils.url_safety import assert_public_http_url
+from app.utils.url_safety import assert_public_http_url, sanitize_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +88,9 @@ class GenericDownloader(Downloader, ABC):
                 ext = info.get("ext", "m4a")
                 audio_path = os.path.join(output_dir, f"{video_id}.{ext}")
         except Exception as exc:  # noqa: BLE001 —— yt-dlp 提取失败，交给上层 handoff
-            logger.warning(f"generic 下载失败: {exc}")
-            raise ValueError(f"无法用 yt-dlp 解析该链接（可能需登录/JS 渲染）: {exc}")
+            safe_error = sanitize_error_text(exc)
+            logger.warning("generic 下载失败: %s", safe_error)
+            raise ValueError(f"无法用 yt-dlp 解析该链接（可能需登录/JS 渲染）: {safe_error}") from exc
 
         return AudioDownloadResult(
             file_path=audio_path,

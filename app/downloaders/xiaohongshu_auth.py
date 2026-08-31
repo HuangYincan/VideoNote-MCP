@@ -20,7 +20,12 @@ from app.services.cookie_manager import CookieConfigManager
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.logger import get_logger
 from app.utils.url_parser import extract_video_id, resolve_xiaohongshu_short_url
-from app.utils.url_safety import PublicOnlySession, assert_public_http_url, sanitize_url
+from app.utils.url_safety import (
+    PublicOnlySession,
+    assert_public_http_url,
+    sanitize_error_text,
+    sanitize_url,
+)
 
 logger = get_logger(__name__)
 
@@ -388,7 +393,7 @@ class XiaohongshuAuth:
         try:
             resp = session.get(page_url, headers=headers, timeout=20, proxies=_proxies())
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"请求小红书笔记页失败: {exc}") from exc
+            raise RuntimeError(f"请求小红书笔记页失败: {sanitize_error_text(exc)}") from exc
         if resp.status_code != 200:
             raise RuntimeError(
                 f"小红书笔记页 HTTP {resp.status_code}。{ _LOGIN_HINT}"

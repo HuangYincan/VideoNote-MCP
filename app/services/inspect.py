@@ -10,7 +10,7 @@ from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
 from app.services.pipeline import detect_platform
-from app.utils.url_safety import assert_public_http_url
+from app.utils.url_safety import assert_public_http_url, sanitize_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
     try:
         plat = platform or detect_platform(raw)
     except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": sanitize_error_text(exc)}
 
     # SSRF 入口守卫（#133 A1）：本地路径已在上面分流；其余平台（bilibili/
     # kuaishou/douyin 的短链解析、yt-dlp generic 展开）统一校验，防显式
@@ -43,7 +43,7 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
         try:
             assert_public_http_url(raw)
         except ValueError as exc:
-            return {"ok": False, "platform": plat, "error": str(exc)}
+            return {"ok": False, "platform": plat, "error": sanitize_error_text(exc)}
 
     try:
         if plat == "bilibili":
@@ -63,7 +63,7 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
                     "ok": False,
                     "platform": "local",
                     "kind": "single",
-                    "error": f"本地文件不存在: {raw}",
+                    "error": f"本地文件不存在: {sanitize_error_text(raw)}",
                 }
             return {
                 "ok": True,
@@ -77,8 +77,9 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
             }
         return _inspect_ytdlp(raw, plat)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"inspect_video 失败: {exc}")
-        return {"ok": False, "platform": plat, "error": str(exc)}
+        safe_error = sanitize_error_text(exc)
+        logger.warning("inspect_video 失败: %s", safe_error)
+        return {"ok": False, "platform": plat, "error": safe_error}
 
 
 def _bili_headers() -> dict:
@@ -122,7 +123,7 @@ def _inspect_bilibili(url: str) -> dict:
         return {
             "ok": False,
             "platform": "bilibili",
-            "error": f"view API: code={data.get('code')} {data.get('message')}",
+            "error": sanitize_error_text(f"view API: code={data.get('code')} {data.get('message')}"),
         }
     d = data.get("data") or {}
     pages = d.get("pages") or []
@@ -168,10 +169,10 @@ def _inspect_xiaohongshu(url: str) -> dict:
     try:
         note = auth.fetch_note(url)
     except ValueError as exc:
-        return {"ok": False, "platform": "xiaohongshu", "error": str(exc)}
+        return {"ok": False, "platform": "xiaohongshu", "error": sanitize_error_text(exc)}
     except Exception as exc:  # noqa: BLE001
         logger.warning("inspect 小红书失败: %s", exc)
-        return {"ok": False, "platform": "xiaohongshu", "error": str(exc)}
+        return {"ok": False, "platform": "xiaohongshu", "error": sanitize_error_text(exc)}
     finally:
         auth.close()
 

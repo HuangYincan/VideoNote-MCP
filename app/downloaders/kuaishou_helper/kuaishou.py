@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
-from app.utils.url_safety import public_get
+from app.utils.url_safety import public_get, sanitize_url
 
 KUAISHOU_API_BASE = 'https://www.kuaishou.com/graphql'
 KUAISHOU_URL = "https://www.kuaishou.com/"
@@ -89,23 +89,23 @@ class KuaiShou:
     def run(self, url):
         real_url = KuaiShou._extract_kuaishou_link(url)
         if not real_url:
-            raise RuntimeError(f"快手视频 URL 解析失败 {url}")
+            raise RuntimeError(f"快手视频 URL 解析失败 {sanitize_url(url)}")
 
         cookies = self.get_temp_cookies()
         if not cookies:
-            raise RuntimeError(f"快手视频 cookies 解析失败 {url},请考虑设置环境变量 KUAISHOU_COOKIES")
+            raise RuntimeError(f"快手视频 cookies 解析失败 {sanitize_url(url)},请考虑设置环境变量 KUAISHOU_COOKIES")
 
         self.header['Cookie'] = cookies.strip()
         photo_id = self.get_photo_id(real_url)
         if photo_id is None:
-            raise RuntimeError(f"快手视频 ID 解析失败 {url}")
+            raise RuntimeError(f"快手视频 ID 解析失败 {sanitize_url(url)}")
         video_details = self.get_video_details(real_url, photo_id)
         logger.debug("快手视频详情已获取")
         if video_details is None:
-            raise RuntimeError(f"快手视频详情解析失败 {url}")
+            raise RuntimeError(f"快手视频详情解析失败 {sanitize_url(url)}")
         data = video_details.get('data')
         if data is None:
-            raise RuntimeError(f"快手视频详情响应无 data(接口可能变更): {url}")
+            raise RuntimeError(f"快手视频详情响应无 data(接口可能变更): {sanitize_url(url)}")
         return data
 
 

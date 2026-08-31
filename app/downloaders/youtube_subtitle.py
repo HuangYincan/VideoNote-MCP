@@ -10,7 +10,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.logger import get_logger
-from app.utils.url_safety import sanitize_url
+from app.utils.url_safety import sanitize_error_text, sanitize_url
 
 logger = get_logger(__name__)
 
@@ -34,7 +34,7 @@ class YouTubeSubtitleFetcher:
                 # 代理 URL 可能含 user:pass@（docs/05 第 16 轮 A4）：日志只留 host
                 logger.info(f"YouTube 字幕走代理: {sanitize_url(proxy)}")
             except Exception as e:
-                logger.warning(f"为 youtube-transcript-api 注入代理失败，回退无代理: {e}")
+                logger.warning(f"为 youtube-transcript-api 注入代理失败，回退无代理: {sanitize_error_text(e)}")
                 self._api = YouTubeTranscriptApi()
         else:
             self._api = YouTubeTranscriptApi()
@@ -138,5 +138,5 @@ class YouTubeSubtitleFetcher:
             )
 
         except Exception as e:
-            logger.warning(f"YouTube 字幕获取失败: {e}")
+            logger.warning(f"YouTube 字幕获取失败: {sanitize_error_text(e)}")
             return None

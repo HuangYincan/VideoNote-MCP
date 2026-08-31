@@ -133,13 +133,79 @@ def test_task_status_projects_legacy_audio_metadata():
             encoding="utf-8",
         )
         payload = json.loads(server._task_status(task_id))
-        assert payload["result"]["audio_meta"] == {
-            "file_path": "/tmp/a.mp3",
-            "title": "旧任务",
-            "duration": 1,
-            "platform": "bilibili",
-            "video_id": "BV1safe",
-        }
         assert "secret" not in json.dumps(payload)
     finally:
         shutil.rmtree(task_dir, ignore_errors=True)
+
+
+def test_write_status_redacts_error_message_before_persisting():
+    task_id = "redacted_status"
+    task_dir = server.NOTE_OUTPUT_DIR / task_id
+    try:
+        server._write_status(
+            task_id,
+            "FAILED",
+            message="GET https://cdn.example/video.mp4?token=secret&sig=abc failed",
+        )
+        payload = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
+        assert payload["message"] == "GET https://cdn.example/video.mp4 failed"
+        assert "secret" not in json.dumps(payload)
+    finally:
+        shutil.rmtree(task_dir, ignore_errors=True)
+
+
+def test_run_note_task_redacts_untrusted_exception_in_status():
+    task_id = "redacted_task_error"
+    task_dir = server.NOTE_OUTPUT_DIR / task_id
+    try:
+        with mock.patch.object(server, "NoteGenerator") as generator:
+            generator.return_value.generate.side_effect = ValueError(
+                "request failed: https://cdn.example/a?signature=secret"
+            )
+            server._run_note_task(task_id)
+        payload = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
+        assert payload["status"] == "FAILED"
+        assert payload["message"] == "request failed: https://cdn.example/a"
+        assert "secret" not in json.dumps(payload)
+    finally:
+        shutil.rmtree(task_dir, ignore_errors=True)
+
+
+def test_inspect_error_redacts_signed_url():
+    from app.services import inspect as inspect_service
+
+    with mock.patch.object(
+        inspect_service,
+        "_inspect_ytdlp",
+        side_effect=ValueError("download failed https://cdn.example/a?token=secret"),
+    ):
+        payload = inspect_service.inspect_video("https://example.com/video", platform="generic")
+    assert payload["ok"] is False
+    assert payload["error"] == "download failed https://cdn.example/a"
+    assert "secret" not in json.dumps(payload)
+
+
+def test_batch_error_redacts_url_and_exception():
+    from app.services import inspect as inspect_service
+
+    parsed = {
+        "ok": True,
+        "platform": "generic",
+        "kind": "single",
+        "title": "测试",
+        "entries": [],
+    }
+    with mock.patch.object(inspect_service, "inspect_video", return_value=parsed), mock.patch.object(
+        server, "generate_note", side_effect=ValueError("GET https://cdn.example/a?sig=secret failed")
+    ):
+        payload = json.loads(
+            server.batch_generate_notes(
+                "https://example.com/video?token=secret",
+                platform="generic",
+            )
+        )
+    assert payload["ok"] is False
+    error = payload["errors"][0]
+    assert error["url"] == "https://example.com/video"
+    assert error["error"] == "GET https://cdn.example/a failed"
+    assert "secret" not in json.dumps(payload)

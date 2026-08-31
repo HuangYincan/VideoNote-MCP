@@ -18,7 +18,7 @@ from app.models.audio_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
-from app.utils.url_safety import public_head, sanitize_url
+from app.utils.url_safety import public_head, sanitize_error_text, sanitize_url
 
 logger = get_logger(__name__)
 from dotenv import load_dotenv
@@ -202,9 +202,9 @@ class DouyinDownloader(Downloader):
                     self._ms_token = msToken
                     return msToken
                 except Exception as e:
-                    raise ValueError("Douyin msToken API 请求失败：{0}".format(e))
+                    raise ValueError("Douyin msToken API 请求失败：%s" % sanitize_error_text(e)) from e
         except Exception as e:
-            raise ValueError("Douyin msToken API{0}".format(e))
+            raise ValueError("Douyin msToken API%s" % sanitize_error_text(e)) from e
 
     def fetch_video_info(self, video_url: str) -> json:
         # memo（docs/05 第 16 轮 C2）：download_video 与 download(skip) 同任务双调时复用
@@ -232,10 +232,10 @@ class DouyinDownloader(Downloader):
                 self._info_cache[aweme_id] = result
             return result
         except Exception as e:
-            logger.warning("抖音视频信息请求失败: %s", e)
+            logger.warning("抖音视频信息请求失败: %s", sanitize_error_text(e))
             # 旧写法 ValueError("请求失败:", e) 是元组参数——str() 输出
             # ('请求失败:', <异常>)，且无 from e 丢失原始链（#124 B4）
-            raise ValueError(f"请求失败: {e}") from e
+            raise ValueError(f"请求失败: {sanitize_error_text(e)}") from e
         # print(kwargs)
 
     def download(
@@ -259,7 +259,7 @@ class DouyinDownloader(Downloader):
         detail = video_data.get('aweme_detail') or {}
         aweme_id = detail.get('aweme_id') or ''
         if not aweme_id:
-            raise ValueError(f"抖音接口未返回 aweme_id: {video_url}")
+            raise ValueError(f"抖音接口未返回 aweme_id: {sanitize_url(video_url)}")
         title = detail.get('item_title') or '抖音视频'
         # douyin aweme_detail.video.duration 单位是**毫秒**（如 15.3s 视频返回 15300），
         # 与 bilibili/youtube 的秒口径不一致——归一为秒（#124 B6）
@@ -336,7 +336,7 @@ class DouyinDownloader(Downloader):
             detail = video_data.get('aweme_detail') or {}
             aweme_id = detail.get('aweme_id') or ''
             if not aweme_id:
-                raise ValueError(f"抖音接口未返回 aweme_id: {video_url}")
+                raise ValueError(f"抖音接口未返回 aweme_id: {sanitize_url(video_url)}")
             output_path = os.path.join(output_dir, f"{aweme_id}.mp4")
 
             # 与 download() 同口径：.get() 链 + 显式错误（#127 B6），
@@ -352,8 +352,8 @@ class DouyinDownloader(Downloader):
 
             return output_path
         except Exception as e:
-            logger.warning("抖音下载请求失败: %s", e)
-            raise ValueError(f"抖音下载请求失败: {e}") from e
+            logger.warning("抖音下载请求失败: %s", sanitize_error_text(e))
+            raise ValueError(f"抖音下载请求失败: {sanitize_error_text(e)}") from e
 
 
 
