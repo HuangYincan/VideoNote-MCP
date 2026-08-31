@@ -802,3 +802,13 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **原因**：edith `qrcode/create` 拒绝旧版 x-s，HTTP 406 `{"code":-1,"success":false}`。
 - **修复**：`videonote login xiaohongshu` 用本机 Chrome/Edge 打开官网登录页（Playwright），拦截官方签名后的 create 响应，终端仍出 ASCII 码；无浏览器时回退直连接口并提示 `--cookie`。
 - 登录探测改为 GET 首页，不再打会 406 的 edith `user/me`。
+
+## Wave I 批 34（2026-09-01 · 第 19 轮全库扫描 #143，847→864 tests）
+
+- **结果边界收紧**（commit `53e56e4`）：B 站 yt-dlp 的完整 `raw_info` 不再写入 `audio.json` 或经 MCP 任务结果返回；缓存序列化、任务结果写入和历史结果读取均采用安全白名单，保留流水线所需 tags 与公开元数据。
+- **错误信息脱敏**（commit `b84f33d`）：统一清洗错误文本中的签名 URL query/fragment、Authorization、Cookie、token/signature，并移除任务主异常日志的原始 traceback，覆盖 status、inspect、batch 与主要下载器错误边界。
+- **B 站请求重试**（commit `87a0857`）：官方字幕、元信息、弹幕/评论 GET 增加复用逐跳 SSRF 守卫的有限重试；连接/超时、429、5xx 才重试，带指数退避和总 deadline，4xx 不重试。
+- **工程卫生**（commit `314bb5d`）：清理抖音正则及测试文档字符串的 invalid escape `SyntaxWarning`，并以 `-W error` 编译验证。
+- **文档同步**：活跃文档统一到 10 工具与 864 测试基线；删除当前流程中的旧步骤工具/不存在的 `models` CLI/`include_transcript` 参数说明；历史档案不改写。
+- **建议后续**：yt-dlp 内部 egress/重定向 SSRF、DNS fail-open 与 fake-IP 代理兼容策略、Docker/Actions/插件可变版本固定、`pyannote.audio` 版本上界，分别需部署策略、产品决策或兼容矩阵确认。
+- **验证**：`864 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean，`git diff --check` 通过。

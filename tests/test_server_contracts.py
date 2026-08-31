@@ -521,7 +521,7 @@ class PreflightTest(unittest.TestCase):
                 with mock.patch.object(server, "get_models_by_provider", return_value=[]):
                     ok, detail = server._preflight_provider("p1")
         self.assertFalse(ok)
-        self.assertIn("list_models", detail)
+        self.assertIn("providers test", detail)
 
     def test_duration_best_effort(self):
         # 解析失败不拦（info ok=false → duration 检查仍 ok）

@@ -8,12 +8,12 @@
 |------|------|
 | `health_check` 显示 `ffmpeg: missing` | 让用户 `brew install ffmpeg`（Linux: `apt install ffmpeg`），装完再跑 |
 | `generate_note` 报「需要 provider_id」 | `get_config()` 看内置供应商与默认值；空 key 让用户填：`! videonote providers set <id> --api-key '...'`（MCP 工具拒绝 api_key，填 key 一律走 CLI） |
-| 报「供应商还没有可用模型」 | `get_config(provider_id)` 探测（返回 models），或用 CLI `! videonote models add <provider_id> <model>` 手动加模型名 |
+| 报「供应商还没有可用模型」 | `get_config(provider_id)` 探测（返回 models），或用 CLI `! videonote providers test <id> --default <model>` 探测并设置默认模型 |
 | 转写一直失败、提示模型未下载 | 问用户：`videonote transcriber download <size>` 下载，或切云端（`! videonote transcriber set --engine bcut/groq`）—— 不要静默切换 |
 | 任务卡在 `INITIALIZING` | 首次使用 fast-whisper 正在下载模型，耐心等；模型大可改用云端转写 |
 | 任务 FAILED、message 是 Python 异常原文（如 `missing 1 required positional argument: 'self'` / `TypeError`） | 疑似 #32 同族绑定回归（装饰器误绑实例方法）——仓库已加守卫测试 `tests/test_binding_guard.py` 拦截；升级到最新版（`uvx videonote@latest` 会话自动取新版），仍现则报 issue 附完整 FAILED message |
 | B 站下载报 `fatal` / playurl 412 | 已修复（yt-dlp fatal 透传）；仍失败则让用户 `videonote login bilibili`（扫码存 SESSDATA）后重试 |
-| 想用 B 站 **AI 字幕**跳过语音识别 | 引导用户跑 `videonote login bilibili`（扫码自动存 SESSDATA）。AI 字幕需登录态；`raw_info.subtitles={}` 只反映手动 CC，AI 字幕在 automatic_captions |
+| 想用 B 站 **AI 字幕**跳过语音识别 | 引导用户跑 `videonote login bilibili`（扫码自动存 SESSDATA）。AI 字幕需登录态；字幕抓取结果在内部处理，任务结果不会暴露 yt-dlp 原始 `raw_info` |
 | 小宇宙长时间卡在转写 / 想用官方文稿 | 未配登录态会走本地下载+ASR。引导用户 `! videonote login xiaoyuzhou`（终端扫码，小宇宙 App 确认）后重试；扫不了再用 `--token`。`inspect_video` 应返回 `platform:"xiaoyuzhou"` |
 | 小红书下载失败 / 图文笔记 | 图文笔记无法转写。视频遇登录墙/验证码：引导用户 `! videonote login xiaohongshu`（终端扫码，需本机 Chrome/Edge）；扫不了再用 `--cookie`。`inspect_video` 应返回 `platform:"xiaohongshu"` |
 | 小红书扫码报 406 | 旧版直连接口签名已失效。请用户升级 videonote 后重试扫码（走本机 Chrome）；或 `! videonote login xiaohongshu --cookie` |

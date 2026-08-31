@@ -123,7 +123,7 @@
 - **转写素材来源（自动，无需配置）**：`generate_note` / `prepare_note_material` / `batch_generate_notes` 都优先用平台官方字幕（YouTube/B 站人工+自动字幕，小宇宙官方文稿；YouTube 走 youtube-transcript-api；小宇宙走 `episode-transcript/get`，需 `! videonote login xiaoyuzhou`）。有官方字幕就不下载音轨、不耗转写引擎；无字幕或获取失败才下载音频走转写引擎（fast-whisper/groq/funasr 等）。因此「有官方字幕」≠「需要转写引擎」。
 - **配置修改一律走 CLI**（MCP 面无写配置工具，凭证红线最干净）：
   - 填 key：`! videonote providers set <id> --api-key '...'`（隐藏输入）
-  - 新增/删供应商、模型：`! videonote providers add/delete`、`! videonote models ...`
+  - 新增供应商：`! videonote providers add ...`；探测模型并设置默认模型：`! videonote providers test <id> --default <model>`（没有独立的 `models` CLI）
   - 转写引擎/模型下载：`! videonote transcriber set/download`（funasr 中文最优，可选重依赖）
 
 ## 体检（提交前）
@@ -141,7 +141,7 @@
 | 配置入口（首次使用） | 用户在 Claude Code 跑 `/videonote-setup`（体检 → 填 key → 转写 → 默认值 → B站扫码 → 数据管理） |
 | 给内置供应商填 key | 用户在本会话 `! videonote providers set <id> --api-key 'sk-...'`（隐藏输入、agent 不碰 key） |
 | 查看配置 / 供应商 / 模型 / 转写器 | `get_config()`（只读汇总）；传 `provider_id` 可附加连通性探测 |
-| 自建/新增/删除供应商或模型 | `! videonote providers add/delete`、`! videonote models ...`（配置修改一律走 CLI） |
+| 自建/新增供应商或设置默认模型 | `! videonote providers add --name ... --base-url ...`（key 缺省隐藏输入） / `! videonote providers test <id> --default <model>`；当前 CLI 不提供删除供应商/模型命令 |
 | 切本地转写 | `! videonote transcriber set --engine fast-whisper --size small` + `! videonote transcriber download small` |
 | 切云端转写 | `! videonote transcriber set --engine groq`（groq key 用 CLI 填） |
 | B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA） |
@@ -154,6 +154,6 @@
 | 导出格式默认（setup ③ 新增） | `default_export_formats`（srt/vtt/json，默认空）；任务成功后自动导出这些格式，`process_media(action="export")` 不传 formats 时也套用它 |
 | 音频预处理（setup ②） | `transcriber preprocess on/off` 或 setup ② 勾选；16kHz 归一 + 超长分块（默认关，零依赖） |
 | 说话人分离（setup ②） | `transcriber diarization on/off` 或 setup ② 勾选；pyannote 可选重依赖 + HF_TOKEN + 模型授权 |
-| 切中文转写（funasr） | `set_transcriber("funasr")`；需 `uvx --with funasr --with torch`（重依赖可选），模型自动下载 |
+| 切中文转写（funasr） | `! videonote transcriber set funasr`；需 `uvx --with funasr --with torch`（重依赖可选），模型自动下载 |
 | 其他平台（非内置平台） | `inspect_video` 返回 `platform:"generic"` → 自动走 yt-dlp 通用提取（覆盖 1800+ 站点） |
 | AGENT 直接生成 | `prepare_note_material(video_url, ...)` → 轮询 SUCCESS → 读素材包 → **AGENT 自己写笔记**（不调用配置 LLM） |

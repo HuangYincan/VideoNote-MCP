@@ -823,7 +823,8 @@ def generate_note(
             model_name = models[0]["model_name"]
     if not model_name:
         raise ValueError(
-            f"供应商 {provider_id} 还没有可用模型：请先 list_models 查看，或 add_model 添加模型名"
+            f"供应商 {provider_id} 还没有可用模型：请先 `! videonote providers test {provider_id}` 探测模型；"
+            f"如需指定默认模型，追加 `--default <model>`"
         )
 
     # 视频理解默认：参数没传（None）时用 setup ③ 配置的默认（默认关 / 0→6s）；
@@ -1828,7 +1829,10 @@ def _preflight_provider(provider_id: Optional[str]) -> "tuple[bool, str]":
         if rows:
             model = rows[0]["model_name"]
     if not model:
-        return False, f"供应商 {pid} 没有可用模型：先 list_models(provider_id) 或 add_model"
+        return False, (
+            f"供应商 {pid} 没有可用模型：先 `! videonote providers test {pid}` 探测模型；"
+            "如需指定默认模型，追加 `--default <model>`"
+        )
     return True, f"{pid}（key 已填，默认模型 {model}）"
 
 
@@ -2199,7 +2203,7 @@ def _merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
             # 输出目录同输入文件：file:// URI 先规整，否则 Path("file:///…") 建字面 `file:` 目录（#107）
             out_dir = str(_coerce_local_path(out_dir))
         out = out_dir or str(NOTE_OUTPUT_DIR / "merged")
-        # 与 transcribe_media/extract_frames 同口径：file:// URI 先规整（app 层只认普通路径，
+        # 与 process_media 的本地路径处理同口径：file:// URI 先规整（app 层只认普通路径，
         # 直接传 file:// 会误报「文件不存在」）
         paths = [_coerce_local_path(f) for f in files]
         # 目录输入穿透（merge.py 用 os.path.exists 对目录为 True）会到 ffmpeg 深处才炸
