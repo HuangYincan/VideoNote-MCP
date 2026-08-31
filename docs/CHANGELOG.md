@@ -796,3 +796,9 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **登录**：`videonote login xiaohongshu` 默认扫码（edith `qrcode/create` + `qrcode/status`）；`--cookie` 粘贴浏览器 Cookie。凭证走 CLI，不进 MCP。
 - **inspect / 转写缓存**：`inspect_video` 原生解析单条笔记；`note_cache` 按笔记 id 命中。
 - Skill / 04 / VENDOR 同步；改 Skill 后需刷新插件。
+
+## 小红书扫码改走官网 Chrome（2026-08-31 · 修复 login 406）
+
+- **原因**：edith `qrcode/create` 拒绝旧版 x-s，HTTP 406 `{"code":-1,"success":false}`。
+- **修复**：`videonote login xiaohongshu` 用本机 Chrome/Edge 打开官网登录页（Playwright），拦截官方签名后的 create 响应，终端仍出 ASCII 码；无浏览器时回退直连接口并提示 `--cookie`。
+- 登录探测改为 GET 首页，不再打会 406 的 edith `user/me`。

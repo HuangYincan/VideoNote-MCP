@@ -1831,6 +1831,13 @@ def _login_xiaohongshu_cookie(exit_on_fail: bool = True) -> None:
     print(f"{_YELLOW}⚠ {err}（配置已保存，下载时若仍失败可重试扫码）{_RESET}", file=sys.stdout)
 
 
+def _open_xiaohongshu_qr_session():
+    """官网 Chrome 扫码会话。测试可 patch 此工厂。"""
+    from app.downloaders.xiaohongshu_browser import XiaohongshuBrowserQr
+
+    return XiaohongshuBrowserQr()
+
+
 def _login_xiaohongshu_qr(exit_on_fail: bool = True) -> None:
     import time
 
@@ -1848,21 +1855,34 @@ def _login_xiaohongshu_qr(exit_on_fail: bool = True) -> None:
         QR_SUCCESS,
         XiaohongshuAuth,
     )
+    from app.downloaders.xiaohongshu_browser import BrowserQrUnavailable
 
-    auth = XiaohongshuAuth()
+    session = _open_xiaohongshu_qr_session()
     try:
-        created = auth.create_qr()
+        created = session.create_qr()
+    except BrowserQrUnavailable as e:
+        print(f"浏览器扫码不可用: {e}", file=sys.stderr)
+        print("改走直连接口（多半已被小红书拒绝）…", file=sys.stderr)
+        session = XiaohongshuAuth()
+        try:
+            created = session.create_qr()
+        except Exception as e:
+            print(f"生成二维码失败: {e}", file=sys.stderr)
+            print("请安装 Google Chrome 后重试，或 `videonote login xiaohongshu --cookie`", file=sys.stderr)
+            if exit_on_fail:
+                sys.exit(1)
+            return
     except Exception as e:
-        print(f"生成二维码失败（网络？）: {e}", file=sys.stderr)
-        print("扫不了可改用 `videonote login xiaohongshu --cookie` 粘贴 Cookie", file=sys.stderr)
+        print(f"生成二维码失败: {e}", file=sys.stderr)
+        print("请安装 Google Chrome 后重试，或 `videonote login xiaohongshu --cookie`", file=sys.stderr)
         if exit_on_fail:
             sys.exit(1)
         return
     qr_url = created.get("url") or ""
     qr_id = created.get("qr_id") or ""
     code = created.get("code") or ""
-    if not qr_url or not qr_id:
-        print("生成二维码失败：接口未返回 url/qr_id", file=sys.stderr)
+    if not qr_url:
+        print("生成二维码失败：接口未返回 url", file=sys.stderr)
         if exit_on_fail:
             sys.exit(1)
         return
@@ -1872,18 +1892,20 @@ def _login_xiaohongshu_qr(exit_on_fail: bool = True) -> None:
     print("扫不了可改用 `videonote login xiaohongshu --cookie` 粘贴 Cookie", file=sys.stdout)
     _print_ascii_qr(qr_url)
 
+    pumps = bool(getattr(session, "pumps_events", False))
     last_status = None
     try:
         for _ in range(90):
-            time.sleep(2)
+            if not pumps:
+                time.sleep(2)
             try:
-                poll = auth.poll_qr(qr_id, code)
+                poll = session.poll_qr(qr_id, code)
             except Exception as e:
                 print(f"轮询失败（网络？）: {e}", file=sys.stderr)
                 continue
             st = poll.get("code_status")
             if st == QR_SUCCESS:
-                err = auth.persist()
+                err = session.persist()
                 if err and err.startswith("未配置"):
                     print("登录成功但未取到 web_session，请改用 `videonote login xiaohongshu --cookie`", file=sys.stderr)
                     if exit_on_fail:
@@ -1914,7 +1936,9 @@ def _login_xiaohongshu_qr(exit_on_fail: bool = True) -> None:
     except KeyboardInterrupt:
         print("（已取消）", file=sys.stdout)
     finally:
-        auth.close()
+        close = getattr(session, "close", None)
+        if callable(close):
+            close()
 
 
 def _login_xiaohongshu(args, exit_on_fail: bool = True) -> None:

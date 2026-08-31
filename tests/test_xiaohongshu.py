@@ -293,6 +293,76 @@ class QrLoginTest(unittest.TestCase):
             auth.create_qr()
         self.assertIn("生成二维码失败", str(ei.exception))
 
+    def test_create_406_mentions_cookie(self):
+        def handler(method, url, **kwargs):
+            return _FakeResp(status=406, payload={"code": -1, "success": False})
+
+        auth = XiaohongshuAuth(session=_FakeSession(handler), cookie_mgr=mock.Mock())
+        with self.assertRaises(RuntimeError) as ei:
+            auth.create_qr()
+        msg = str(ei.exception)
+        self.assertIn("406", msg)
+        self.assertIn("--cookie", msg)
+
+
+class BrowserQrParseTest(unittest.TestCase):
+    def test_parse_create_underscores(self):
+        from app.downloaders.xiaohongshu_browser import parse_qr_create_payload
+
+        out = parse_qr_create_payload({
+            "data": {"url": "xhsdiscover://login", "qr_id": "qid", "code": "c1"},
+        })
+        self.assertEqual(out["url"], "xhsdiscover://login")
+        self.assertEqual(out["qr_id"], "qid")
+        self.assertEqual(out["code"], "c1")
+
+    def test_parse_create_from_query(self):
+        from app.downloaders.xiaohongshu_browser import parse_qr_create_payload
+
+        url = (
+            "https://www.xiaohongshu.com/mobile/login"
+            "?qrId=60231788145547560&xhs_code=991693&channel_type=web"
+        )
+        out = parse_qr_create_payload({"data": {"url": url}})
+        self.assertEqual(out["qr_id"], "60231788145547560")
+        self.assertEqual(out["code"], "991693")
+        self.assertTrue(out["url"].startswith("https://"))
+
+    def test_poll_status_camel_and_snake(self):
+        from app.downloaders.xiaohongshu_browser import poll_status_from_payload
+
+        self.assertEqual(poll_status_from_payload({"data": {"codeStatus": 1}}), 1)
+        self.assertEqual(poll_status_from_payload({"data": {"code_status": 2}}), 2)
+        self.assertIsNone(poll_status_from_payload({"data": {}}))
+
+    def test_cookies_filter_domain(self):
+        from app.downloaders.xiaohongshu_browser import cookies_from_playwright
+
+        raw = [
+            {"name": "web_session", "value": "s1", "domain": ".xiaohongshu.com"},
+            {"name": "other", "value": "nope", "domain": ".example.com"},
+            {"name": "a1", "value": "aaa", "domain": "edith.xiaohongshu.com"},
+        ]
+        out = cookies_from_playwright(raw)
+        self.assertEqual(out["web_session"], "s1")
+        self.assertEqual(out["a1"], "aaa")
+        self.assertNotIn("other", out)
+
+    def test_poll_detects_session_change(self):
+        from app.downloaders.xiaohongshu_browser import XiaohongshuBrowserQr
+
+        qr = XiaohongshuBrowserQr(cookie_mgr=mock.Mock())
+        qr._guest_session = "guest-sess"
+        qr._page = None
+        qr._cookies = lambda: {"web_session": "logged-sess", "a1": "aaa"}
+        poll = qr.poll_qr("qid", "c")
+        self.assertEqual(poll["code_status"], QR_SUCCESS)
+        self.assertEqual(qr.persist(), "")
+        qr._cookie_mgr.set.assert_called_once()
+        saved = qr._cookie_mgr.set.call_args.args[1]
+        self.assertIn("web_session=logged-sess", saved)
+        self.assertNotIn("guest-sess", saved)
+
 
 class VerifyLoginTest(unittest.TestCase):
     def test_missing_session(self):
