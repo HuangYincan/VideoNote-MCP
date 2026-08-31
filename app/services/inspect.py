@@ -10,7 +10,7 @@ from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
 from app.services.pipeline import detect_platform
-from app.utils.url_safety import assert_public_http_url
+from app.utils.url_safety import assert_public_http_url, sanitize_url
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ def _inspect_xiaohongshu(url: str) -> dict:
                 "p": 1,
                 "title": note.title,
                 "duration": note.duration or None,
-                "url": page_url,
+                "url": sanitize_url(page_url),
                 "video_id": vid,
             }
         ],

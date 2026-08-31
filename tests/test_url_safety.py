@@ -256,3 +256,20 @@ class TestPublicOnlySessionRedirect:
         with mock.patch("requests.adapters.HTTPAdapter.send", side_effect=AssertionError("不应发出请求")):
             with pytest.raises(ValueError, match="SSRF"):
                 public_post("http://169.254.169.254/latest/meta-data/", json={"eid": "x"})
+
+
+class TestHostMatches:
+    def test_official_and_subdomain(self):
+        from app.utils.url_safety import host_matches, hostname_matches
+
+        assert host_matches("https://www.xiaohongshu.com/explore/x", "xiaohongshu.com")
+        assert host_matches("https://edith.xiaohongshu.com/api", "xiaohongshu.com")
+        assert hostname_matches(".xiaohongshu.com", "xiaohongshu.com")
+
+    def test_lookalikes_rejected(self):
+        from app.utils.url_safety import host_matches, hostname_matches
+
+        assert not host_matches("https://evilxiaohongshu.com/explore/x", "xiaohongshu.com")
+        assert not host_matches("https://xiaohongshu.com.evil.com/x", "xiaohongshu.com")
+        assert not hostname_matches("xiaohongshu.com.evil.com", "xiaohongshu.com")
+        assert not hostname_matches("evilxiaohongshu.com", "xiaohongshu.com")

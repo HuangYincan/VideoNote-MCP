@@ -220,7 +220,9 @@ class FetcherTest(unittest.TestCase):
         self.assertIn("new-acc", saved)
         self.assertIn("new-ref", saved)
 
-    def test_401_without_refresh_returns_none(self):
+    def test_401_without_refresh_raises(self):
+        from app.exceptions.task import OfficialTranscriptFetchError
+
         self.mgr.get.return_value = format_xiaoyuzhou_cookie("acc-only")
 
         def _get(url, **kwargs):
@@ -230,8 +232,23 @@ class FetcherTest(unittest.TestCase):
 
         with mock.patch("app.downloaders.xiaoyuzhou_subtitle.public_get", side_effect=_get), \
              mock.patch("app.downloaders.xiaoyuzhou_subtitle.public_post") as m_post:
-            self.assertIsNone(self.fetcher.fetch_subtitles(EP_URL))
+            with self.assertRaises(OfficialTranscriptFetchError):
+                self.fetcher.fetch_subtitles(EP_URL)
         m_post.assert_not_called()
+
+    def test_http_500_raises(self):
+        from app.exceptions.task import OfficialTranscriptFetchError
+
+        def _get(url, **kwargs):
+            if url.endswith("/v1/episode/get"):
+                return _FakeResp(status=500)
+            raise AssertionError(url)
+
+        with mock.patch("app.downloaders.xiaoyuzhou_subtitle.public_get", side_effect=_get), \
+             mock.patch("app.downloaders.xiaoyuzhou_subtitle.public_post"):
+            with self.assertRaises(OfficialTranscriptFetchError) as ei:
+                self.fetcher.fetch_subtitles(EP_URL)
+        self.assertIn("HTTP 500", str(ei.exception))
 
 
 class VerifyLoginTest(unittest.TestCase):
@@ -290,6 +307,20 @@ class DownloaderTest(unittest.TestCase):
             m_cookie.return_value.get.return_value = "x-jike-access-token=acc"
             m_cls.return_value.fetch_subtitles.return_value = fake_tr
             self.assertIs(dl.download_subtitles(EP_URL), fake_tr)
+
+    def test_download_subtitles_propagates_official_fetch_error(self):
+        from app.exceptions.task import OfficialTranscriptFetchError
+
+        dl = XiaoyuzhouDownloader()
+        with mock.patch(
+            "app.downloaders.xiaoyuzhou_downloader.XiaoyuzhouTranscriptFetcher"
+        ) as m_cls, mock.patch(
+            "app.downloaders.xiaoyuzhou_downloader.CookieConfigManager"
+        ) as m_cookie:
+            m_cookie.return_value.get.return_value = "x-jike-access-token=acc"
+            m_cls.return_value.fetch_subtitles.side_effect = OfficialTranscriptFetchError("cdn 500")
+            with self.assertRaises(OfficialTranscriptFetchError):
+                dl.download_subtitles(EP_URL)
 
 
 if __name__ == "__main__":

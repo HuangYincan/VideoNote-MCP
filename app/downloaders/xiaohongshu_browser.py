@@ -9,10 +9,17 @@ from __future__ import annotations
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
-from app.downloaders.xiaohongshu_auth import HOME, QR_SUCCESS, QR_WAIT, format_cookie
+from app.downloaders.xiaohongshu_auth import (
+    HOME,
+    QR_SUCCESS,
+    QR_WAIT,
+    format_cookie,
+    is_xiaohongshu_qr_url,
+)
 from app.services.cookie_manager import CookieConfigManager
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.logger import get_logger
+from app.utils.url_safety import host_matches, hostname_matches
 
 logger = get_logger(__name__)
 
@@ -62,13 +69,13 @@ def poll_status_from_payload(body: dict) -> Optional[int]:
 
 
 def cookies_from_playwright(raw_cookies: list) -> dict:
-    """只留 xiaohongshu.com 域；同名后者覆盖。"""
+    """只留 xiaohongshu.com 精确后缀域；同名后者覆盖。"""
     out = {}
     for item in raw_cookies or []:
         if not isinstance(item, dict):
             continue
         domain = (item.get("domain") or "").lower()
-        if "xiaohongshu.com" not in domain:
+        if not hostname_matches(domain, "xiaohongshu.com"):
             continue
         name = item.get("name")
         if name:
@@ -94,6 +101,8 @@ class XiaohongshuBrowserQr:
 
     def _on_response(self, resp) -> None:
         url = resp.url or ""
+        if not host_matches(url, "xiaohongshu.com"):
+            return
         try:
             body = resp.json()
         except Exception:  # noqa: BLE001
@@ -102,7 +111,7 @@ class XiaohongshuBrowserQr:
             return
         if _CREATE_MARK in url:
             parsed = parse_qr_create_payload(body)
-            if parsed.get("url"):
+            if parsed.get("url") and is_xiaohongshu_qr_url(parsed["url"]):
                 self._created = parsed
             return
         if _USERINFO_MARK in url or _STATUS_MARK in url:
@@ -124,6 +133,7 @@ class XiaohongshuBrowserQr:
         for kwargs in _LAUNCH_TRIES:
             try:
                 opts = dict(kwargs)
+                opts.setdefault("timeout", 15000)
                 if launch_proxy:
                     opts["proxy"] = launch_proxy
                 self._browser = self._pw.chromium.launch(**opts)
@@ -133,6 +143,7 @@ class XiaohongshuBrowserQr:
                 last_err = exc
                 logger.info("启动浏览器失败 %s: %s", kwargs, exc)
         if self._browser is None:
+            self.close()
             raise BrowserQrUnavailable(
                 f"无法启动 Chrome/Edge（{last_err}）。请安装 Google Chrome，或改用 "
                 "`videonote login xiaohongshu --cookie`"
@@ -157,36 +168,43 @@ class XiaohongshuBrowserQr:
             return {}
 
     def create_qr(self) -> dict:
-        self._launch()
-        assert self._page is not None
         try:
-            self._page.goto(_EXPLORE, wait_until="domcontentloaded", timeout=45000)
-        except Exception as exc:
-            raise RuntimeError(f"打开小红书失败: {exc}") from exc
-        self._page.wait_for_timeout(1500)
-        self._guest_session = self._cookies().get("web_session") or ""
-        clicked = False
-        for sel in ("text=登录", "button:has-text('登录')"):
-            loc = self._page.locator(sel).first
+            self._launch()
+            assert self._page is not None
             try:
-                if loc.count() and loc.is_visible():
-                    loc.click(timeout=5000)
-                    clicked = True
+                self._page.goto(_EXPLORE, wait_until="domcontentloaded", timeout=45000)
+            except Exception as exc:
+                raise RuntimeError(f"打开小红书失败: {exc}") from exc
+            self._page.wait_for_timeout(1500)
+            self._guest_session = self._cookies().get("web_session") or ""
+            clicked = False
+            for sel in ("text=登录", "button:has-text('登录')"):
+                loc = self._page.locator(sel).first
+                try:
+                    if loc.count() and loc.is_visible():
+                        loc.click(timeout=5000)
+                        clicked = True
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if not clicked:
+                logger.info("未点到登录按钮，等待页面自带二维码")
+            for _ in range(40):
+                if self._created.get("url"):
                     break
-            except Exception:  # noqa: BLE001
-                continue
-        if not clicked:
-            logger.info("未点到登录按钮，等待页面自带二维码")
-        for _ in range(40):
-            if self._created.get("url"):
-                break
-            self._page.wait_for_timeout(500)
-        if not self._created.get("url"):
-            raise RuntimeError(
-                "未拿到小红书二维码（登录框没出来？）。改用 "
-                "`videonote login xiaohongshu --cookie`"
-            )
-        return dict(self._created)
+                self._page.wait_for_timeout(500)
+            qr_url = self._created.get("url") or ""
+            if not qr_url:
+                raise RuntimeError(
+                    "未拿到小红书二维码（登录框没出来？）。改用 "
+                    "`videonote login xiaohongshu --cookie`"
+                )
+            if not is_xiaohongshu_qr_url(qr_url):
+                raise RuntimeError("小红书二维码地址不是官方域名，已拒绝展示")
+            return dict(self._created)
+        except Exception:
+            self.close()
+            raise
 
     def poll_qr(self, qr_id: str, code: str) -> dict:
         """抽一次站点轮询结果；内部 wait 以便 Playwright 收包。"""
@@ -196,12 +214,9 @@ class XiaohongshuBrowserQr:
             except Exception:  # noqa: BLE001
                 pass
         cookies = self._cookies()
-        sess = cookies.get("web_session") or ""
-        if self._guest_session and sess and sess != self._guest_session:
-            self._status = QR_SUCCESS
-            self._logged_cookies = cookies
-        elif self._status == QR_SUCCESS and cookies:
-            self._logged_cookies = cookies
+        if self._status == QR_SUCCESS:
+            if cookies:
+                self._logged_cookies = cookies
         return {"code_status": self._status, "login_info": {}}
 
     def persist(self) -> str:

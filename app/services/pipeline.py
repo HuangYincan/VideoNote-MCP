@@ -28,6 +28,7 @@ from typing import List, Optional, Union
 from uuid import uuid4
 
 from app.downloaders.base import Downloader
+from app.exceptions.task import OfficialTranscriptFetchError
 from app.gpt.base import GPT
 from app.gpt.gpt_factory import GPTFactory
 from app.models.gpt_model import GPTSource
@@ -162,6 +163,8 @@ def fetch_subtitles(video_url: str, platform: Optional[str] = None) -> Optional[
         tr = get_downloader(platform).download_subtitles(video_url)
         if tr and getattr(tr, "segments", None):
             return asdict(tr)
+    except OfficialTranscriptFetchError:
+        raise
     except Exception as exc:  # noqa: BLE001 —— 字幕失败不阻断
         logger.warning(f"获取平台字幕失败 platform={platform}: {exc}")
     return None

@@ -734,7 +734,7 @@ def generate_note(
 ) -> str:
     """提交一个视频链接/本地文件，异步生成 AI Markdown 笔记。
 
-    - video_url: 必填，B 站/YouTube/抖音/快手链接或本地文件路径；
+    - video_url: 必填，B 站/YouTube/抖音/快手/小宇宙/小红书链接或本地文件路径；
     - platform: 可省略，自动识别；
     - quality: fast / medium / slow；
     - provider_id: LLM 供应商 id；省略时取 setup 已配默认模型的供应商，或唯一一个已填 key 的供应商；
@@ -749,9 +749,10 @@ def generate_note(
       安全边界：数据目录内的笔记/本地视频路径始终允许；数据目录外默认拒绝（报错注明放行方式），
       设 VIDEONOTE_ALLOW_EXTERNAL_PATHS=1（或插件设置 allow_external_paths）后放行并只提示。
 
-    转写素材来源（无需配置，自动优先）：平台官方字幕（YouTube/B 站人工+自动字幕）总是
-    先用——官方字幕准、快、不耗转写引擎；无字幕或获取失败才下载音轨走转写引擎
-    （fast-whisper/groq 等）。因此 YouTube 有官方字幕的视频不会走本地 Whisper。
+    转写素材来源（无需配置，自动优先）：平台官方字幕（YouTube/B 站人工+自动字幕、
+    小宇宙官方文稿——需先 `! videonote login xiaoyuzhou`）总是先用；无字幕或获取失败才
+    下载音轨走转写引擎（fast-whisper/groq 等）。小红书无官方字幕，走转写引擎，登录墙请先
+    `! videonote login xiaohongshu`。因此 YouTube/小宇宙有官方字幕的内容不会走本地 Whisper。
 
     返回 {task_id, status, platform}。之后用 task(task_id) 轮询。SUCCESS 时 result.note_dir 指向 note.md 所在目录（{task_id}/gen/，
     指定 notes_dir 时另有 result.portable_note_dir 指向便携副本）。
@@ -908,7 +909,7 @@ def prepare_note_material(
     """提交一个视频链接/本地文件，异步产出「素材包」：转写全文+分段、可选视频帧（file:// 图片）、
     可选 B 站弹幕/评论、音视频本地路径。不调用 LLM 总结，供 AGENT（Claude Code）读取素材自行写笔记。
 
-    - video_url: 必填，B 站/YouTube/抖音/快手链接或本地文件路径；
+    - video_url: 必填，B 站/YouTube/抖音/快手/小宇宙/小红书链接或本地文件路径；
     - platform: 可省略，自动识别；
     - video_understanding / video_interval / grid_size: 是否抽帧 + 截帧间隔（秒）+ 网格大小
       （如 [3,3]）；默认关（不抽帧）。开启后 result.frames 是持久化帧图片的 file:// 绝对路径；
@@ -917,7 +918,7 @@ def prepare_note_material(
     不需要配置 LLM 供应商/模型。返回 {task_id, status: PENDING, kind: material}。
     之后用 task(task_id) 轮询；SUCCESS 时 result 含
     {kind: material, title, transcript, frames, comments_danmaku, video_path, audio_path}。
-    transcript 优先来自平台官方字幕（YouTube/B 站人工+自动字幕），无字幕才走转写引擎。
+    transcript 优先来自平台官方字幕（YouTube/B 站人工+自动字幕、小宇宙官方文稿），无字幕才走转写引擎。
     需要 AI 生成结构化 Markdown 笔记请用 generate_note。
     """
     if platform is None:
@@ -1860,8 +1861,8 @@ def get_config(provider_id: str = "") -> str:
     - transcriber: 转写引擎配置与模型就绪状态；
     - cookie_configured: 已配置 Cookie 的平台名列表（只给布尔状态，不给值）；
     - transcript_source: 转写素材来源（固定 platform_subtitles_first——平台官方字幕优先，
-      YouTube/B 站人工+自动字幕可用时直接用官方字幕，无字幕/获取失败才下载音轨走转写引擎；
-      官方字幕通常比本地 Whisper 更准，且不耗转写引擎资源）。
+      YouTube/B 站人工+自动字幕、小宇宙官方文稿可用时直接用官方字幕，无字幕/获取失败才下载音轨走转写引擎；
+      小宇宙文稿需 `! videonote login xiaoyuzhou`；官方字幕通常比本地 Whisper 更准，且不耗转写引擎资源）。
 
     传 provider_id 时额外对该供应商做连通性探测（用已保存的 key 请求
     /v1/models，15s 超时；**不接受 key 参数**），返回 {probe: {ok, models, error}}。

@@ -802,3 +802,12 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **原因**：edith `qrcode/create` 拒绝旧版 x-s，HTTP 406 `{"code":-1,"success":false}`。
 - **修复**：`videonote login xiaohongshu` 用本机 Chrome/Edge 打开官网登录页（Playwright），拦截官方签名后的 create 响应，终端仍出 ASCII 码；无浏览器时回退直连接口并提示 `--cookie`。
 - 登录探测改为 GET 首页，不再打会 406 的 edith `user/me`。
+
+## Wave J 批 34（2026-09-01 · 第 20 轮扫描 #144，849→862 tests）
+
+- **小红书 host 钉死（A2/A3，中）**：Cookie 域与笔记页 URL 按精确 host 后缀匹配；显式 `platform=xiaohongshu` 不能把任意公网页当笔记解析。
+- **扫码出站（A1/A4，中）**：Chrome 响应/二维码只认 `*.xiaohongshu.com` 或 `xhsdiscover://`；小宇宙扫码改 `PublicOnlySession`，二维码钉官方域；Playwright 启动 15s 超时，失败路径关闭浏览器。
+- **MCP 输出（A5，中）**：`inspect_video` 小红书条目 URL 剥 query（`xsec_token`）；task 结果元数据白名单见 #143。
+- **官方文稿失败（B1，高）**：已登录小宇宙时网络/HTTP/CDN 失败抛 `OfficialTranscriptFetchError`，不再静默整集 ASR；5xx/超时重试一次。
+- **登录探测 / 取消 / 缓存（B2/B3/B5/B9）**：首页须有 userId；ffmpeg 转码响应 `cancel_event`；扫码成功只认 `code_status==2`；转写缓存命中时笔记页失败用 URL 存根。
+- **MCP docstring（B6）**：补小宇宙/小红书与 CLI 登录提示。

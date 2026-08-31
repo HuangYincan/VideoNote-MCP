@@ -55,6 +55,30 @@ def sanitize_url(url: Optional[str]) -> str:
     return f"{parts.scheme}://{host}{parts.path or '/'}"
 
 
+def hostname_matches(host: str, *suffixes: str) -> bool:
+    """host 是否等于或为 suffix 的子域（精确后缀，非子串）。
+
+    ``xiaohongshu.com`` / ``edith.xiaohongshu.com`` 命中；
+    ``evilxiaohongshu.com`` / ``xiaohongshu.com.evil.com`` 不命中。
+    """
+    h = (host or "").lower().lstrip(".").rstrip(".")
+    if not h:
+        return False
+    return any(h == s.lower() or h.endswith("." + s.lower()) for s in suffixes)
+
+
+def host_matches(url: str, *suffixes: str) -> bool:
+    """URL 的 hostname 是否匹配任一官方后缀（#144 A1/A3）。"""
+    if not url:
+        return False
+    raw = url.strip()
+    try:
+        parts = urlsplit(raw if "://" in raw else f"http://{raw}")
+    except ValueError:
+        return False
+    return hostname_matches(parts.hostname or "", *suffixes)
+
+
 # fake-ip 代理（Clash/Surge/Stash 等 macOS 常用）把 DNS 解析结果返回保留段，
 # 流量由代理转发到公网——is_global 判 False 会误杀所有 URL（2026-08-19
 # 用户实测：双栈 fake-ip 下 generate_note/inspect_video 全部被 SSRF 防护拦截）。

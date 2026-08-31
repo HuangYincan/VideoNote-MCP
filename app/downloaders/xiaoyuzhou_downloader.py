@@ -11,6 +11,7 @@ from typing import Optional, Union
 from app.downloaders.generic_downloader import GenericDownloader
 from app.downloaders.xiaoyuzhou_subtitle import XiaoyuzhouTranscriptFetcher
 from app.enmus.note_enums import DownloadQuality
+from app.exceptions.task import OfficialTranscriptFetchError
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
 from app.services.cookie_manager import CookieConfigManager
@@ -66,6 +67,8 @@ class XiaoyuzhouDownloader(GenericDownloader):
             result = XiaoyuzhouTranscriptFetcher().fetch_subtitles(video_url)
             if result and result.segments:
                 return result
+        except OfficialTranscriptFetchError:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("小宇宙官方文稿异常，将回退语音识别: %s", exc)
         return None
