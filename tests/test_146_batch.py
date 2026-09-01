@@ -1,0 +1,109 @@
+"""第 22 轮扫描 #146：并发、状态与批量边界回归。"""
+import json
+import shutil
+import unittest
+from concurrent.futures import Future
+from unittest import mock
+
+from videonote_mcp import server
+
+
+class TranscriberRebuildFailureTest(unittest.TestCase):
+    def test_failed_rebuild_keeps_old_instance_usable(self):
+        from app.transcriber import transcriber_provider as provider
+
+        key = provider.TranscriberType.FAST_WHISPER
+        old = mock.Mock()
+        old.model_size = "tiny"
+        saved = provider._transcribers[key]
+        provider._transcribers[key] = old
+        new_cls = mock.Mock(side_effect=RuntimeError("model download failed"))
+        new_cls.__name__ = "FakeTranscriber"
+        try:
+            with self.assertRaises(RuntimeError):
+                provider._get_or_build_transcriber(key, new_cls, model_size="small")
+            self.assertIs(provider._transcribers[key], old)
+            old.close.assert_not_called()
+        finally:
+            provider._transcribers[key] = saved
+
+
+class TaskSubmitRegistrationTest(unittest.TestCase):
+    class _ProbePool:
+        def __init__(self):
+            self.submit_lock_held = []
+
+        def submit(self, fn, *args, **kwargs):
+            self.submit_lock_held.append(server._tasks_lock.locked())
+            future = Future()
+            future.set_result(None)
+            return future
+
+    def tearDown(self):
+        with server._tasks_lock:
+            server._task_futures.clear()
+            server._task_events.clear()
+
+    def test_generate_and_material_submit_under_registry_lock(self):
+        pool = self._ProbePool()
+        common = [
+            mock.patch.object(server, "_pool", pool),
+            mock.patch.object(server, "_guard_remote_url"),
+            mock.patch.object(server, "_index_step_task"),
+            mock.patch.object(server, "_write_status"),
+        ]
+        with mock.patch.object(server, "_resolve_default_provider_id", return_value="p"), \
+             mock.patch.object(server, "get_models_by_provider", return_value=[{"model_name": "m"}]), \
+             mock.patch.object(server, "get_app_config", return_value={}), \
+             common[0], common[1], common[2], common[3]:
+            server.generate_note("https://example.com/video")
+            server.prepare_note_material("https://example.com/video")
+        self.assertEqual(pool.submit_lock_held, [True, True])
+
+
+class CorruptTerminalStatusTest(unittest.TestCase):
+    def setUp(self):
+        self.task_id = f"corrupt-{id(self):x}"
+        self.task_dir = server.NOTE_OUTPUT_DIR / self.task_id
+
+    def tearDown(self):
+        shutil.rmtree(self.task_dir, ignore_errors=True)
+        with server._tasks_lock:
+            server._status_memory.pop(self.task_id, None)
+
+    def test_corrupt_terminal_status_is_unknown_not_pending(self):
+        server._write_status(self.task_id, "SUCCESS", message="完成")
+        (self.task_dir / "status.json").write_text("{", encoding="utf-8")
+        payload = json.loads(server.task(self.task_id))
+        self.assertEqual(payload["status"], "UNKNOWN")
+        self.assertEqual(payload["stage"], "状态未知")
+        self.assertIn("无法确认", payload["message"])
+
+
+class BatchSingleMaxEntriesZeroTest(unittest.TestCase):
+    def test_single_zero_does_not_submit(self):
+        with mock.patch(
+            "app.services.inspect.inspect_video",
+            return_value={
+                "ok": True,
+                "platform": "generic",
+                "kind": "single",
+                "title": "single",
+                "total": 1,
+                "entries": [],
+            },
+        ), mock.patch.object(server, "generate_note") as generate:
+            payload = json.loads(
+                server.batch_generate_notes("https://example.com/video", max_entries=0)
+            )
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["submitted"], 0)
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["remaining"], 1)
+        self.assertEqual(payload["tasks"], [])
+        generate.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

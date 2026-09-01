@@ -898,10 +898,16 @@ def generate_note(
         notes_dir=notes_dir_out,
     )
     cancel_event = threading.Event()
-    future = _pool.submit(_run_note_task, task_id, cancel_event, **params)
+    # submit 与注册必须持同一把锁：worker 可能在 submit 返回前就跑完并进入 finally，
+    # 否则它先 pop 后，提交线程再写回已完成 Future/Event，留下注册表残骸（#146 B2）。
     with _tasks_lock:
-        _task_futures[task_id] = future
         _task_events[task_id] = cancel_event
+        try:
+            future = _pool.submit(_run_note_task, task_id, cancel_event, **params)
+        except Exception:
+            _task_events.pop(task_id, None)
+            raise
+        _task_futures[task_id] = future
     logger.info(f"已提交任务 task_id={task_id} platform={platform} model={model_name}")
     return json.dumps(
         {"task_id": task_id, "status": "PENDING", "platform": platform, "model_name": model_name},
@@ -983,10 +989,16 @@ def prepare_note_material(
         grid_size=grid_size or [],
     )
     cancel_event = threading.Event()
-    future = _pool.submit(_run_note_task, task_id, cancel_event, **params)
+    # submit 与注册必须持同一把锁：worker 可能在 submit 返回前就跑完并进入 finally，
+    # 否则它先 pop 后，提交线程再写回已完成 Future/Event，留下注册表残骸（#146 B2）。
     with _tasks_lock:
-        _task_futures[task_id] = future
         _task_events[task_id] = cancel_event
+        try:
+            future = _pool.submit(_run_note_task, task_id, cancel_event, **params)
+        except Exception:
+            _task_events.pop(task_id, None)
+            raise
+        _task_futures[task_id] = future
     logger.info(f"已提交素材任务 task_id={task_id} platform={platform}")
     return json.dumps(
         {"task_id": task_id, "status": "PENDING", "kind": "material", "platform": platform},
@@ -1011,6 +1023,7 @@ def _stage_label(status: str) -> str:
         "FAILED": "失败",
         "CANCELLED": "已取消",
         "NOT_FOUND": "不存在",
+        "UNKNOWN": "状态未知",
     }.get(status, status)
 
 
@@ -1028,10 +1041,13 @@ def _task_status(task_id: str) -> str:
         try:
             data = json.loads(status_file.read_text(encoding="utf-8"))
         except Exception:
-            # 读盘损坏（写一半/磁盘故障）时回退最近一次写盘快照——「状态文件读取失败」
-            # 曾把运行中/已完成任务误报成 PENDING（#118）；快照也没有才是真未知
+            # 终态快照在成功落盘后会主动弹出（#123 C9），此时无法安全推断任务是否
+            # PENDING；返回 UNKNOWN，避免 Agent 无限轮询一个可能已经 SUCCESS/FAILED/CANCELLED
+            # 的损坏任务（#146 B3）。
             with _tasks_lock:
-                data = _status_memory.get(task_id) or {"status": "PENDING", "message": "状态文件读取失败"}
+                data = _status_memory.get(task_id)
+            if data is None:
+                data = {"status": "UNKNOWN", "message": "状态文件读取失败，无法确认任务终态"}
     else:
         # 缺失文件也先查快照（#127 A5）：_write_status 先写内存快照再写盘，若提交时
         # 首写就失败（磁盘满/只读）任务在跑但 status.json 不存在——直接报 NOT_FOUND
@@ -2028,6 +2044,24 @@ def batch_generate_notes(
         return {**entry, "task_id": r.get("task_id"), "status": r.get("status")}
 
     if parsed.get("kind") == "single" or not entries:
+        # 显式 max_entries=0 与多集路径同口径：只完成解析，不提交任务。
+        # 单集退化也不能绕过「最多 0 条」契约（#146 B4）。
+        if max_entries == 0:
+            total = int(parsed.get("total") or 1)
+            return json.dumps(
+                {
+                    "ok": False,
+                    "total": total,
+                    "submitted": 0,
+                    "truncated": total > 0,
+                    "remaining": total,
+                    "platform": parsed.get("platform"),
+                    "kind": parsed.get("kind"),
+                    "errors": [],
+                    "tasks": [],
+                },
+                ensure_ascii=False,
+            )
         # 单集链接：退化为单任务，不引入条目语义；失败与多条目同形状（#109：
         # 此前 raise 裸传，Agent 拿不到结构化 errors）
         try:
