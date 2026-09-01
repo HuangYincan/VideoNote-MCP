@@ -848,4 +848,4 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **错误可见（B6/C2）**：Provider DAO 写失败不再假成功；CLI 模型下载接线进程内 downloading 态；删除零引用 `delete_model` / `TaskStatus.description` / `GPT.list_models`。
 - **mlx（C7）**：依赖上游 `ModelHolder` 按 path 缓存；`close()` 释放匹配的驻留权重。
 - **建议后续**：FastMCP 同步工具占事件循环、CLI export 外部目录、#143 部署侧 SSRF/版本钉死。
-- **验证**：`920 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit 待回填）。
+- **验证**：`920 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit `affae86`）。
