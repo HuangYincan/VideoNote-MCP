@@ -831,3 +831,12 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **工程卫生（C1/C3/C5/C6）**：删除 #144 暂缓的四个零引用符号；YouTube 字幕 HTTP 默认 5s/20s 超时；`app.log` 轮转；faster-whisper 惰性 import。
 - **建议后续**：CLI export 外部目录、下载状态写 API 死代码、FastMCP 同步工具占事件循环、mlx 分块重复加载。
 - **验证**：`902 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit `ba4a7dd`）。
+
+## Wave L 批 37（2026-09-01 · 第 22 轮重试扫描 #146，902→906 tests）
+
+- **转写器缓存恢复（B1）**：模型重建先构造新实例，成功后才关闭并替换旧实例；新模型加载失败时保留旧实例，避免缓存留下 `model=None` 的失效对象。
+- **后台任务登记竞态（B2）**：`generate_note` 与 `prepare_note_material` 在 `_tasks_lock` 内完成取消事件登记、线程池提交和 Future 登记；极快 worker 不再与提交线程竞态留下注册表残骸。
+- **终态状态可观测性（B3）**：终态 `status.json` 损坏且无内存快照时返回 `UNKNOWN`，不再伪造 `PENDING` 让 Agent 无限轮询。
+- **batch 边界（B4）**：单集退化路径遵守 `max_entries=0`，只完成解析并返回 `submitted=0`，不再绕过批量上限提交任务。
+- **建议后续**：A1 DNS rebinding 解析—连接 TOCTOU 仍需连接器/部署 egress 策略与 fake-IP 代理兼容矩阵确认。
+- **验证**：`906 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit `1a31169`）。
