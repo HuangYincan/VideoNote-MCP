@@ -21,8 +21,15 @@ def safe_audio_download_result_dict(result: AudioDownloadResult) -> dict:
 
     Keep the small subset consumed by the note pipeline, rather than persisting
     the full yt-dlp info dictionary, which can contain signed URLs and headers.
+    Cover URLs from Douyin/Kuaishou/Xiaohongshu almost always carry CDN tokens;
+    strip the query so ``gen/audio.json`` cannot leak them into Agent Read.
     """
+    from app.utils.url_safety import sanitize_url
+
     data = asdict(result)
+    cover_url = data.get("cover_url")
+    if isinstance(cover_url, str) and cover_url:
+        data["cover_url"] = sanitize_url(cover_url) or None
     raw_info = data.get("raw_info")
     if isinstance(raw_info, dict):
         safe_raw_info = {}

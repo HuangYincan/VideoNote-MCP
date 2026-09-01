@@ -60,11 +60,13 @@ class WhisperTranscriber(Transcriber):
                 # 自愈：损坏 / 截断 / 半成品 cache → 删掉对应 HF cache 重下一次
                 logger.warning(f"加载 whisper-{model_size} 失败（cache 损坏）：{e}；清理 cache 后重新下载")
                 WhisperTranscriber._purge_cache(model_dir, model_size)
+                self.model = self._build_model(model_size, model_dir)
             else:
-                # 网络瞬时故障/404/参数错误不 purge：删掉只会丢失可断点续传的
-                # 半截下载，等再次加载时自然重试（#124 B18）
+                # 网络瞬时故障/404/参数错误不 purge、也不立刻再下一次（#145 B6）：
+                # 旧代码注释写「等再次加载时自然重试」，实现却无条件 _build_model，
+                # 把 HF 404/超时放大一倍。
                 logger.warning(f"加载 whisper-{model_size} 失败（非 cache 损坏，不清理）: {e}")
-            self.model = self._build_model(model_size, model_dir)
+                raise
 
     def _build_model(self, model_size: str, model_dir: str) -> WhisperModel:
         # resolve 把模型名映射成可加载标识：内置 size→Systran repo_id、自定义映射、

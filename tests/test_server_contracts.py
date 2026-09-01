@@ -1574,12 +1574,12 @@ class InspectVideoSsrfTest(unittest.TestCase):
         self.assertEqual(resp["kind"], "single")
 
     def test_local_existing_file_accepted(self):
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-            path = f.name
+        path = server.DATA_DIR / "inspect_ssrf_local.mp4"
+        path.write_bytes(b"x")
         try:
-            resp = json.loads(server.inspect_video(f"file://{path}"))
+            resp = json.loads(server.inspect_video(path.as_uri()))
         finally:
-            Path(path).unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
         self.assertTrue(resp["ok"])
         self.assertEqual(resp["platform"], "local")
         self.assertEqual(resp["kind"], "single")
@@ -1807,16 +1807,19 @@ class InspectLocalFileUriTest(unittest.TestCase):
     """
 
     def test_inspect_accepts_file_uri_with_space(self):
-        with tempfile.TemporaryDirectory() as td:
-            f = Path(td) / "我的 视频.mp4"
-            f.write_bytes(b"x")
+        f = server.DATA_DIR / "我的 视频.mp4"
+        f.write_bytes(b"x")
+        try:
             out = json.loads(server.inspect_video(f.as_uri()))  # %20/非 ASCII 编码
+        finally:
+            f.unlink(missing_ok=True)
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["platform"], "local")
         self.assertEqual(out["entries"][0]["url"], str(f))
 
     def test_inspect_missing_file_uri_reports_not_found(self):
-        out = json.loads(server.inspect_video("file:///tmp/videonote_never_exists_133.mp4"))
+        missing = (server.DATA_DIR / "videonote_never_exists_133.mp4").as_uri()
+        out = json.loads(server.inspect_video(missing))
         self.assertFalse(out["ok"])
         self.assertIn("本地文件不存在", out["error"])
 

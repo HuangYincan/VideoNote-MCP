@@ -1,7 +1,6 @@
 """音频预处理 —— 转写前的标准化与超长分块。
 
-设计目标：**默认关、零硬依赖**。核心（16kHz 归一 + 超长分块）只用系统 ffmpeg；
-降噪（noisereduce）做成可选 extras，未装时静默跳过。
+设计目标：**默认关、零硬依赖**。核心（16kHz 归一 + 超长分块）只用系统 ffmpeg。
 
 faster-whisper 内部已自带 Silero VAD + 16kHz 重采样，所以本模块主要服务
 云端引擎（groq/bcut/kuaishou 有文件大小/时长上限）和后续的说话人分离（pyannote
@@ -91,31 +90,6 @@ def chunk_if_long(
     )
     chunks = sorted(str(p) for p in Path(out_dir).glob(f"{Path(wav_path).stem}_part_*.wav"))
     return chunks or [wav_path]
-
-
-def denoise(wav_path: str) -> str:
-    """可选降噪（noisereduce）。未安装时返回原路径 + 日志（静默降级）。"""
-    try:
-        import noisereduce as nr  # noqa: F401
-    except ImportError:
-        logger.info("noisereduce 未安装，跳过降噪（装 `uvx --with noisereduce` 可启用）")
-        return wav_path
-    try:
-        import numpy as np
-        from scipy.io import wavfile
-
-        rate, data = wavfile.read(wav_path)
-        if data.dtype != np.int16:
-            data = (data * 32767).astype(np.int16)
-        if data.ndim == 2:
-            data = data.mean(axis=1).astype(np.int16)
-        reduced = nr.reduce_noise(y=data.astype(np.float32), sr=rate)
-        out = wav_path.replace(".wav", "_denoised.wav")
-        wavfile.write(out, rate, reduced.astype(np.int16))
-        return out
-    except Exception as exc:  # noqa: BLE001 —— 降噪失败不阻断
-        logger.warning(f"降噪失败，返回原文件: {exc}")
-        return wav_path
 
 
 def cleanup_preprocess_files(wav_path: str) -> None:

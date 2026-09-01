@@ -307,8 +307,13 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
         from app.db.video_task_dao import update_task_status
 
         update_task_status(str(task_id), data["status"], message=safe_message)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "同步任务索引失败 task_id=%s status=%s: %s",
+            task_id,
+            data.get("status"),
+            sanitize_error_text(exc),
+        )
 
 
 def _atomic_write_json(path: Path, payload) -> None:
@@ -805,8 +810,8 @@ def generate_note(
     if _explicit_provider:
         try:
             _prow = ProviderService.get_provider_by_id(provider_id)
-        except Exception:
-            _prow = None
+        except Exception as exc:
+            raise ValueError(f"读取供应商失败: {sanitize_error_text(exc)}") from exc
         if not _prow:
             raise ValueError(f"供应商不存在: {provider_id}")
         _pkey = (_prow.get("api_key") or "").strip()
@@ -1381,7 +1386,10 @@ def list_tasks(limit: Optional[int] = None, offset: int = 0) -> str:
     if limit == 0:
         return json.dumps([], ensure_ascii=False)
     limit = _coerce_int(limit, 1, clamp_min=1) if limit is not None else None
-    tasks = _list(limit=limit, offset=offset)
+    try:
+        tasks = _list(limit=limit, offset=offset)
+    except Exception as exc:
+        raise ValueError(f"读取任务索引失败: {sanitize_error_text(exc)}") from exc
     return json.dumps(tasks, ensure_ascii=False)
 
 
@@ -1817,8 +1825,8 @@ def _preflight_provider(provider_id: Optional[str]) -> "tuple[bool, str]":
         return False, "无已填 key 的供应商：先 add_provider 再 `! videonote providers set <id> --api-key '...'`，或跑 /videonote-setup"
     try:
         row = ProviderService.get_provider_by_id(pid)
-    except Exception:
-        row = None
+    except Exception as exc:
+        return False, f"读取供应商失败: {sanitize_error_text(exc)}"
     if not row:
         return False, f"供应商不存在: {pid}"
     key = (row.get("api_key") or "").strip()

@@ -1966,6 +1966,31 @@ def _login_xiaohongshu(args, exit_on_fail: bool = True) -> None:
     _login_xiaohongshu_qr(exit_on_fail)
 
 
+def _bilibili_sessdata_from_login_url(login_url: str, headers: dict) -> str:
+    """从扫码成功 URL 取 SESSDATA：官方 host 钉死 + PublicOnlySession 跟随（#145 A1）。
+
+    poll 的 data.url 可能直接带 SESSDATA，也可能是 passport.biligame.com 的
+    crossDomain ticket。非 ``bilibili.com`` / ``biligame.com`` 后缀一律拒绝跟随。
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from app.utils.url_safety import PublicOnlySession, host_matches
+
+    if not host_matches(login_url, "bilibili.com", "biligame.com"):
+        raise ValueError(f"登录回调域名不是 B 站官方（{urlparse(login_url).netloc or '未知域名'}）")
+    qs = parse_qs(urlparse(login_url).query)
+    sess = (qs.get("SESSDATA") or [""])[0]
+    if sess:
+        return sess
+    with PublicOnlySession() as session:
+        session.headers.update(headers)
+        session.get(login_url, timeout=10)
+        sess = next((c.value for c in session.cookies if c.name == "SESSDATA"), "")
+    if not sess:
+        raise ValueError(f"登录成功但未取到 SESSDATA（{urlparse(login_url).netloc or '未知域名'}）")
+    return sess
+
+
 def _login_cli(argv, exit_on_fail: bool = True) -> None:
     """`videonote login [bilibili|youtube|xiaoyuzhou|xiaohongshu]`：平台登录配置。
 
@@ -1990,9 +2015,8 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
         print(f"未知平台: {argv[0]}（支持 bilibili / youtube / xiaoyuzhou / xiaohongshu）", file=sys.stderr)
         sys.exit(2)
     import time
-    import urllib.parse
 
-    import requests
+    from app.utils.url_safety import PublicOnlySession, sanitize_error_text
 
     try:
         import qrcode
@@ -2010,10 +2034,12 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
         "Referer": "https://www.bilibili.com",
     }
     try:
-        resp = requests.get(
-            "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
-            headers=_UA, timeout=10,
-        ).json()
+        with PublicOnlySession() as session:
+            session.headers.update(_UA)
+            resp = session.get(
+                "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
+                timeout=10,
+            ).json()
         if resp.get("code") != 0:
             print(f"生成二维码失败: {resp}", file=sys.stderr)
             if exit_on_fail:
@@ -2022,7 +2048,7 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
         qr_url = resp["data"]["url"]
         qrcode_key = resp["data"]["qrcode_key"]
     except Exception as e:
-        print(f"生成二维码失败（网络？）: {e}", file=sys.stderr)
+        print(f"生成二维码失败（网络？）: {sanitize_error_text(e)}", file=sys.stderr)
         if exit_on_fail:
             sys.exit(1)
         return
@@ -2043,36 +2069,23 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
         while True:
             time.sleep(2)
             try:
-                poll = requests.get(
-                    "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
-                    params={"qrcode_key": qrcode_key},
-                    headers=_UA, timeout=10,
-                ).json()
+                with PublicOnlySession() as session:
+                    session.headers.update(_UA)
+                    poll = session.get(
+                        "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
+                        params={"qrcode_key": qrcode_key},
+                        timeout=10,
+                    ).json()
             except Exception as e:
-                print(f"轮询失败（网络？）: {e}", file=sys.stderr)
+                print(f"轮询失败（网络？）: {sanitize_error_text(e)}", file=sys.stderr)
                 continue
             data = poll.get("data") or {}
             st = data.get("code", 0)
             if st == 0 and data.get("url"):
-                # 登录成功。url 可能直接带 SESSDATA，也可能是 crossDomain ticket（需跟随拿 Set-Cookie）
-                sess = ""
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(data["url"]).query)
-                sess = qs.get("SESSDATA", [""])[0]
-                if not sess:
-                    try:
-                        s = requests.Session()
-                        s.headers.update(_UA)
-                        s.get(data["url"], timeout=10)
-                        # SESSDATA 可能有多条（不同 domain/path），requests 的 .get() 会抛
-                        # CookieConflictError；手动遍历取第一条
-                        sess = next((c.value for c in s.cookies if c.name == "SESSDATA"), "")
-                    except Exception as e:
-                        print(f"跟随登录 URL 拿 cookie 失败: {e}", file=sys.stderr)
-                if not sess:
-                    # 不打印完整 URL：crossDomain ticket 含敏感参数（#71）
-                    from urllib.parse import urlparse
-
-                    print(f"登录成功但未取到 SESSDATA（{urlparse(data['url']).netloc or '未知域名'}）", file=sys.stderr)
+                try:
+                    sess = _bilibili_sessdata_from_login_url(data["url"], _UA)
+                except Exception as e:
+                    print(sanitize_error_text(e), file=sys.stderr)
                     if exit_on_fail:
                         sys.exit(1)
                     return

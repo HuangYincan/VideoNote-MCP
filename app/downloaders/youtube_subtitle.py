@@ -10,34 +10,33 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.logger import get_logger
-from app.utils.url_safety import sanitize_error_text, sanitize_url
+from app.utils.url_safety import PublicOnlySession, sanitize_error_text, sanitize_url
 
 logger = get_logger(__name__)
+
+
+class _SubtitleSession(PublicOnlySession):
+    """YouTube timedtext 客户端：逐跳公网校验 + 默认超时（#145 C3）。"""
+
+    def request(self, method, url, **kwargs):  # type: ignore[override]
+        kwargs.setdefault("timeout", (5, 20))
+        return super().request(method, url, **kwargs)
 
 
 class YouTubeSubtitleFetcher:
     """通过 youtube-transcript-api 获取 YouTube 字幕。"""
 
     def __init__(self):
-        # 配了全局代理就给 youtube-transcript-api 套一个带 proxies 的 requests.Session，
-        # 否则国内拉字幕同样会超时。代理未配置时退回默认无代理客户端。
+        # 配了全局代理就给 youtube-transcript-api 套带 proxies 的 Session，
+        # 否则国内拉字幕同样会超时。无论是否有代理都自建 Session：库内部
+        # get/post 无 timeout，默认 timeout=None 会占死 worker 槽。
         proxy = ProxyConfigManager().get_proxy_url()
+        session = _SubtitleSession()
         if proxy:
-            try:
-                import requests
-                session = requests.Session()
-                session.proxies = {"http": proxy, "https": proxy}
-                self._api = YouTubeTranscriptApi(http_client=session)
-                # 保留引用以便显式 close：Session 不 close 会泄漏连接池条目
-                # 直到 GC，且 youtube-transcript-api 不会替我们释放（#125 B16）
-                self._session = session
-                # 代理 URL 可能含 user:pass@（docs/05 第 16 轮 A4）：日志只留 host
-                logger.info(f"YouTube 字幕走代理: {sanitize_url(proxy)}")
-            except Exception as e:
-                logger.warning(f"为 youtube-transcript-api 注入代理失败，回退无代理: {sanitize_error_text(e)}")
-                self._api = YouTubeTranscriptApi()
-        else:
-            self._api = YouTubeTranscriptApi()
+            session.proxies = {"http": proxy, "https": proxy}
+            logger.info(f"YouTube 字幕走代理: {sanitize_url(proxy)}")
+        self._session = session
+        self._api = YouTubeTranscriptApi(http_client=session)
 
     def close(self) -> None:
         """显式释放代理 Session（连接池/打开 fd）。"""

@@ -7,7 +7,6 @@ from typing import Optional, Union
 from urllib.parse import quote, urlencode
 
 import httpx
-import requests
 from pydantic import BaseModel
 
 from app.downloaders.base import Downloader
@@ -18,7 +17,13 @@ from app.models.audio_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
-from app.utils.url_safety import public_head, sanitize_error_text, sanitize_url
+from app.utils.url_safety import (
+    assert_public_http_url,
+    public_get,
+    public_head,
+    sanitize_error_text,
+    sanitize_url,
+)
 
 logger = get_logger(__name__)
 from dotenv import load_dotenv
@@ -148,24 +153,28 @@ class DouyinDownloader(Downloader):
 
     def extract_video_id(self, url: str) -> str:
         video_url = DouyinDownloader.find_url(url)
-
-        if len(video_url):
-            video_url = video_url[0]
+        candidates = [url]
+        if video_url:
+            page = video_url[0]
+            candidates.append(page)
             try:
                 # public_head 逐跳校验（#140）：入口 URL 公网后重定向到内网的
                 # Location 在发出前拦截（入口校验覆盖不到 redirect 目标）
-                response = public_head(video_url, timeout=(5, 10))
-                url = response.url
+                response = public_head(page, timeout=(5, 10))
+                candidates.append(response.url)
             except Exception:
-                return ""
+                # HEAD 失败仍解析原始路径（#145 B1）：``/video/{id}`` 长链不该因
+                # 短链探测超时变成空 aweme_id。
+                pass
         patterns = [
             r'video/(\d+)',
             r'aweme_id=(\d+)',
         ]
-        for pattern in patterns:
-            match = re.search(pattern, url)
-            if match:
-                return match.group(1)
+        for candidate in reversed(candidates):
+            for pattern in patterns:
+                match = re.search(pattern, candidate)
+                if match:
+                    return match.group(1)
         return ""
 
     def gen_real_msToken(self) -> str:
@@ -190,6 +199,7 @@ class DouyinDownloader(Downloader):
             transport = httpx.HTTPTransport(retries=5)
             with httpx.Client(transport=transport) as client:
                 try:
+                    assert_public_http_url(self.ms_token_config["url"])
                     response = client.post(
                         self.ms_token_config["url"], content=payload, headers=headers
                     )
@@ -225,7 +235,7 @@ class DouyinDownloader(Downloader):
 
             logger.debug("抖音 API 请求 URL 已构造")
 
-            response = requests.get(full_url, headers=kwargs, timeout=(5, 10))
+            response = public_get(full_url, headers=kwargs, timeout=(5, 10))
 
             result = response.json()
             if aweme_id:

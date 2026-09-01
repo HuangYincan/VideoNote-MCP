@@ -1,7 +1,5 @@
 """inspect_video：分 P / 播放列表解析（mock 网络）。"""
-import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -143,23 +141,33 @@ class InspectYtdlpTest(unittest.TestCase):
         self.assertEqual(out["entries"][0]["video_id"], "ccccccccccc")
 
     def test_local_passthrough(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "foo.mp4")
-            with open(p, "wb") as f:
-                f.write(b"fake")
-            out = inspect_mod.inspect_video(p)
+        from videonote_mcp.server import DATA_DIR
+
+        p = DATA_DIR / "inspect_local_foo.mp4"
+        p.write_bytes(b"fake")
+        try:
+            out = inspect_mod.inspect_video(str(p))
+        finally:
+            p.unlink(missing_ok=True)
         self.assertTrue(out["ok"])
         self.assertEqual(out["platform"], "local")
         self.assertEqual(out["kind"], "single")
-        self.assertEqual(out["entries"][0]["url"], p)
+        self.assertEqual(out["entries"][0]["url"], str(p))
 
-    def test_local_missing_rejected(self):
-        # #130 A5：不存在的本地路径返回 ok:false——否则 Agent 拿到 ok:true 后把
-        # 幻影路径喂给 generate_note 才报「本地文件不存在」
-        out = inspect_mod.inspect_video("/tmp/videonote_never_exists.mp4")
+    def test_local_missing_inside_data_dir_rejected(self):
+        from videonote_mcp.server import DATA_DIR
+
+        missing = DATA_DIR / "videonote_never_exists.mp4"
+        out = inspect_mod.inspect_video(str(missing))
         self.assertFalse(out["ok"])
         self.assertEqual(out["platform"], "local")
         self.assertIn("不存在", out["error"])
+
+    def test_local_outside_data_dir_rejected(self):
+        out = inspect_mod.inspect_video("/tmp/videonote_never_exists.mp4")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["platform"], "local")
+        self.assertIn("VIDEONOTE_ALLOW_EXTERNAL_PATHS", out["error"])
 
 
 class InspectCookieInjectionTest(unittest.TestCase):

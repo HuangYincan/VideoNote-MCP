@@ -30,7 +30,7 @@ import logging
 import re
 import socket
 from typing import Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
@@ -61,6 +61,74 @@ def sanitize_url(url: Optional[str]) -> str:
     if port:
         host = f"{host}:{port}"
     return f"{parts.scheme}://{host}{parts.path or '/'}"
+
+
+_SENSITIVE_QUERY_KEYS = frozenset(
+    {
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "sig",
+        "signature",
+        "x-amz-signature",
+        "xsec_token",
+        "expires",
+        "expire",
+        "expiry",
+        "x-expires",
+        "auth",
+        "authorization",
+        "key",
+        "api_key",
+        "apikey",
+        "session",
+        "sessionid",
+        "cookie",
+        "secret",
+        "hmac",
+        "ossaccesskeyid",
+        "security-token",
+    }
+)
+
+
+def _query_key_is_sensitive(key: str) -> bool:
+    k = (key or "").lower().replace("[]", "")
+    if k in _SENSITIVE_QUERY_KEYS:
+        return True
+    return k.endswith("token") or k.endswith("secret") or k.endswith("signature")
+
+
+def public_replay_url(url: Optional[str]) -> str:
+    """MCP/inspect 回传给 Agent 的链接：剥 userinfo 与签名 query，保留页面定位参数。
+
+    ``sanitize_url`` 会去掉全部 query，YouTube ``watch?v=`` / B 站 ``?p=`` 会失效。
+    本函数只丢 token/sig/xsec_token 等敏感键，``v`` / ``p`` / ``list`` / ``index`` 保留。
+    """
+    if not url:
+        return ""
+    raw = str(url).strip()
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return ""
+    if not parts.scheme:
+        return raw
+    if parts.scheme.lower() not in ALLOWED_SCHEMES:
+        return sanitize_url(raw)
+    try:
+        host = parts.hostname or ""
+        port = parts.port
+    except ValueError:
+        return sanitize_url(raw)
+    netloc = f"{host}:{port}" if port else host
+    kept = [
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if not _query_key_is_sensitive(k)
+    ]
+    return urlunsplit((parts.scheme.lower(), netloc, parts.path or "/", urlencode(kept), ""))
 
 
 def sanitize_error_url(url: Optional[str]) -> str:

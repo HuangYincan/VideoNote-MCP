@@ -30,12 +30,9 @@ from uuid import uuid4
 from app.downloaders.base import Downloader
 from app.exceptions.task import OfficialTranscriptFetchError
 from app.gpt.base import GPT
-from app.gpt.gpt_factory import GPTFactory
 from app.models.gpt_model import GPTSource
-from app.models.model_config import ModelConfig
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.constant import get_downloader as _new_downloader
-from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import _transcribers, get_transcriber
 from app.utils.path_helper import get_data_dir
@@ -133,21 +130,6 @@ def build_transcriber() -> Transcriber:
         transcriber_type=ttype,
         model_size=mgr.get_whisper_model_size(),
     )
-
-
-def get_gpt(provider_id: str, model_name: Optional[str] = None) -> GPT:
-    """按供应商 id 构建 GPT 实例（与 note.py._get_gpt 一致）。"""
-    provider = ProviderService.get_provider_by_id(provider_id)
-    if not provider:
-        raise ValueError(f"未找到模型供应商: provider_id={provider_id}")
-    config = ModelConfig(
-        api_key=provider["api_key"],
-        base_url=provider["base_url"],
-        model_name=model_name,
-        provider=provider["type"],
-        name=provider["name"],
-    )
-    return GPTFactory().from_config(config)
 
 
 # ---------------- 步骤 1：平台字幕 ----------------

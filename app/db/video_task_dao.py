@@ -100,7 +100,7 @@ def list_tasks(limit: Optional[int] = None, offset: int = 0) -> list:
         ]
     except Exception as e:
         logger.error(f"Failed to list tasks: {e}")
-        return []
+        raise
     finally:
         db.close()
 

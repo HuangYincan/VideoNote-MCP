@@ -37,11 +37,27 @@ class XiaohongshuDownloader(Downloader):
     def __init__(self, auth: Optional[XiaohongshuAuth] = None):
         super().__init__()
         self._auth = auth
+        self._owns_auth = auth is None
 
     def _get_auth(self) -> XiaohongshuAuth:
         if self._auth is None:
             self._auth = XiaohongshuAuth()
+            self._owns_auth = True
         return self._auth
+
+    def close(self) -> None:
+        if self._owns_auth and self._auth is not None:
+            try:
+                self._auth.close()
+            except Exception:
+                pass
+            self._auth = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _fetch(self, video_url: str) -> XiaohongshuNote:
         note = self._get_auth().fetch_note(video_url)

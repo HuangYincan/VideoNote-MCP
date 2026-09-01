@@ -13,6 +13,7 @@ from app.downloaders.common import public_get_retry
 from app.services.pipeline import detect_platform
 from app.utils.url_safety import (
     assert_public_http_url,
+    public_replay_url,
     sanitize_error_text,
     sanitize_url,
 )
@@ -60,9 +61,19 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
             # inspect 曾是全工具面唯一不认 file:// 的本地入口（#105/#107 系列输入
             # 规整的漏网点），同一文件 generate_note 可用、inspect
             # 却报「本地文件不存在」。entries[].url 透传规整后的路径。
-            from videonote_mcp.server import _coerce_local_path
+            # #145 A6：与 generate_note 同数据目录门禁，避免用 ok:true 做目录外存在性探测。
+            from videonote_mcp.server import _coerce_local_path, _guard_data_boundary
 
             local_path = _coerce_local_path(raw)
+            try:
+                _guard_data_boundary(local_path, "本地视频路径")
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "platform": "local",
+                    "kind": "single",
+                    "error": str(exc),
+                }
             if not local_path.is_file():
                 return {
                     "ok": False,
@@ -203,7 +214,7 @@ def _inspect_xiaohongshu(url: str) -> dict:
                 "p": 1,
                 "title": note.title,
                 "duration": note.duration or None,
-                "url": sanitize_url(page_url),
+                "url": public_replay_url(page_url) or sanitize_url(page_url),
                 "video_id": vid,
             }
         ],
@@ -274,7 +285,7 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
                     "p": i,
                     "title": e.get("title") or "",
                     "duration": e.get("duration"),
-                    "url": page_url,
+                    "url": public_replay_url(page_url) or page_url,
                     "video_id": vid,
                 }
             )
@@ -294,6 +305,7 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
 
     vid = info.get("id")
     page_url = info.get("webpage_url") or url
+    replay = public_replay_url(page_url) or page_url
     return {
         "ok": True,
         "platform": platform,
@@ -307,7 +319,7 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
                 "p": 1,
                 "title": info.get("title") or "",
                 "duration": info.get("duration"),
-                "url": page_url,
+                "url": replay,
                 "video_id": vid,
             }
         ],

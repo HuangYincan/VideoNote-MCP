@@ -6,7 +6,6 @@ from enum import Enum
 from app.transcriber.bcut import BcutTranscriber
 from app.transcriber.groq import GroqTranscriber
 from app.transcriber.kuaishou import KuaishouTranscriber
-from app.transcriber.whisper import WhisperTranscriber
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -92,6 +91,7 @@ def get_groq_transcriber():
     return _get_or_build_transcriber(TranscriberType.GROQ, GroqTranscriber)
 
 def get_whisper_transcriber(model_size="small", device="cuda"):
+    from app.transcriber.whisper import WhisperTranscriber
     return _get_or_build_transcriber(TranscriberType.FAST_WHISPER, WhisperTranscriber, model_size=model_size, device=device)
 
 def get_bcut_transcriber():

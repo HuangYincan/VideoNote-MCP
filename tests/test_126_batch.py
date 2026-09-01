@@ -209,21 +209,28 @@ class InspectVideoLocalTest(unittest.TestCase):
     """C9：本地路径不存在 → ok:false + 明确 error（SKILL 流程少一轮无效往返）。"""
 
     def test_missing_local_file_rejected(self):
-        resp = json.loads(server.inspect_video("/nonexistent/vn_test/missing.mp4"))
+        missing = server.DATA_DIR / "vn_test_missing.mp4"
+        resp = json.loads(server.inspect_video(str(missing)))
         self.assertFalse(resp["ok"])
         self.assertEqual(resp["platform"], "local")
         self.assertIn("本地文件不存在", resp["error"])
 
     def test_existing_local_file_accepted(self):
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-            path = f.name
+        path = server.DATA_DIR / "vn_test_existing.mp4"
+        path.write_bytes(b"x")
         try:
-            resp = json.loads(server.inspect_video(path))
+            resp = json.loads(server.inspect_video(str(path)))
             self.assertTrue(resp["ok"])
             self.assertEqual(resp["platform"], "local")
             self.assertEqual(resp["kind"], "single")
         finally:
-            os.unlink(path)
+            path.unlink(missing_ok=True)
+
+    def test_outside_local_file_rejected(self):
+        resp = json.loads(server.inspect_video("/nonexistent/vn_test/missing.mp4"))
+        self.assertFalse(resp["ok"])
+        self.assertEqual(resp["platform"], "local")
+        self.assertIn("VIDEONOTE_ALLOW_EXTERNAL_PATHS", resp["error"])
 
 
 # ---------------- B1：pipeline 预处理/说话人分离临时目录隔离 ----------------

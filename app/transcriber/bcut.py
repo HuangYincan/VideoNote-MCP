@@ -3,12 +3,11 @@ import os
 import time
 from typing import List, Optional
 
-import requests
-
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
+from app.utils.url_safety import PublicOnlySession, assert_public_http_url, sanitize_url
 
 __version__ = "0.0.3"
 
@@ -40,7 +39,7 @@ class BcutTranscriber(Transcriber):
     }
 
     def __init__(self):
-        self.session = requests.Session()
+        self.session = PublicOnlySession()
         self.task_id = None
         self.__etags = []
 
@@ -127,6 +126,7 @@ class BcutTranscriber(Transcriber):
                 f.seek(start_range)
                 chunk = f.read(self.__per_size)
                 logger.info(f"开始上传分片{clip}: {start_range}-{start_range + len(chunk)}")
+                assert_public_http_url(self.__upload_urls[clip])
                 resp = self.session.put(
                     self.__upload_urls[clip],
                     data=chunk,
@@ -164,7 +164,7 @@ class BcutTranscriber(Transcriber):
             raise Exception(error_msg)
             
         self.__download_url = resp["data"]["download_url"]
-        logger.info(f"提交成功，下载链接: {self.__download_url}")
+        logger.info(f"提交成功，下载链接: {sanitize_url(self.__download_url)}")
 
     def _create_task(self) -> str:
         """开始创建转换任务"""
