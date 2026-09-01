@@ -12,7 +12,6 @@
 """
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -516,7 +515,7 @@ class KuaishouStaleMp3Test(unittest.TestCase):
                     resp.__exit__ = mock.Mock(return_value=False)
                     resp.iter_content = mock.Mock(return_value=iter([b"x" * 10]))
                     m_get.return_value = resp
-                    with mock.patch("app.downloaders.kuaishou_downloader.subprocess.run") as m_ffmpeg:
+                    with mock.patch("app.downloaders.kuaishou_downloader.run_ffmpeg_cancellable") as m_ffmpeg:
                         result = dl.download("https://v.kuaishou.com/x", output_dir=td)
             # 0 字节缓存不命中 → 重新转 mp3（ffmpeg 被调起）；预删已清掉残留半成品
             m_ffmpeg.assert_called_once()
@@ -546,7 +545,7 @@ class KuaishouTitleCleanTest(unittest.TestCase):
                 resp.__exit__ = mock.Mock(return_value=False)
                 resp.iter_content = mock.Mock(return_value=iter([b"x"]))
                 m_get.return_value = resp
-                with mock.patch("app.downloaders.kuaishou_downloader.subprocess.run"):
+                with mock.patch("app.downloaders.kuaishou_downloader.run_ffmpeg_cancellable"):
                     with tempfile.TemporaryDirectory() as td:
                         result = dl.download("https://v.kuaishou.com/x", output_dir=td)
         # 换行/空格被清洗，不再把原始 caption 透传给 DB/prompt
@@ -577,7 +576,7 @@ class KuaishouDownloadVideoTest(unittest.TestCase):
                 resp.__exit__ = mock.Mock(return_value=False)
                 resp.iter_content = mock.Mock(return_value=iter([b"x"]))
                 m_get.return_value = resp
-                with mock.patch("app.downloaders.kuaishou_downloader.subprocess.run") as m_ff:
+                with mock.patch("app.downloaders.kuaishou_downloader.run_ffmpeg_cancellable") as m_ff:
                     with tempfile.TemporaryDirectory() as td:
                         path = dl.download_video("https://v.kuaishou.com/x", output_dir=td)
                         self.assertEqual(path, os.path.join(td, "ph1.mp4"))
@@ -610,22 +609,20 @@ class KuaishouFfmpegFailureTest(unittest.TestCase):
                 resp.iter_content = mock.Mock(return_value=iter([b"x"]))
                 m_get.return_value = resp
                 with mock.patch(
-                    "app.downloaders.kuaishou_downloader.subprocess.run", side_effect=exc
+                    "app.downloaders.kuaishou_downloader.run_ffmpeg_cancellable", side_effect=exc
                 ):
                     with tempfile.TemporaryDirectory() as td:
                         dl.download("https://v.kuaishou.com/x", output_dir=td)
 
     def test_called_process_error_has_returncode(self):
         with self.assertRaises(Exception) as ctx:
-            self._run(subprocess.CalledProcessError(2, ["ffmpeg"]))
+            self._run(RuntimeError("ffmpeg 转换失败（退出码 2）"))
         self.assertIn("退出码 2", str(ctx.exception))
-        self.assertIsInstance(ctx.exception.__cause__, subprocess.CalledProcessError)
 
     def test_timeout_has_no_returncode(self):
         with self.assertRaises(Exception) as ctx:
-            self._run(subprocess.TimeoutExpired("ffmpeg", 600))
+            self._run(RuntimeError("ffmpeg 转换超时"))
         self.assertIn("超时", str(ctx.exception))
-        self.assertIsInstance(ctx.exception.__cause__, subprocess.TimeoutExpired)
 
 
 class YtdlpRetryFileNotFoundTest(unittest.TestCase):

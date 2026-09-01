@@ -1,12 +1,14 @@
 """下载器共享工具：yt-dlp 调用带退避重试 + 取消钩子。"""
 
+import os
+import subprocess
 import threading
 import time
 from typing import Any, Callable, Optional
 
 import requests
 
-from app.utils.url_safety import assert_public_http_url, public_get
+from app.utils.url_safety import assert_public_http_url, pin_public_host, public_get
 
 
 def ytdlp_cancel_hook(cancel_event: Optional[threading.Event]) -> Callable[[dict], None]:
@@ -24,6 +26,51 @@ def ytdlp_cancel_hook(cancel_event: Optional[threading.Event]) -> Callable[[dict
             raise TaskCancelledError("任务已取消")
 
     return _hook
+
+
+def run_ffmpeg_cancellable(
+    command: list,
+    *,
+    cancel_event: Optional[threading.Event] = None,
+    timeout: float = 600,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    output_path: Optional[str] = None,
+    require_nonzero: bool = False,
+) -> None:
+    """跑 ffmpeg 并轮询取消事件（#133 B5 / 小红书 `_to_mp3` 同款）。
+
+    ``subprocess.run(timeout=600)`` 在 cancel 后仍会占满 worker 最多 10 分钟。
+    改为 Popen + 0.2s poll：事件置位即 terminate，超时 kill。
+    """
+    from app.exceptions.task import TaskCancelledError
+
+    try:
+        proc = subprocess.Popen(command, stdout=stdout, stderr=stderr)
+    except OSError as exc:
+        raise RuntimeError("启动 ffmpeg 失败") from exc
+    deadline = time.monotonic() + timeout
+    while proc.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            raise TaskCancelledError("任务已取消")
+        if time.monotonic() > deadline:
+            proc.kill()
+            proc.wait()
+            raise RuntimeError("ffmpeg 转换超时")
+        time.sleep(0.2)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg 转换失败（退出码 {proc.returncode}）")
+    if output_path is not None:
+        if not os.path.exists(output_path):
+            raise RuntimeError(f"ffmpeg 未写出文件: {output_path}")
+        if require_nonzero and os.path.getsize(output_path) <= 0:
+            raise RuntimeError(f"ffmpeg 未写出有效文件: {output_path}")
 
 
 def public_get_retry(
@@ -146,7 +193,11 @@ def _follow_redirects_public(url: str, *, headers, timeout) -> "requests.Respons
     redirects = 0
     while True:
         assert_public_http_url(url)
-        resp = requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+        # 钉死本跳解析 IP，避免 requests.get 二次解析时 DNS rebinding（#146 A1）
+        with pin_public_host(url):
+            resp = requests.get(
+                url, headers=headers, timeout=timeout, stream=True, allow_redirects=False
+            )
         if resp.status_code in _REDIRECT_STATUSES:
             location = resp.headers.get("Location")
             redirects += 1

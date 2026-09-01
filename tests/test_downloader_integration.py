@@ -207,7 +207,7 @@ class LocalDownloaderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp, "talk.mp4")
             src.write_bytes(b"media")
-            with mock.patch("app.downloaders.local_downloader.subprocess.run") as m_run, \
+            with mock.patch("app.downloaders.local_downloader.run_ffmpeg_cancellable") as m_run, \
                  mock.patch("app.downloaders.local_downloader.save_cover_to_static", return_value=""):
                 Path(tmp, "talk.mp3").write_bytes(b"x")  # 模拟 ffmpeg 转换产物
                 result = self._dl().download(str(src), output_dir=tmp)

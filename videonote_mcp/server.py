@@ -2294,13 +2294,15 @@ def _diarize_media(audio_file: str, num_speakers: Optional[int] = None) -> str:
             raise FileNotFoundError(f"本地文件不存在: {audio_file}")
         # 输入文件边界（#142 A1）：默认只允许数据目录内文件
         _guard_data_boundary(p, "说话人分离输入文件")
-        wav = normalize_to_wav(str(p))
+        wav = None
         try:
+            # normalize 也进 try/finally：ffmpeg 失败会留下半成品 <原名>_16k.wav（#133 B4）
+            wav = normalize_to_wav(str(p))
             turns = diarize_audio(wav, hf_token=None, num_speakers=num_speakers)
         finally:
             # 归一化产物写在源文件旁（audio_preprocess 缺省路径），用完即清——
             # 否则每次调用在用户目录永久残留 <原名>_16k.wav（小时级视频数百 MB，#121 C2）
-            cleanup_preprocess_files(wav)
+            cleanup_preprocess_files(str(wav or p))
         return json.dumps(
             {"ok": True, "turns": turns, "num_speakers": len({t["speaker"] for t in turns})},
             ensure_ascii=False,

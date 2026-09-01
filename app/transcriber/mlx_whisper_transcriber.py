@@ -48,7 +48,8 @@ class MLXWhisperTranscriber(Transcriber):
         self.model_name = resolve_mlx_repo_id(model_size)
         self.model_path = None
 
-        # 共享单例上的转写锁：mlx_whisper.transcribe 每次调用都会加载模型，并发调用需串行化
+        # 共享单例上的转写锁：mlx_whisper.transcribe 经 ModelHolder 按 path 缓存模型，
+        # 分块多次 transcribe() 不会反复从磁盘加载；并发调用仍需串行化
         self._lock = threading.Lock()
         
         # 设置模型路径
@@ -122,9 +123,20 @@ full_text=" ".join(seg.text for seg in segments).strip(),
                 raise e
 
     def close(self) -> None:
-        """释放模型引用（#127 B3）。
+        """释放本实例引用的 ModelHolder 缓存（#127 B3 / #145 C7）。
 
-        mlx_whisper 每次 transcribe 都重新加载模型、无驻留实例，close 仅对齐
-        transcriber_provider 的防御性释放接口（getattr(old, "close") 不再是 no-op）。
+        mlx-whisper 的 ``ModelHolder`` 按 ``path_or_hf_repo`` 缓存已加载权重，
+        分块路径多次 ``transcribe()`` 会复用，不必每次从磁盘重载。切尺寸/进程退出
+        时清掉与本路径匹配的 holder，避免旧权重常驻。
         """
+        path = self.model_path
         self.model_path = None
+        if not path:
+            return
+        try:
+            from mlx_whisper.transcribe import ModelHolder
+        except ImportError:
+            return
+        if getattr(ModelHolder, "model_path", None) == path:
+            ModelHolder.model = None
+            ModelHolder.model_path = None

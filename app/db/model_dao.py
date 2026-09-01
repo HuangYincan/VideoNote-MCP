@@ -42,14 +42,3 @@ def get_models_by_provider(provider_id: int):
         return [{"id": m.id, "model_name": m.model_name} for m in models]
     finally:
         db.close()
-
-
-def delete_model(model_id: int):
-    db = next(get_db())
-    try:
-        model = db.query(Model).filter_by(id=model_id).first()
-        if model:
-            db.delete(model)
-            db.commit()
-    finally:
-        db.close()

@@ -50,15 +50,15 @@
 - `app/services/transcriber_config_manager.py` / `app/utils/model_status.py` / `app/utils/path_helper.py` / `app/utils/logger.py`
 - `app/db/engine.py`（2026-08-25 #140 复扫 A3：SQLite 数据文件在 connect 事件 chmod 0600——上游无此安全收紧，同步时需人工合并）
 - `app/services/cookie_manager.py` / `proxy_config_manager.py` / **`app/utils/json_store.py`**（2026-08-17 #106：三个配置管理器改 `json_store` 安全读写——损坏不静默当空（warning + `.corrupt` 备份）、`_write` 原子化（tmp+replace+0600）；上游若带原生读写逻辑需人工合并）
-- `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py`
-- `app/downloaders/common.py` / `app/utils/url_parser.py` / `app/downloaders/douyin_downloader.py` / `app/downloaders/kuaishou_helper/kuaishou.py` / `app/downloaders/bilibili_subtitle.py`（2026-08-25 #140：出站请求逐跳 SSRF 校验——stream_download 入口校验 + 短链解析/视频页跟随/API 资源 URL 改走 `url_safety.public_get/public_head`；上游若带原生 requests 调用逻辑需人工合并）
+- `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py`（2026-09-01 #147：local ffmpeg 转 mp3/封面改为可取消 Popen）
+- `app/downloaders/common.py` / `app/utils/url_parser.py` / `app/downloaders/douyin_downloader.py` / `app/downloaders/kuaishou_helper/kuaishou.py` / `app/downloaders/bilibili_subtitle.py`（2026-08-25 #140：出站请求逐跳 SSRF 校验——stream_download 入口校验 + 短链解析/视频页跟随/API 资源 URL 改走 `url_safety.public_get/public_head`；2026-09-01 #147：`pin_public_host` 钉死校验 IP，堵住 DNS rebinding TOCTOU；上游若带原生 requests 调用逻辑需人工合并）
 - `app/transcriber/transcriber_provider.py`（funasr / mlx）
 - `app/transcriber/whisper.py` / `mlx_whisper_transcriber.py` / `app/utils/model_status.py`（2026-08-25 #142 A2：内置模型 revision 固定——whisper 经 `WhisperModel(revision=…)`、mlx 经 `snapshot_download(revision=…)`，映射/散列单一来源在 model_status；上游若带原生下载逻辑需人工合并）
 - `app/downloaders/youtube_downloader.py`（2026-08-25 #142 A4：`VIDEONOTE_YTDLP_EJS` 开关控制 `remote_components`——上游默认无此 env 门禁，同步需人工合并）
 - `app/gpt/universal_gpt.py`（checkpoint 损坏弃用时打 warning 留痕，#106）
 - `app/downloaders/xiaohongshu_downloader.py` / `xiaohongshu_auth.py` / `xiaohongshu_browser.py` / `xiaoyuzhou_subtitle.py`（2026-09-01 #144：笔记页 host 钉死、cookie 域精确后缀、Playwright 响应/二维码官方域、官方文稿失败不回退 ASR；2026-09-01 #145：下载器 close 自建 Auth/Session；上游同步需人工合并）
 - `app/downloaders/douyin_downloader.py` / `kuaishou_helper/kuaishou.py` / `app/transcriber/bcut.py` / `app/downloaders/youtube_subtitle.py`（2026-09-01 #145：裸 requests 改 PublicOnlySession/public_get/post；必剪上传 URL 入口校验；YouTube 字幕 Session 默认超时）
-- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`xiaoyuzhou_downloader.py`、`xiaoyuzhou_subtitle.py`、`xiaohongshu_downloader.py`、`xiaohongshu_auth.py`、`xiaohongshu_sign.py`、`xiaohongshu_browser.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`
+- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`xiaoyuzhou_downloader.py`、`xiaoyuzhou_subtitle.py`、`xiaohongshu_downloader.py`、`xiaohongshu_auth.py`、`xiaohongshu_sign.py`、`xiaohongshu_browser.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`（2026-09-01 #147：`pin_public_host` / 连接期 DNS 钉死）
 
 ## 如何同步上游更新
 

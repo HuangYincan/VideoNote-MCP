@@ -98,6 +98,21 @@ def _tqdm_bar():
     return _Bar
 
 
+def _with_model_download_state(key: str, work) -> None:
+    """CLI 下载接线进程内下载态，供 health_check / cleanup 看见 downloading（#145 C2）。"""
+    from app.transcriber import model_download_state as dl
+
+    if not dl.try_mark(key):
+        raise RuntimeError(f"模型 {key} 正在下载中，请稍候再试")
+    try:
+        work()
+    except Exception as exc:
+        dl.mark_failed(key, str(exc))
+        raise
+    else:
+        dl.mark_done(key)
+
+
 def _download_whisper(size: str) -> None:
     """在终端下载 fast-whisper 模型（阻塞，带进度条）。"""
     from huggingface_hub import snapshot_download
@@ -118,20 +133,23 @@ def _download_whisper(size: str) -> None:
     # 否则 CLI 下 main、运行时下 main 变化快照，cache 内出现两份且加载取到新内容
     revision = resolve_whisper_revision(size)
     print(f"正在下载 whisper-{size}（{target}）…", file=sys.stdout)
-    snapshot_download(
-        repo_id=target, revision=revision, cache_dir=model_dir, tqdm_class=_tqdm_bar()
-    )
-    # 让 faster-whisper 真正加载（确认模型可用）
-    from faster_whisper import WhisperModel
 
-    WhisperModel(
-        model_size_or_path=target,
-        device="cpu",
-        compute_type="int8",
-        download_root=model_dir,
-        revision=revision,
-    )
-    print(f"✓ whisper-{size} 下载完成", file=sys.stdout)
+    def _work() -> None:
+        snapshot_download(
+            repo_id=target, revision=revision, cache_dir=model_dir, tqdm_class=_tqdm_bar()
+        )
+        from faster_whisper import WhisperModel
+
+        WhisperModel(
+            model_size_or_path=target,
+            device="cpu",
+            compute_type="int8",
+            download_root=model_dir,
+            revision=revision,
+        )
+        print(f"✓ whisper-{size} 下载完成", file=sys.stdout)
+
+    _with_model_download_state(size, _work)
 
 
 def _download_mlx_model(size: str) -> None:
@@ -149,14 +167,18 @@ def _download_mlx_model(size: str) -> None:
     if not repo_id:
         raise ValueError(f"未找到 mlx 模型映射: {size}（可选: {', '.join(MLX_REPO_MAP.keys())}）")
     print(f"正在下载 mlx-whisper-{size}（{repo_id}）…", file=sys.stdout)
-    snapshot_download(
-        repo_id=repo_id,
-        # 固定 revision（#142 A2）：与 MLXWhisperTranscriber 下载同一快照，见 model_status
-        revision=MLX_REPO_REVISIONS.get(size),
-        local_dir=os.path.join(get_model_dir("mlx-whisper"), repo_id),
-        tqdm_class=_tqdm_bar(),
-    )
-    print(f"✓ mlx-whisper-{size} 下载完成", file=sys.stdout)
+
+    def _work() -> None:
+        snapshot_download(
+            repo_id=repo_id,
+            # 固定 revision（#142 A2）：与 MLXWhisperTranscriber 下载同一快照，见 model_status
+            revision=MLX_REPO_REVISIONS.get(size),
+            local_dir=os.path.join(get_model_dir("mlx-whisper"), repo_id),
+            tqdm_class=_tqdm_bar(),
+        )
+        print(f"✓ mlx-whisper-{size} 下载完成", file=sys.stdout)
+
+    _with_model_download_state(f"mlx-{size}", _work)
 
 
 def _model_dir(engine: str, size: str) -> "str | None":

@@ -840,3 +840,12 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **batch 边界（B4）**：单集退化路径遵守 `max_entries=0`，只完成解析并返回 `submitted=0`，不再绕过批量上限提交任务。
 - **建议后续**：A1 DNS rebinding 解析—连接 TOCTOU 仍需连接器/部署 egress 策略与 fake-IP 代理兼容矩阵确认。
 - **验证**：`906 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit `1a31169`）。
+
+## Wave M 批 38（2026-09-01 · 开放项收口 #147，906→920 tests）
+
+- **DNS 钉死（A1，高）**：`pin_public_host` 在连接前重新解析并把本线程 `getaddrinfo` 钉到已校验公网 IP；`PublicOnlySession` 与 `stream_download` 每跳使用，堵住 DNS rebinding TOCTOU；fake-IP 代理段语义不变。
+- **取消与清理（B4/B5）**：diarize 的 `normalize_to_wav` 失败也会清旁边的 `_16k.wav`；local/kuaishou ffmpeg 改为可取消的 Popen 轮询。
+- **错误可见（B6/C2）**：Provider DAO 写失败不再假成功；CLI 模型下载接线进程内 downloading 态；删除零引用 `delete_model` / `TaskStatus.description` / `GPT.list_models`。
+- **mlx（C7）**：依赖上游 `ModelHolder` 按 path 缓存；`close()` 释放匹配的驻留权重。
+- **建议后续**：FastMCP 同步工具占事件循环、CLI export 外部目录、#143 部署侧 SSRF/版本钉死。
+- **验证**：`920 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit 待回填）。

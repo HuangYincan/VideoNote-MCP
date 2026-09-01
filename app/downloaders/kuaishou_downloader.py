@@ -1,11 +1,10 @@
 import os
-import subprocess
 import threading
 from abc import ABC
 from typing import Optional, Union
 
 from app.downloaders.base import Downloader
-from app.downloaders.common import stream_download
+from app.downloaders.common import run_ffmpeg_cancellable, stream_download
 from app.downloaders.kuaishou_helper.kuaishou import KuaiShou
 from app.models.audio_model import AudioDownloadResult
 from app.utils.logger import get_logger
@@ -120,13 +119,15 @@ class KuaiShouDownloader(Downloader, ABC):
             # 损坏音频当成功产物（#124 B1）
             if os.path.exists(mp3_path):
                 os.unlink(mp3_path)
-            subprocess.run([
-                "ffmpeg", "-y", "-i", mp4_path, "-vn", "-acodec", "libmp3lame", mp3_path
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            # 带原始异常链与退出码：后台任务只看到一句话无法区分超时/非零退出（#125 B11）
-            detail = getattr(e, "returncode", None)
-            raise Exception(f"ffmpeg 转换 MP3 失败（{'退出码 ' + str(detail) if detail is not None else '超时'}）") from e
+            run_ffmpeg_cancellable(
+                ["ffmpeg", "-y", "-i", mp4_path, "-vn", "-acodec", "libmp3lame", mp3_path],
+                cancel_event=cancel_event,
+                output_path=mp3_path,
+                require_nonzero=True,
+            )
+        except RuntimeError as e:
+            # 带退出码/超时原文：后台任务只看到一句话无法区分超时/非零退出（#125 B11）
+            raise RuntimeError(f"ffmpeg 转换 MP3 失败（{e}）") from e
 
         return AudioDownloadResult(
             file_path=mp3_path,

@@ -67,6 +67,7 @@ def insert_provider(id: str, name: str, api_key: str, base_url: str, logo: str, 
         return id
     except Exception as e:
         logger.error(f"Failed to insert provider: {e}")
+        raise
     finally:
         db.close()
 
@@ -129,6 +130,7 @@ def update_provider(id: str, **kwargs):
         logger.info(f"Provider updated successfully. id: {id}, updated_fields: {list(kwargs.keys())}")
     except Exception as e:
         logger.error(f"Failed to update provider: {e}")
+        raise
     finally:
         db.close()
 
@@ -143,5 +145,6 @@ def delete_provider(id: str):
             logger.info(f"Provider deleted successfully. id: {id}")
     except Exception as e:
         logger.error(f"Failed to delete provider: {e}")
+        raise
     finally:
         db.close()
