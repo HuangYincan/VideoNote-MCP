@@ -14,9 +14,11 @@ from app.downloaders.base import Downloader
 from app.downloaders.common import stream_download
 from app.downloaders.xiaohongshu_auth import XiaohongshuAuth, XiaohongshuNote
 from app.enmus.note_enums import DownloadQuality
+from app.exceptions.task import TaskCancelledError
 from app.models.audio_model import AudioDownloadResult
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
+from app.utils.url_parser import extract_video_id
 from app.utils.url_safety import assert_public_http_url, sanitize_url
 
 logger = get_logger(__name__)
@@ -65,25 +67,47 @@ class XiaohongshuDownloader(Downloader):
         if not os.path.exists(mp4_path) or os.path.getsize(mp4_path) <= 0:
             raise RuntimeError(f"小红书视频下载后文件为空: {mp4_path}")
 
-    def _to_mp3(self, mp4_path: str, mp3_path: str) -> None:
+    def _to_mp3(
+        self,
+        mp4_path: str,
+        mp3_path: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         if os.path.exists(mp3_path):
             try:
                 os.unlink(mp3_path)
             except OSError:
                 pass
+        import time as _time
+
+        cmd = ["ffmpeg", "-y", "-i", mp4_path, "-vn", "-acodec", "libmp3lame", mp3_path]
         try:
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", mp4_path, "-vn", "-acodec", "libmp3lame", mp3_path],
-                check=True,
+            proc = subprocess.Popen(
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=600,
             )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            detail = getattr(exc, "returncode", None)
+        except OSError as exc:
+            raise RuntimeError("启动 ffmpeg 转换 MP3 失败") from exc
+        deadline = _time.monotonic() + 600
+        while proc.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                raise TaskCancelledError("任务已取消")
+            if _time.monotonic() > deadline:
+                proc.kill()
+                proc.wait()
+                raise RuntimeError("ffmpeg 转换 MP3 超时")
+            _time.sleep(0.2)
+        if proc.returncode != 0 or not os.path.exists(mp3_path) or os.path.getsize(mp3_path) <= 0:
             raise RuntimeError(
-                f"ffmpeg 转换 MP3 失败（{'退出码 ' + str(detail) if detail is not None else '超时'}）"
-            ) from exc
+                f"ffmpeg 转换 MP3 失败（退出码 {proc.returncode}）"
+            )
 
     def _result(self, note: XiaohongshuNote, mp3_path: str, mp4_path: Optional[str]) -> AudioDownloadResult:
         return AudioDownloadResult(
@@ -113,7 +137,24 @@ class XiaohongshuDownloader(Downloader):
             output_dir = self.cache_data
         os.makedirs(output_dir, exist_ok=True)
 
-        note = self._fetch(video_url)
+        try:
+            note = self._fetch(video_url)
+        except Exception as exc:
+            if skip_download and "不是视频" not in str(exc):
+                nid = extract_video_id(video_url, "xiaohongshu")
+                if nid:
+                    logger.warning("缓存命中路径获取笔记页失败，使用 URL 存根元信息: %s", exc)
+                    return AudioDownloadResult(
+                        file_path=os.path.join(output_dir, f"{nid}.mp3"),
+                        title=nid,
+                        duration=0.0,
+                        cover_url=None,
+                        platform="xiaohongshu",
+                        video_id=nid,
+                        raw_info={"page_url": video_url},
+                        video_path=None,
+                    )
+            raise
         mp4_path = os.path.join(output_dir, f"{note.note_id}.mp4")
         mp3_path = os.path.join(output_dir, f"{note.note_id}.mp3")
 
@@ -127,7 +168,7 @@ class XiaohongshuDownloader(Downloader):
             return self._result(note, mp3_path, mp4_path)
 
         self._download_mp4(note, mp4_path, cancel_event=cancel_event)
-        self._to_mp3(mp4_path, mp3_path)
+        self._to_mp3(mp4_path, mp3_path, cancel_event=cancel_event)
         return self._result(note, mp3_path, mp4_path)
 
     def download_video(

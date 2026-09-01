@@ -244,6 +244,12 @@ class FetchNoteTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             auth.fetch_note("https://www.xiaohongshu.com/user/profile/abc")
 
+    def test_foreign_host_rejected(self):
+        auth = XiaohongshuAuth(session=_FakeSession(lambda *a, **k: _FakeResp()), cookie_mgr=mock.Mock())
+        with self.assertRaises(ValueError) as ei:
+            auth.fetch_note(f"https://attacker.example/explore/{NOTE_ID}")
+        self.assertIn("不是小红书", str(ei.exception))
+
 
 class QrLoginTest(unittest.TestCase):
     def test_create_and_poll_success(self):
@@ -342,26 +348,57 @@ class BrowserQrParseTest(unittest.TestCase):
             {"name": "web_session", "value": "s1", "domain": ".xiaohongshu.com"},
             {"name": "other", "value": "nope", "domain": ".example.com"},
             {"name": "a1", "value": "aaa", "domain": "edith.xiaohongshu.com"},
+            {"name": "evil", "value": "x", "domain": "xiaohongshu.com.evil.com"},
+            {"name": "evil2", "value": "y", "domain": "evilxiaohongshu.com"},
         ]
         out = cookies_from_playwright(raw)
         self.assertEqual(out["web_session"], "s1")
         self.assertEqual(out["a1"], "aaa")
         self.assertNotIn("other", out)
+        self.assertNotIn("evil", out)
+        self.assertNotIn("evil2", out)
 
-    def test_poll_detects_session_change(self):
+    def test_on_response_ignores_non_xhs_host(self):
+        from app.downloaders.xiaohongshu_browser import XiaohongshuBrowserQr
+
+        qr = XiaohongshuBrowserQr(cookie_mgr=mock.Mock())
+        fake = mock.Mock()
+        fake.url = "https://evil.example/api/sns/web/v1/login/qrcode/create"
+        fake.json.return_value = {
+            "data": {"url": "https://evil.example/phish", "qr_id": "x", "code": "y"},
+        }
+        qr._on_response(fake)
+        self.assertEqual(qr._created, {})
+
+    def test_create_qr_failure_closes(self):
+        from app.downloaders.xiaohongshu_browser import XiaohongshuBrowserQr
+
+        qr = XiaohongshuBrowserQr(cookie_mgr=mock.Mock())
+        closed = []
+        qr.close = lambda: closed.append(1)
+        qr._launch = lambda: None
+        qr._page = mock.Mock()
+        qr._page.goto.side_effect = RuntimeError("打开失败")
+        with self.assertRaises(RuntimeError):
+            qr.create_qr()
+        self.assertTrue(closed)
+
+    def test_poll_does_not_treat_session_rotation_as_success(self):
         from app.downloaders.xiaohongshu_browser import XiaohongshuBrowserQr
 
         qr = XiaohongshuBrowserQr(cookie_mgr=mock.Mock())
         qr._guest_session = "guest-sess"
         qr._page = None
-        qr._cookies = lambda: {"web_session": "logged-sess", "a1": "aaa"}
+        qr._cookies = lambda: {"web_session": "rotated-guest", "a1": "aaa"}
+        poll = qr.poll_qr("qid", "c")
+        self.assertEqual(poll["code_status"], 0)
+        qr._status = QR_SUCCESS
         poll = qr.poll_qr("qid", "c")
         self.assertEqual(poll["code_status"], QR_SUCCESS)
         self.assertEqual(qr.persist(), "")
         qr._cookie_mgr.set.assert_called_once()
         saved = qr._cookie_mgr.set.call_args.args[1]
-        self.assertIn("web_session=logged-sess", saved)
-        self.assertNotIn("guest-sess", saved)
+        self.assertIn("web_session=rotated-guest", saved)
 
 
 class VerifyLoginTest(unittest.TestCase):
@@ -371,8 +408,10 @@ class VerifyLoginTest(unittest.TestCase):
         self.assertIn("未配置", verify_xiaohongshu_login(cookie_mgr=mgr))
 
     def test_ok(self):
+        html = '<script>window.__INITIAL_STATE__={"user":{"userId":"u1"}}</script>'
+
         def handler(method, url, **kwargs):
-            return _FakeResp(payload={"success": True, "data": {"user_id": "u1"}})
+            return _FakeResp(text=html)
 
         mgr = mock.Mock()
         mgr.get.return_value = "web_session=sess; a1=aaa; webId=wid"
@@ -380,6 +419,19 @@ class VerifyLoginTest(unittest.TestCase):
             inst = XiaohongshuAuth(session=_FakeSession(handler), cookie_mgr=mgr)
             cls.return_value = inst
             self.assertEqual(verify_xiaohongshu_login(cookie_mgr=mgr), "")
+
+    def test_guest_homepage_not_logged_in(self):
+        html = '<script>window.__INITIAL_STATE__={"user":{"userId":""}}</script>'
+
+        def handler(method, url, **kwargs):
+            return _FakeResp(text=html)
+
+        mgr = mock.Mock()
+        mgr.get.return_value = "web_session=guest; a1=aaa; webId=wid"
+        with mock.patch("app.downloaders.xiaohongshu_auth.XiaohongshuAuth") as cls:
+            inst = XiaohongshuAuth(session=_FakeSession(handler), cookie_mgr=mgr)
+            cls.return_value = inst
+            self.assertIn("未能确认", verify_xiaohongshu_login(cookie_mgr=mgr))
 
 
 class DownloaderTest(unittest.TestCase):
@@ -392,6 +444,15 @@ class DownloaderTest(unittest.TestCase):
         self.assertEqual(result.platform, "xiaohongshu")
         self.assertEqual(result.video_id, NOTE_ID)
         self.assertEqual(result.title, "香妃蛋糕")
+
+    def test_skip_download_fetch_failure_uses_stub(self):
+        note_mod = mock.Mock()
+        note_mod.fetch_note.side_effect = RuntimeError("登录墙")
+        dl = XiaohongshuDownloader(auth=note_mod)
+        with tempfile.TemporaryDirectory() as td:
+            result = dl.download(NOTE_URL, output_dir=td, skip_download=True)
+        self.assertEqual(result.video_id, NOTE_ID)
+        self.assertEqual(result.platform, "xiaohongshu")
 
     def test_image_note_raises(self):
         note_mod = mock.Mock()
@@ -410,17 +471,54 @@ class DownloaderTest(unittest.TestCase):
                 Path(path).write_bytes(b"mp4data")
 
             with mock.patch("app.downloaders.xiaohongshu_downloader.stream_download", side_effect=_stream), \
-                 mock.patch("app.downloaders.xiaohongshu_downloader.subprocess.run") as m_ff:
-                def _ffmpeg(*args, **kwargs):
-                    # ffmpeg 输出 mp3
-                    cmd = args[0]
+                 mock.patch("app.downloaders.xiaohongshu_downloader.subprocess.Popen") as m_ff:
+                def _ffmpeg(cmd, **kwargs):
                     Path(cmd[-1]).write_bytes(b"mp3data")
-                    return mock.Mock(returncode=0)
+                    proc = mock.Mock()
+                    proc.poll.return_value = 0
+                    proc.returncode = 0
+                    proc.communicate.return_value = ("", "")
+                    return proc
 
                 m_ff.side_effect = _ffmpeg
                 result = dl.download(NOTE_URL, output_dir=td)
         self.assertTrue(result.file_path.endswith(".mp3"))
         self.assertEqual(result.video_id, NOTE_ID)
+
+    def test_to_mp3_honors_cancel(self):
+        import threading
+
+        from app.exceptions.task import TaskCancelledError
+
+        dl = XiaohongshuDownloader(auth=mock.Mock())
+        ev = threading.Event()
+        ev.set()
+
+        class _Proc:
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            returncode = -15
+
+        with tempfile.TemporaryDirectory() as td:
+            mp4 = Path(td) / "a.mp4"
+            mp3 = Path(td) / "a.mp3"
+            mp4.write_bytes(b"x")
+            with mock.patch(
+                "app.downloaders.xiaohongshu_downloader.subprocess.Popen",
+                return_value=_Proc(),
+            ):
+                with self.assertRaises(TaskCancelledError):
+                    dl._to_mp3(str(mp4), str(mp3), cancel_event=ev)
 
     def test_factory(self):
         inst = constant.get_downloader("xiaohongshu")
@@ -439,6 +537,18 @@ class InspectTest(unittest.TestCase):
         self.assertEqual(out["platform"], "xiaohongshu")
         self.assertEqual(out["kind"], "single")
         self.assertEqual(out["entries"][0]["video_id"], NOTE_ID)
+
+    def test_inspect_strips_xsec_token(self):
+        long_url = f"{NOTE_URL}?xsec_token=SECRETTOKEN"
+        note = note_from_state(_video_state(), NOTE_ID, long_url)
+        fake = mock.Mock()
+        fake.fetch_note.return_value = note
+        fake.close = mock.Mock()
+        with mock.patch("app.downloaders.xiaohongshu_auth.XiaohongshuAuth", return_value=fake):
+            out = inspect_video(NOTE_URL)
+        self.assertTrue(out["ok"])
+        self.assertNotIn("xsec_token", out["entries"][0]["url"])
+        self.assertNotIn("SECRETTOKEN", json.dumps(out))
 
     def test_image_rejected(self):
         note = note_from_state(_image_state(), NOTE_ID, NOTE_URL)

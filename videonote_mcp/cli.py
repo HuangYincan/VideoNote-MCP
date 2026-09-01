@@ -1693,8 +1693,6 @@ def _login_xiaoyuzhou_qr(exit_on_fail: bool = True) -> None:
     """官网统一登录扫码：create → 终端 ASCII 二维码 → 轮询 login。"""
     import time
 
-    import requests
-
     try:
         import qrcode  # noqa: F401
     except ImportError:
@@ -1703,7 +1701,9 @@ def _login_xiaoyuzhou_qr(exit_on_fail: bool = True) -> None:
             sys.exit(1)
         return
 
-    session = requests.Session()
+    from app.utils.url_safety import PublicOnlySession, host_matches
+
+    session = PublicOnlySession()
     session.headers.update(_xiaoyuzhou_web_headers())
     try:
         created = session.post(
@@ -1716,6 +1716,11 @@ def _login_xiaoyuzhou_qr(exit_on_fail: bool = True) -> None:
         qr_url = payload.get("url")
         if created.status_code != 200 or not qr_id or not qr_url:
             print(f"生成二维码失败: {payload.get('toast') or payload.get('message') or created.status_code}", file=sys.stderr)
+            if exit_on_fail:
+                sys.exit(1)
+            return
+        if not host_matches(qr_url, "xiaoyuzhoufm.com", "xiaoyuzhou.fm"):
+            print("生成二维码失败：返回的二维码地址不是官方域名", file=sys.stderr)
             if exit_on_fail:
                 sys.exit(1)
             return
@@ -1854,6 +1859,7 @@ def _login_xiaohongshu_qr(exit_on_fail: bool = True) -> None:
         QR_SCANNED,
         QR_SUCCESS,
         XiaohongshuAuth,
+        is_xiaohongshu_qr_url,
     )
     from app.downloaders.xiaohongshu_browser import BrowserQrUnavailable
 
@@ -1883,6 +1889,11 @@ def _login_xiaohongshu_qr(exit_on_fail: bool = True) -> None:
     code = created.get("code") or ""
     if not qr_url:
         print("生成二维码失败：接口未返回 url", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    if not is_xiaohongshu_qr_url(qr_url):
+        print("生成二维码失败：返回的二维码地址不是官方域名", file=sys.stderr)
         if exit_on_fail:
             sys.exit(1)
         return

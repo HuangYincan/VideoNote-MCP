@@ -23,6 +23,7 @@ from app.utils.url_parser import extract_video_id, resolve_xiaohongshu_short_url
 from app.utils.url_safety import (
     PublicOnlySession,
     assert_public_http_url,
+    host_matches,
     sanitize_error_text,
     sanitize_url,
 )
@@ -57,6 +58,40 @@ QR_WAIT = 0
 QR_SCANNED = 1
 QR_SUCCESS = 2
 QR_EXPIRED = 3
+
+
+_XHS_PAGE_HOSTS = ("xiaohongshu.com", "xhslink.com", "xhslink.cn", "rednote.com")
+
+
+def is_xiaohongshu_page_url(url: str) -> bool:
+    """笔记页/短链是否落在官方 host（精确后缀，#144 A3）。"""
+    return host_matches(url, *_XHS_PAGE_HOSTS)
+
+
+def is_xiaohongshu_qr_url(url: str) -> bool:
+    """扫码 payload 只允许官网 https 或 App 深链 xhsdiscover://。"""
+    from urllib.parse import urlparse
+
+    scheme = (urlparse(url or "").scheme or "").lower()
+    if scheme == "xhsdiscover":
+        return True
+    return host_matches(url, "xiaohongshu.com")
+
+
+def html_shows_logged_in_user(html: str) -> bool:
+    """首页 HTML 是否含已登录 userId（游客页 GET 200 不能当登录成功，#144 B2）。"""
+    if not html:
+        return False
+    state = parse_initial_state(html)
+    if isinstance(state, dict):
+        user = state.get("user")
+        if isinstance(user, dict):
+            if user.get("loggedIn") is True:
+                return True
+            uid = user.get("userId") or user.get("user_id")
+            if isinstance(uid, str) and uid.strip() and uid.strip().lower() not in ("null", "undefined"):
+                return True
+    return bool(re.search(r'"userId"\s*:\s*"[^"\s]+"', html))
 
 
 def parse_cookie_string(raw: Optional[str]) -> dict:
@@ -325,10 +360,13 @@ class XiaohongshuAuth:
                     "`videonote login xiaohongshu --cookie`"
                 )
             raise RuntimeError(f"生成二维码失败: {msg or resp.status_code}")
+        url = data.get("url") or ""
+        if not is_xiaohongshu_qr_url(url):
+            raise RuntimeError("小红书二维码地址不是官方域名，已拒绝展示")
         return {
             "qr_id": data.get("qr_id") or "",
             "code": data.get("code") or "",
-            "url": data.get("url") or "",
+            "url": url,
         }
 
     def poll_qr(self, qr_id: str, code: str) -> dict:
@@ -377,6 +415,8 @@ class XiaohongshuAuth:
         """拉笔记页并解析。短链先解；缺登录时仍尝试（公开笔记可能成功）。"""
         assert_public_http_url(video_url)
         page_url = canonicalize_note_url(video_url)
+        if not is_xiaohongshu_page_url(page_url):
+            raise ValueError(f"不是小红书笔记链接: {sanitize_url(page_url)}")
         note_id = extract_video_id(page_url, "xiaohongshu")
         if not note_id:
             raise ValueError(f"无法从小红书链接提取笔记 ID: {sanitize_url(video_url)}")
@@ -434,7 +474,9 @@ def verify_xiaohongshu_login(cookie_mgr: Optional[CookieConfigManager] = None) -
             return "登录态无效或已过期，请重新 `videonote login xiaohongshu`"
         if resp.status_code != 200:
             return f"HTTP {resp.status_code}"
-        return ""
+        if html_shows_logged_in_user(resp.text or ""):
+            return ""
+        return "登录态无效或未能确认（首页无用户信息），请重新 `videonote login xiaohongshu`"
     except Exception as exc:  # noqa: BLE001
         logger.info("小红书登录探测失败: %s", exc)
         return "请求失败（网络？检查 `videonote proxy list`）"

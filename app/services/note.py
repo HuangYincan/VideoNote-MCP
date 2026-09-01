@@ -115,7 +115,7 @@ def _extract_audio_from_video(
     return str(out)
 
 
-from app.exceptions.task import TaskCancelledError
+from app.exceptions.task import OfficialTranscriptFetchError, TaskCancelledError
 from app.exceptions.task import check_cancel as _check_cancel
 
 
@@ -330,6 +330,8 @@ class NoteGenerator:
                     else:
                         transcript = None
                         logger.info("平台无可用字幕，将下载音频后转写")
+                except OfficialTranscriptFetchError:
+                    raise
                 except Exception as e:
                     logger.warning(f"获取平台字幕失败: {sanitize_error_text(e)}，将下载音频后转写")
                     transcript = None
