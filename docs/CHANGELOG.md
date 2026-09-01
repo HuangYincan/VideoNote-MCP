@@ -830,4 +830,4 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **正确性（B1 高 / B2–B4/B6 中）**：抖音 HEAD 失败不再丢掉已有 `/video/{id}`；供应商 DB 故障与任务索引失败显式报错；Whisper 非 cache 错误不立刻重下。
 - **工程卫生（C1/C3/C5/C6）**：删除 #144 暂缓的四个零引用符号；YouTube 字幕 HTTP 默认 5s/20s 超时；`app.log` 轮转；faster-whisper 惰性 import。
 - **建议后续**：CLI export 外部目录、下载状态写 API 死代码、FastMCP 同步工具占事件循环、mlx 分块重复加载。
-- **验证**：`902 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean。
+- **验证**：`902 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit `ba4a7dd`）。
