@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import math
 import os
 import re
 import shutil
@@ -7,7 +8,6 @@ import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import ffmpeg
 from PIL import Image, ImageDraw, ImageFont
 
 from app.utils.logger import get_logger
@@ -99,11 +99,52 @@ class VideoReader:
             # 打成「视频处理失败」——已抽出的几百帧全丢（#124 B12）：单帧失败本就该跳过
             return None
 
+    def _probe_duration(self, timeout: int = 120) -> float:
+        """通过独立的 ffprobe 进程读取时长，并对损坏/恶意媒体设置超时。
+
+        ``ffmpeg.probe`` 底层也会启动 ffprobe，但没有向调用方暴露
+        ``subprocess.run(timeout=...)``；损坏媒体可能因此无限占住 worker。
+        这里保留同样的 ffprobe 语义，同时把超时纳入任务边界。
+        """
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            self.video_path,
+        ]
+        try:
+            completed = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(f"读取视频时长超时（{timeout}s）: {self.video_path}") from exc
+        except (subprocess.CalledProcessError, OSError) as exc:
+            raise ValueError(f"读取视频时长失败: {self.video_path}") from exc
+
+        raw_duration = (completed.stdout or "").strip()
+        try:
+            duration = float(raw_duration)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"ffprobe 返回无效视频时长: {raw_duration!r}") from exc
+        if not math.isfinite(duration):
+            raise ValueError(f"ffprobe 返回非有限视频时长: {duration}")
+        if duration < 0:
+            raise ValueError(f"ffprobe 返回负的视频时长: {duration}")
+        return duration
+
     def extract_frames(self, max_frames=1000) -> list[str]:
 
         try:
             os.makedirs(self.frame_dir, exist_ok=True)
-            duration = float(ffmpeg.probe(self.video_path)["format"]["duration"])
+            duration = self._probe_duration()
             # 帧组数封顶：超限时自适应拉大间隔，而不是截断视频尾部（docs/05 #33）
             cells = self.grid_size[0] * self.grid_size[1]
             self.frame_interval = effective_frame_interval(duration, self.frame_interval, cells)
@@ -229,5 +270,4 @@ class VideoReader:
                 shutil.rmtree(temp_frame_dir, ignore_errors=True)
             if temp_grid_dir:
                 shutil.rmtree(temp_grid_dir, ignore_errors=True)
-
 

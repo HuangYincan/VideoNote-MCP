@@ -49,6 +49,8 @@ def insert_video_task(
         logger.info(f"Video task saved. task_id={task_id}, title={(title or '')[:40]!r}")
     except Exception as e:
         logger.error(f"Failed to insert video task: {e}")
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -72,6 +74,8 @@ def update_task_status(task_id: str, status: str, message: str = ""):
         db.commit()
     except Exception as e:
         logger.error(f"Failed to update task status: {e}")
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -117,6 +121,7 @@ def delete_all_tasks() -> int:
         return deleted
     except Exception as e:
         logger.error(f"Failed to clear task index: {e}")
+        db.rollback()
         raise
     finally:
         db.close()
@@ -133,6 +138,8 @@ def delete_task(task_id: str):
             logger.info(f"Task deleted from index: {task_id}")
     except Exception as e:
         logger.error(f"Failed to delete task: {e}")
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -155,5 +162,6 @@ def get_task_by_video(video_id: str, platform: str):
             return None
     except Exception as e:
         logger.error(f"Failed to get task by video: {e}")
+        raise
     finally:
         db.close()

@@ -95,13 +95,17 @@ def _read_manifest(task_id: str) -> dict:
         return {"task_id": task_id, "paths": [], "meta": {}}
 
 
-def record_task_paths(task_id: str, paths: Sequence) -> None:
+def record_task_paths(task_id: str, paths: Sequence, *, strict: bool = False) -> bool:
     """把 task 创建的文件/目录追加进 manifest（去重，原子写 tmp+replace，保留 meta 键）。
 
-    尽力而为：任何失败只记日志，不抛异常、不阻断调用方。
+    默认尽力而为：失败只记日志，返回 ``False``，不阻断历史调用方。
+    ``strict=True`` 用于发布成功前的关键路径：写入或回读校验失败会抛出
+    异常，调用方可以把任务标记为 FAILED，而不是暴露没有完整清单的 SUCCESS。
     """
     if not task_id:
-        return
+        if strict:
+            raise ValueError("task_id 不能为空")
+        return False
     try:
         data = _read_manifest(task_id)
         seen = set(data["paths"])
@@ -126,8 +130,19 @@ def record_task_paths(task_id: str, paths: Sequence) -> None:
             tmp, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), 0o600
         )
         tmp.replace(f)
-    except Exception as e:  # noqa: BLE001 —— 记录是尽力而为
+        if strict:
+            persisted = json.loads(f.read_text(encoding="utf-8"))
+            persisted_paths = persisted.get("paths") if isinstance(persisted, dict) else None
+            if not isinstance(persisted_paths, list) or any(
+                path not in persisted_paths for path in data["paths"]
+            ):
+                raise IOError(f"manifest 写入后校验失败: {f}")
+        return True
+    except Exception as e:  # noqa: BLE001 —— 默认记录是尽力而为
         logger.warning("记录 task 路径失败 task_id=%s: %s", task_id, e)
+        if strict:
+            raise
+        return False
 
 
 def get_task_paths(task_id: str) -> List[str]:

@@ -3,6 +3,7 @@ import os
 import sys
 
 from app.db.engine import get_db
+from app.db.models.models import Model
 from app.db.models.providers import Provider
 from app.utils.logger import get_logger
 
@@ -28,7 +29,7 @@ def seed_default_providers():
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
                 providers = json.load(f)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - seed data is treated as an optional bootstrap
             logger.error(f"Failed to read builtin_providers.json: {e}")
             return
 
@@ -44,7 +45,8 @@ def seed_default_providers():
             ))
         db.commit()
         logger.info("Default providers seeded successfully.")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - preserve the DAO's existing error boundary
+        db.rollback()
         logger.error(f"Failed to seed default providers: {e}")
     finally:
         db.close()
@@ -53,7 +55,7 @@ def seed_default_providers():
 def insert_provider(id: str, name: str, api_key: str, base_url: str, logo: str, type_: str, enabled: int = 1):
     db = next(get_db())
     try:
-        # 落盘加密（docs/05 #29）；明文兼容：加密失败自动回退明文写入。
+        # 落盘加密（docs/05 #29）；加密失败必须在 add/commit 前中止，绝不明文写入。
         # 惰性 import：app/ 是 vendored 层，不强制依赖 videonote_mcp（上游可独立跑）
         from videonote_mcp.crypto import encrypt_value
 
@@ -66,6 +68,7 @@ def insert_provider(id: str, name: str, api_key: str, base_url: str, logo: str, 
         logger.info(f"Provider inserted successfully. id: {id}, name: {name}, type: {type_}")
         return id
     except Exception as e:
+        db.rollback()
         logger.error(f"Failed to insert provider: {e}")
         raise
     finally:
@@ -104,31 +107,40 @@ def update_provider(id: str, **kwargs):
             logger.warning(f"Provider {id} not found for update.")
             return
 
+        # 先完成所有敏感字段转换，再触碰 ORM 对象。这样后续字段加密失败时，
+        # 不会留下「前面的普通字段已改、但本次调用仍继续提交」的半更新。
+        updates = {}
         for key, value in kwargs.items():
             if hasattr(provider, key):
                 if key == "api_key":
-                    # 落盘加密（docs/05 #29）。update 通常先读后写（已解密），
+                    # 落盘加密（docs/05 第 29）：update 通常先读后写（已解密），
                     # 但 enc: 前缀值会二次加密——先解密再加密保持幂等。
-                    # 解密失败（key 缺失/不匹配）时跳过写入而非二次加密：
+                    # 解密失败（key 缺失/不匹配）时中止整个更新而非二次加密：
                     # 二次加密会把 enc: 串再包一层，产生永远解不出的数据（docs 审计 G1）
-                    from videonote_mcp.crypto import decrypt_value, encrypt_value
+                    from videonote_mcp.crypto import (
+                        EncryptionError,
+                        decrypt_value,
+                        encrypt_value,
+                    )
 
-                    if value and str(value).startswith("enc:"):
+                    if isinstance(value, str) and value.startswith("enc:"):
                         decrypted = decrypt_value(value)
                         if decrypted is None:
-                            logger.warning(
-                                f"Provider {id} 的 api_key 无法解密（fernet.key 缺失/不匹配），"
-                                f"跳过该字段更新"
+                            raise EncryptionError(
+                                f"Provider {id} 的 api_key 无法解密（fernet.key 缺失/不匹配）"
                             )
-                            continue
                         value = encrypt_value(decrypted)
                     else:
                         value = encrypt_value(value)
-                setattr(provider, key, value)
+                updates[key] = value
+
+        for key, value in updates.items():
+            setattr(provider, key, value)
 
         db.commit()
         logger.info(f"Provider updated successfully. id: {id}, updated_fields: {list(kwargs.keys())}")
     except Exception as e:
+        db.rollback()
         logger.error(f"Failed to update provider: {e}")
         raise
     finally:
@@ -140,11 +152,16 @@ def delete_provider(id: str):
     try:
         provider = db.query(Provider).filter_by(id=id).first()
         if provider:
+            # 显式删除关联模型，避免不同数据库后端对外键级联行为不一致。
+            db.query(Model).filter_by(provider_id=id).delete(
+                synchronize_session=False
+            )
             db.delete(provider)
             db.commit()
             logger.info(f"Provider deleted successfully. id: {id}")
     except Exception as e:
         logger.error(f"Failed to delete provider: {e}")
+        db.rollback()
         raise
     finally:
         db.close()

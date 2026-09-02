@@ -1,6 +1,7 @@
 """第 22 轮扫描 #146：并发、状态与批量边界回归。"""
 import json
 import shutil
+import threading
 import unittest
 from concurrent.futures import Future
 from unittest import mock
@@ -59,6 +60,67 @@ class TaskSubmitRegistrationTest(unittest.TestCase):
             server.generate_note("https://example.com/video")
             server.prepare_note_material("https://example.com/video")
         self.assertEqual(pool.submit_lock_held, [True, True])
+
+
+class ConcurrencyAdmissionTest(unittest.TestCase):
+    """普通提交的容量检查与 Future 登记必须是一个不可分割的临界区。"""
+
+    def setUp(self):
+        with server._tasks_lock:
+            self._old_futures = dict(server._task_futures)
+            self._old_events = dict(server._task_events)
+            server._task_futures.clear()
+            server._task_events.clear()
+        self._old_bypass = getattr(server._batch_ctx, "bypass_guard", False)
+        server._batch_ctx.bypass_guard = False
+
+    def tearDown(self):
+        if self._old_bypass:
+            server._batch_ctx.bypass_guard = True
+        else:
+            try:
+                del server._batch_ctx.bypass_guard
+            except AttributeError:
+                pass
+        with server._tasks_lock:
+            server._task_futures.clear()
+            server._task_events.clear()
+            server._task_futures.update(self._old_futures)
+            server._task_events.update(self._old_events)
+
+    def test_normal_submission_reserves_before_next_check(self):
+        submitted_under_lock = []
+
+        class Pool:
+            def submit(self, fn, *args, **kwargs):
+                submitted_under_lock.append(server._tasks_lock.locked())
+                return Future()
+
+        with mock.patch.object(server, "_pool", Pool()), mock.patch.object(
+            server, "_MAX_WORKERS", 1
+        ):
+            first = server._submit_registered_task("admission-1", threading.Event())
+            with self.assertRaises(ValueError):
+                server._submit_registered_task("admission-2", threading.Event())
+
+        self.assertEqual(submitted_under_lock, [True])
+        self.assertIs(getattr(first, server._CONCURRENCY_RESERVED_ATTR), True)
+
+    def test_batch_submission_bypasses_reservation_but_not_registry(self):
+        class Pool:
+            def submit(self, fn, *args, **kwargs):
+                return Future()
+
+        with mock.patch.object(server, "_pool", Pool()), mock.patch.object(
+            server, "_MAX_WORKERS", 1
+        ):
+            normal = server._submit_registered_task("admission-normal", threading.Event())
+            server._batch_ctx.bypass_guard = True
+            batch = server._submit_registered_task("admission-batch", threading.Event())
+
+        self.assertIs(getattr(normal, server._CONCURRENCY_RESERVED_ATTR), True)
+        self.assertIs(getattr(batch, server._CONCURRENCY_RESERVED_ATTR), False)
+        self.assertIn("admission-batch", server._task_futures)
 
 
 class CorruptTerminalStatusTest(unittest.TestCase):
