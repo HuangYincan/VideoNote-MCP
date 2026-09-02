@@ -28,7 +28,7 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 ## 强制规则
 
 1. **必须用 MCP 工具**。凭证例外：本会话 `! videonote providers set`、`! videonote login bilibili`、`! videonote login xiaoyuzhou`、`! videonote login xiaohongshu`。
-2. **单视频一回合一个提交**。**合集 / 分 P / 播放列表**（inspect_video `kind=multi`）：一条 `batch_generate_notes` 服务端展开+排队（同并发门禁，超出 worker 数的排队等待）。**互相独立的多个链接**：每个 url 一个 **subagent**（提交 → 轮询 → 汇报），主 agent 汇总。不要在同一条消息里并行多个 `generate_note`。上限 `VIDEONOTE_MAX_WORKERS`（默认 3）。
+2. **单视频一回合一个提交**。**合集 / 分 P / 播放列表**（inspect_video `kind=multi`）：一条 `batch_generate_notes` 服务端展开并逐条排队，单次最多 50 条；它绕过普通 `generate_note` admission，由线程池排队，**不要并发调用多个 batch**。**互相独立的多个链接**：每个 url 一个 **subagent**（提交 → 轮询 → 汇报），主 agent 汇总。不要在同一条消息里并行多个 `generate_note`。普通 `generate_note` / `prepare_note_material` 受 `VIDEONOTE_MAX_WORKERS`（默认 3）限制，超限拒绝。
 3. **AGENT 自己写笔记**（用户明确要 `agent_direct` / 「你自己写」）：`prepare_note_material` → 轮询 → `task(task_id, action="transcript")` + Read `frames` → 你写 Markdown。有 `comments_danmaku` 加「观众观点」一节（不捏造）。这是可选分支，不是默认。
 4. **handoff**：只有返回 `handoff: true`（或 generic **下载失败**）才接手。未知 URL 现在是 `generic`（yt-dlp），**不要**一看到非内置平台就当失败。接手：WebFetch / 浏览器取源，或下到本地再 `generate_note(platform="local")`。
 5. **API key / Cookie / HF token 绝不进对话或 MCP 参数。**
@@ -41,7 +41,7 @@ health_check → (必要时 inspect_video / health_check(url)) → generate_note
 ```
 
 - 视频理解 / 弹幕评论 / 截图：用户提起或 setup 已开才传参。
-- 多集（合集/分P/播放列表）：一条 `batch_generate_notes`；互相独立的链接才各自 subagent。
+- 多集（合集/分P/播放列表）：一条 `batch_generate_notes`（单次最多 50 条，由线程池排队）；互相独立的链接才各自 subagent。
 - 输出格式、合并音频、说话人分离：用户要时再做（见 `reference/tools.md` / `output-formats.md`）。
 
 ## 配置

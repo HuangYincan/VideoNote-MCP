@@ -849,3 +849,13 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **mlx（C7）**：依赖上游 `ModelHolder` 按 path 缓存；`close()` 释放匹配的驻留权重。
 - **建议后续**：FastMCP 同步工具占事件循环、CLI export 外部目录、#143 部署侧 SSRF/版本钉死。
 - **验证**：`920 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit `affae86`）。
+
+## Wave N 批 39（2026-09-01 · 第 23 轮全库代码审查与修复 #148，920→948 tests）
+
+- **任务持久化一致性**：SUCCESS 发布顺序固定为 `result.json → manifest → SUCCESS`；严格持久化失败转 FAILED；自动导出产物纳入最终 manifest。
+- **并发与取消**：普通任务 admission、线程池提交、Future/Event 登记在同一锁内；提交失败回滚；取消贯穿字幕/转写/下载；batch 单次最多 50 条并由线程池排队。
+- **数据层**：SQLite 每连接开启外键；旧 `models.provider_id` schema 迁移为字符串外键并保留孤儿模型；DAO rollback/re-raise；Provider 加密失败整笔回滚。
+- **媒体与安全**：ffmpeg 音频抽取采用临时文件+原子替换；Fernet 加密 fail-closed；manifest strict 回读；ffprobe 有 120 秒 timeout 并校验非法时长。
+- **报告与文档**：新增 `docs/07-全库代码审查报告.md`，同步 `docs/00`、`docs/04`、Skill、`VENDOR.md` 与历史档案。
+- **开放 P2**：yt-dlp 内部 egress SSRF、manifest 清理 TOCTOU、stderr 日志路径安全仍需部署/网络策略或平台原语支持；本批不虚报为已解决。
+- **验证**：`948 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean；`git diff --check` 通过；实现已合入 `8b0aed8`，文档同步随后提交。

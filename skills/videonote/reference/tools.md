@@ -20,17 +20,17 @@
 - **只解析、不下载、不提交**。B 站分 P / YouTube 播放列表 / 单集。
 - 返回 `{ok, platform, kind: single|multi, title, current_p?, total, truncated, entries:[{p, title, duration, url, video_id}]}`。
 - `kind=multi`：用户只要一集 → 直接用对应那条 `entries[].url` 按单集流程提交；要全出 → 用 `batch_generate_notes`（服务端逐个排队，见下）。**不要逐条 subagent 提交**——并发上限 3，逐条会被拒。超过 200 条 `truncated=true`。
-- **批量**：多集要全出笔记用 `batch_generate_notes(url, max_entries=10)` 一次排队（服务端逐个提交），省去逐条 subagent。
+- **批量**：多集要全出笔记用 `batch_generate_notes(url, max_entries=10)` 一次排队（服务端逐个提交，单次最多 50 条；绕过普通 admission，由线程池排队），省去逐条 subagent；不要并发调用多个 batch。
 - 内置平台之外 `platform:"generic"` 走 yt-dlp 通用提取（覆盖 1800+ 站点）；链接无效（空/本地缺失/内网/解析失败）→ `{ok:false, platform?, error}`。
 
 ### `batch_generate_notes(video_url, max_entries=10, quality?, provider_id?, model_name?, format?, style?, screenshot?, extras?, link?, video_understanding?, video_interval?, grid_size?, include_comments?, comments_limit?, notes_dir?)`
-- **播放列表/合集/分 P 批量提交**：内部先 `inspect_video` 展开，再逐条提交笔记任务（同一并发门禁，超出 worker 数的排队等待）。高级参数与 `generate_note` 一致（视频理解/弹幕/notes_dir 批量共享同一套设置）。
+- **播放列表/合集/分 P 批量提交**：内部先 `inspect_video` 展开，再逐条提交笔记任务（单次最多 50 条；绕过普通 admission，由线程池排队）。高级参数与 `generate_note` 一致（视频理解/弹幕/notes_dir 批量共享同一套设置）；不要并发调用多个 batch，避免队列堆积。
 - 返回 `{ok, total, submitted, truncated?, errors:[{p, title, url, error}], tasks:[{p, title, duration, url, task_id, status}]}`；单条失败不阻断其余，inspect 失败也走同一形状（`total:0, submitted:0, errors:[...]`）。
 - 之后逐个 `task(task_id)` 轮询（多任务逐个汇报进度，不要同时并行轮询过多）。
 
 ### `task(task_id, action="status", segment_range="")`
 - 任务控制面（#138）：查询 / 取转写 / 取消，一个入口三分支。`segment_range` 仅 transcript 分支生效，其余分支忽略；返回结构随 action 不同。
-- **`action="status"`（默认）**：轻量快照轮询。返回 `{status, stage, elapsed_secs, message, task_id, result?}`；`stage` 是中文阶段（如「转写中」），`elapsed_secs` 是任务已耗时——轮询汇报可用「转写中，已 3 分钟」。`SUCCESS` 时 `result` 含 `markdown`（或 material 模式的 `frames`/`video_path`/`audio_path`）、`note_dir`、`title`。`note_dir` 指向 `note.md` 所在目录（默认 `{task_id}/gen/`）；生成时指定了 `notes_dir` 会另有 `portable_note_dir` 指向便携副本（`<notes_dir>/<标题>/`）。
+- **`action="status"`（默认）**：轻量快照轮询。只有 `result.json` 与最终 manifest 持久化成功后才发布 SUCCESS。返回 `{status, stage, elapsed_secs, message, task_id, result?}`；`stage` 是中文阶段（如「转写中」），`elapsed_secs` 是任务已耗时——轮询汇报可用「转写中，已 3 分钟」。`SUCCESS` 时 `result` 含 `markdown`（或 material 模式的 `frames`/`video_path`/`audio_path`）、`note_dir`、`title`。`note_dir` 指向 `note.md` 所在目录（默认 `{task_id}/gen/`）；生成时指定了 `notes_dir` 会另有 `portable_note_dir` 指向便携副本（`<notes_dir>/<标题>/`）。
   - **默认剥转写**——转写可能数万 token，一次工具调用就会撑爆 context。note 任务要全文走 `task(task_id, action="transcript", segment_range="all")`；material 任务的转写是主产物，默认直接返回。
 - **`action="transcript"`**：读取已完成任务的**转写文本**（不耗 LLM），按需分段取。`segment_range` 空（默认）只返回前 50 段（`meta.truncated=true` 时用 `"50-"` 续取或 `"all"` 拿全文）；`"0-50"` / `"50-"` / `"150-200"` 按段切片。返回 `{task_id, ok, language, segments, full_text, meta:{total_segments, returned_segments, total_chars, returned_chars, truncated}}`。任务未成功/无转写时 `ok:false`。
   - **MCP Resource `videonote://task/{task_id}/transcript`**：转写全文按时间轴渲染的纯文本（含说话人标签），适合整篇直读；工具版用于切片/结构化。

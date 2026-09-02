@@ -60,6 +60,18 @@
 - `app/downloaders/douyin_downloader.py` / `kuaishou_helper/kuaishou.py` / `app/transcriber/bcut.py` / `app/downloaders/youtube_subtitle.py`（2026-09-01 #145：裸 requests 改 PublicOnlySession/public_get/post；必剪上传 URL 入口校验；YouTube 字幕 Session 默认超时）
 - 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`xiaoyuzhou_downloader.py`、`xiaoyuzhou_subtitle.py`、`xiaohongshu_downloader.py`、`xiaohongshu_auth.py`、`xiaohongshu_sign.py`、`xiaohongshu_browser.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`（2026-09-01 #147：`pin_public_host` / 连接期 DNS 钉死）
 
+## 本轮审查新增语义分叉（2026-09-01 #148）
+
+以下文件相对移植来源已增加任务编排、持久化一致性或安全语义；上游同步时必须人工合并，不能直接覆盖：
+
+- `app/services/note.py`：取消事件贯穿字幕获取、下载和转写；`TaskCancelledError` 不被 fallback 吞掉；ffmpeg 使用同目录临时文件并在成功后原子替换；`publish_success` 只在结果与 manifest 持久化完成后发布成功；metadata 索引写入失败向上抛出。
+- `app/db/engine.py` / `app/db/init_db.py` / `app/db/models/models.py`：每连接开启 SQLite 外键；旧 `models.provider_id` schema 迁移为字符串外键；为历史孤儿 provider 建立 disabled 占位记录；模型插入要求 provider 存在；补充任务索引。
+- `app/db/model_dao.py` / `app/db/provider_dao.py` / `app/db/video_task_dao.py`：写失败 rollback 后重新抛出；provider 删除显式清理关联 model；provider/model 一致性和任务索引错误不再静默吞掉。
+- `app/utils/task_manifest.py`：strict manifest 写入后回读校验；当前清理仍以 `resolve()` 做数据根边界检查，仅适用于受信任的本机数据目录。
+- `app/utils/video_reader.py`：ffprobe 增加 120 秒超时，并拒绝 NaN、Inf 和负数时长。
+- `videonote_mcp/server.py`：自有任务 admission、Future/Event 登记、状态发布和提交失败回滚语义；普通任务受 worker admission 限制，batch 单次最多 50 条并由线程池排队。成功顺序固定为 `result.json → manifest → SUCCESS`。
+- `videonote_mcp/crypto.py`：新增 `EncryptionError`；Fernet key 读取、创建和加密失败均 fail-closed，不回退明文；`encrypt_status()` 暴露 `fernet` 或 `encryption-error`。
+
 ## 如何同步上游更新
 
 ```bash
