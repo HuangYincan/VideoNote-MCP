@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 
 import requests
 
-from app.exceptions.task import check_cancel
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.utils.url_safety import assert_public_http_url, pin_public_host, public_get
 
 
@@ -44,14 +44,21 @@ def run_ffmpeg_cancellable(
     ``subprocess.run(timeout=600)`` 在 cancel 后仍会占满 worker 最多 10 分钟。
     改为 Popen + 0.2s poll：事件置位即 terminate，超时 kill。
     """
-    from app.exceptions.task import TaskCancelledError, check_cancel
-
     check_cancel(cancel_event)
     try:
         proc = subprocess.Popen(command, stdout=stdout, stderr=stderr)
     except OSError as exc:
         raise RuntimeError("启动 ffmpeg 失败") from exc
     deadline = time.monotonic() + timeout
+
+    def _remove_partial_output() -> None:
+        if output_path is None:
+            return
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
+
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
             proc.terminate()
@@ -60,6 +67,7 @@ def run_ffmpeg_cancellable(
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
+            _remove_partial_output()
             raise TaskCancelledError("任务已取消")
         if time.monotonic() > deadline:
             proc.kill()
@@ -72,6 +80,7 @@ def run_ffmpeg_cancellable(
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
+            _remove_partial_output()
             raise TaskCancelledError("任务已取消")
         elif cancel_event is None:
             time.sleep(0.2)
@@ -172,6 +181,13 @@ def stream_download(
         raise ValueError(f"attempts 必须为正整数，收到: {attempts}")
     check_cancel(cancel_event)
     assert_public_http_url(url)
+
+    def _remove_partial_output() -> None:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
+
     for i in range(attempts):
         check_cancel(cancel_event)
         try:
@@ -182,10 +198,14 @@ def stream_download(
                 with open(output_path, "wb") as f:
                     for chunk in resp.iter_content(1024 * 1024):
                         if cancel_event is not None and cancel_event.is_set():
-                            from app.exceptions.task import TaskCancelledError
-
+                            _remove_partial_output()
                             raise TaskCancelledError("任务已取消")
                         f.write(chunk)
+            try:
+                check_cancel(cancel_event)
+            except TaskCancelledError:
+                _remove_partial_output()
+                raise
             return
         except requests.exceptions.RequestException as exc:
             retriable = isinstance(
@@ -200,6 +220,7 @@ def stream_download(
                 raise
         if cancel_event is not None:
             if cancel_event.wait(base_delay * (2**i)):
+                _remove_partial_output()
                 check_cancel(cancel_event)
         else:
             time.sleep(base_delay * (2**i))

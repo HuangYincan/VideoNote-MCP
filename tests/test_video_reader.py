@@ -1,5 +1,6 @@
 """effective_frame_interval 封顶逻辑（docs/05 #33）：帧组数超限时自适应拉大间隔。"""
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -118,18 +119,16 @@ class SingleFrameFailureTest(unittest.TestCase):
             ):
                 self.assertIsNone(reader._extract_single_frame(10))
 
-    def test_timeoutexpired_returns_none(self):
-        import subprocess
-
+    def test_cancellable_ffmpeg_runtimeerror_returns_none(self):
         from app.utils.video_reader import VideoReader
 
         with tempfile.TemporaryDirectory() as td:
             reader = VideoReader(video_path="/no/such.mp4", frame_dir=td)
             with mock.patch(
-                "app.utils.video_reader.subprocess.run",
-                side_effect=subprocess.TimeoutExpired("ffmpeg", 120),
+                "app.utils.video_reader.run_ffmpeg_cancellable",
+                side_effect=RuntimeError("ffmpeg 转换失败"),
             ):
-                self.assertIsNone(reader._extract_single_frame(10))
+                self.assertIsNone(reader._extract_single_frame(10, cancel_event=threading.Event()))
 
 
 if __name__ == "__main__":

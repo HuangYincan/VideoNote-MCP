@@ -5,7 +5,6 @@ from unittest import mock
 import pytest
 from sqlalchemy import create_engine
 
-
 init_db_module = importlib.import_module("app.db.init_db")
 
 
@@ -111,7 +110,15 @@ def test_video_tasks_migration_commits_and_is_idempotent(tmp_path):
         engine.dispose()
 
 
-def test_init_db_reraises_schema_migration_failure():
+def test_video_tasks_migration_is_noop_when_lightweight_schema_omits_table(tmp_path):
+    """轻量 CLI 只导入 provider/model 时，不应因缺少 video_tasks 启动失败。"""
+    engine = _legacy_engine(tmp_path)
+    try:
+        init_db_module._migrate_video_tasks(engine)
+    finally:
+        engine.dispose()
+
+
     module = init_db_module
     with mock.patch.object(module.Base.metadata, "create_all"), mock.patch.object(
         module, "get_engine", return_value=mock.Mock()

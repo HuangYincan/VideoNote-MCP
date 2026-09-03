@@ -98,6 +98,13 @@ class XiaohongshuDownloader(Downloader):
 
         cmd = ["ffmpeg", "-y", "-i", mp4_path, "-vn", "-acodec", "libmp3lame", mp3_path]
         check_cancel(cancel_event)
+
+        def _remove_partial_output() -> None:
+            try:
+                os.unlink(mp3_path)
+            except OSError:
+                pass
+
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -115,6 +122,7 @@ class XiaohongshuDownloader(Downloader):
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait()
+                _remove_partial_output()
                 raise TaskCancelledError("任务已取消")
             if _time.monotonic() > deadline:
                 proc.kill()
@@ -127,10 +135,15 @@ class XiaohongshuDownloader(Downloader):
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait()
+                _remove_partial_output()
                 raise TaskCancelledError("任务已取消")
             elif cancel_event is None:
                 _time.sleep(0.2)
-        check_cancel(cancel_event)
+        try:
+            check_cancel(cancel_event)
+        except TaskCancelledError:
+            _remove_partial_output()
+            raise
         if proc.returncode != 0 or not os.path.exists(mp3_path) or os.path.getsize(mp3_path) <= 0:
             raise RuntimeError(
                 f"ffmpeg 转换 MP3 失败（退出码 {proc.returncode}）"

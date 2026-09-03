@@ -101,6 +101,7 @@ def _extract_audio_from_video(
         "-hide_banner", "-loglevel", "error",
     ]
     try:
+        _check_cancel(cancel_event)
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         except OSError as exc:
@@ -301,6 +302,7 @@ class NoteGenerator:
 
         try:
             logger.info(f"开始生成笔记 (task_id={task_id})")
+            _check_cancel(cancel_event)
             # 重置实例状态：NoteGenerator 若被复用跑第二个任务，不清会串上一个任务的数据
             self.video_path = None
             self.video_img_urls = []

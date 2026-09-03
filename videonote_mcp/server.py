@@ -497,6 +497,7 @@ def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None,
         if result is None:
             # generate() 内部已写 FAILED 状态
             return
+        _check_cancel(cancel_event)
         material = getattr(result, "material", None)
         if material:
             # material_only 模式：不产 markdown，payload 写素材包各字段
@@ -772,8 +773,9 @@ def _index_step_task(task_id: str, kind: str, title: str = "") -> None:
             status="PENDING",
             note_dir=str(NOTE_OUTPUT_DIR / task_id),
         )
-    except Exception as exc:  # noqa: BLE001 —— 索引失败不阻断提交，但留痕（list_tasks 会缺任务）
+    except Exception as exc:  # noqa: BLE001 —— 必需的生命周期索引失败时交给提交回滚处理
         logger.warning(f"任务入索引失败 task_id={task_id}: {sanitize_error_text(exc)}")
+        raise
 
 
 def _coerce_local_path(p: str) -> Path:

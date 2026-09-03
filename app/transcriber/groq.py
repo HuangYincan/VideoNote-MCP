@@ -44,6 +44,10 @@ def compress_audio(
             )
         check_cancel(cancel_event)
     except TaskCancelledError:
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
         raise
     except Exception:
         # mkstemp 已落盘、ffmpeg 失败 → 不清理就残留临时 mp3（调用方拿不到

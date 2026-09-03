@@ -103,6 +103,11 @@ def _migrate_video_tasks(engine):
         return
 
     with engine.begin() as conn:
+        table_exists = conn.exec_driver_sql(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='video_tasks'"
+        ).first()
+        if table_exists is None:
+            return
         cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(video_tasks)")}
         for name, typ in _VIDEO_TASK_MIGRATIONS:
             if name not in cols:

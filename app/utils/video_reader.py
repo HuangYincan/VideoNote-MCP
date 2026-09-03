@@ -106,9 +106,10 @@ class VideoReader:
             return output_path
         except TaskCancelledError:
             raise
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError):
             # TimeoutExpired 未捕获会从 future.result() 冒出，外层兜底把整个抽帧任务
-            # 打成「视频处理失败」——已抽出的几百帧全丢（#124 B12）：单帧失败本就该跳过
+            # 打成「视频处理失败」——已抽出的几百帧全丢（#124 B12）：单帧失败本就该跳过。
+            # 可取消的 ffmpeg helper 将非零退出/超时包装为 RuntimeError，同样按单帧失败处理。
             return None
 
     def _probe_duration(self, timeout: int = 120) -> float:

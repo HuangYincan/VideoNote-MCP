@@ -147,6 +147,33 @@ def test_run_note_task_manifest_failure_does_not_publish_success():
             server._status_memory.pop(task_id, None)
 
 
+def test_run_note_task_late_cancellation_does_not_publish_success():
+    """生成器返回后若取消，worker 不应发布 SUCCESS。"""
+    import threading
+
+    task_id = f"late-cancel-{uuid.uuid4().hex}"
+    task_dir = server.NOTE_OUTPUT_DIR / task_id
+    cancel_event = threading.Event()
+
+    def generate(**_kwargs):
+        cancel_event.set()
+        return _note_result()
+
+    try:
+        with mock.patch.object(server, "NoteGenerator") as generator_cls, \
+             mock.patch.object(server, "_auto_export_transcript"):
+            generator_cls.return_value.generate.side_effect = generate
+            server._run_note_task(task_id, cancel_event)
+
+        status = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
+        assert status["status"] == "CANCELLED"
+        assert not (task_dir / "result.json").exists()
+    finally:
+        shutil.rmtree(task_dir, ignore_errors=True)
+        with server._tasks_lock:
+            server._status_memory.pop(task_id, None)
+
+
 @pytest.mark.parametrize("material_only", [False, True], ids=["normal", "material"])
 def test_generate_publish_success_false_does_not_publish_success(material_only):
     """publish_success=False 只返回结果，不让 NoteGenerator 发布 SUCCESS。"""
