@@ -868,4 +868,4 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **SQLite 与 DAO**：兼容迁移只在 SQLite 执行；缺失 `video_tasks` 表时迁移 helper 安全 no-op，迁移失败 re-raise；DAO insert/update/delete rollback 后 re-raise，完成阶段索引失败不能伪造 SUCCESS。
 - **manifest 与 ffprobe**：manifest 模块级 RLock 只保护同进程读-改-写与删除，跨进程检查—删除 TOCTOU 仍为 P2；VideoReader 使用严格 120 秒 ffprobe，音频预处理探测失败则 best-effort 回退 1800 秒并记录 warning。
 - **验证口径**：新增/更新 `tests/test_cancellation_pipeline.py`、`tests/test_149_migration.py` 及相关生命周期聚焦回归；#148 的全量 948 passed 为前序基线，本次文档回填不把未重跑的全量结果写成通过。
-- **最终合并验证补充（2026-09-03）**：实现与文档最终落位 `dev`；全量 `pytest` 为 **962 passed, 1 skipped, 10 subtests passed**，Ruff F/I、`git diff --check`、import/CLI smoke 均通过。
+- **最终合并验证补充（2026-09-03）**：实现与文档最终落位 `dev`；全量 `pytest` 为 **963 passed, 1 skipped, 10 subtests passed**，Ruff F/I、`git diff --check`、import/CLI smoke 均通过。
