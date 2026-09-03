@@ -96,10 +96,13 @@ def _migrate_video_tasks(engine):
     """给已存在的 video_tasks 表补新增列（create_all 不会改已有表）。
 
     SQLite 的 ALTER TABLE ADD COLUMN 是幂等的；用 PRAGMA table_info 检查列，
-    缺失才补，避免重复 ADD 报错。
+    缺失才补，避免重复 ADD 报错。旧 schema 迁移仅支持 SQLite；其它后端由
+    ``create_all`` 负责新库初始化，已有表的迁移交给对应部署的迁移工具。
     """
+    if engine.dialect.name != "sqlite":
+        return
 
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(video_tasks)")}
         for name, typ in _VIDEO_TASK_MIGRATIONS:
             if name not in cols:
@@ -114,15 +117,12 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     try:
         _migrate_video_tasks(engine)
-    except Exception:
-        # 迁移失败不致命（表可能不存在 / 已是最新），保底 create_all 已建表
-        pass
-    try:
         _migrate_models_provider_id(engine)
     except Exception:
-        # 保留已有库，不因兼容迁移失败阻断普通启动；下次启动仍会重试，
-        # 同时记录 warning 便于发现旧 schema 未收口。
-        logger.warning("迁移 models.provider_id 失败", exc_info=True)
+        # 迁移失败时不能以旧 schema 继续启动：create_all 不会修正既有表，
+        # 否则后续 DAO 可能在不兼容的结构上运行并造成更隐蔽的数据损坏。
+        logger.exception("数据库 schema 迁移失败")
+        raise
     _create_indexes(engine)
 
 
