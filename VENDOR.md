@@ -72,7 +72,16 @@
 - `videonote_mcp/server.py`：自有任务 admission、Future/Event 登记、状态发布和提交失败回滚语义；普通任务受 worker admission 限制，batch 单次最多 50 条并由线程池排队。成功顺序固定为 `result.json → manifest → SUCCESS`。
 - `videonote_mcp/crypto.py`：新增 `EncryptionError`；Fernet key 读取、创建和加密失败均 fail-closed，不回退明文；`encrypt_status()` 暴露 `fernet` 或 `encryption-error`。
 
-## 如何同步上游更新
+## #149 新增语义分叉（2026-09-03）
+
+#149 将协作式取消、任务生命周期和 SQLite 迁移边界固化为本仓库语义；上游同步时不得覆盖这些改动：
+
+- `app/downloaders/base.py`、各平台 downloader/subtitle 与 `app/downloaders/common.py`：下载、字幕和流式/yt-dlp 调用接收 `cancel_event`；可控 ffmpeg/下载子进程可尽快退出，但第三方阻塞调用无法被线程外硬中断。
+- `app/services/note.py`、`app/services/pipeline.py`、`app/services/diarization.py`、`app/transcriber/base.py`、各转写器、`app/transcriber/audio_preprocess.py`、`app/utils/video_reader.py`：取消事件贯穿 ASR、预处理、ffmpeg、抽帧、说话人分离和后处理边界；B 站弹幕/评论聚合 helper 仍在 `cancel_event` 之外。
+- `app/db/init_db.py`：兼容迁移仅限 SQLite；缺失 `video_tasks` 表时 helper 安全 no-op，迁移失败 re-raise。`app/db/*_dao.py` 的写失败 rollback 后 re-raise，`note.py` 的索引写入失败不能伪造 SUCCESS。
+- `app/utils/task_manifest.py`：模块级 `RLock` 只保护同一进程的读-改-写与删除；跨进程检查—删除 TOCTOU 仍是 P2，不得在同步时标成已完成。
+- `videonote_mcp/server.py`：普通 admission reservation、batch bypass、提交回滚及结构化清理诊断属于本地任务注册语义；`process_media` 仍为同步工具，不纳入任务注册表。
+
 
 ```bash
 # 1. 记下当前 vendored 版本

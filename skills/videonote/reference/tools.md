@@ -11,10 +11,10 @@
 - `model_name` 省略：用 setup 默认模型，否则供应商第一个可用模型。
 - `style`: 9 种（minimal/detailed/academic/tutorial/xiaohongshu/life_journal/task_oriented/business/meeting_minutes）；自定义用 `extras="笔记风格要求：<描述>"`。
 - `video_understanding=True` + `video_interval`（默认 6）+ `grid_size`（默认 [3,3]）：视频理解，**需多模态模型**。
-- `include_comments=True` + `comments_limit`（默认 20）：整合 B 站弹幕+评论（需 SESSDATA；失败不阻断）。
+- `include_comments=True` + `comments_limit`（默认 20）：整合 B 站弹幕+评论（需 SESSDATA；失败不阻断）。评论/弹幕聚合 helper 当前不接收 `cancel_event`，取消请求在该 helper 阻塞时只能等其返回后才会在阶段边界生效。
 - `screenshot=True`：插截图，产出便携笔记 note.md + Assets/（相对引用）。**布尔开关与 `format` 双向闭合（#120）**：`screenshot=True` 自动并入 `format`（否则 prompt 不注入标记指令 → LLM 不输出 `*Screenshot-[mm:ss]` → 视频白下载但笔记无图）；`format=["screenshot"]` 等价（即使布尔省略也会下载视频做截图）。`link=True` 同理自动并入 `format`。
 - `notes_dir`: 便携笔记目录（指定即写 note.md，即使不插图片；支持 `file://` URI）。**安全边界**：数据目录外（含 env `VIDEONOTE_NOTES_DIR` 兜底）默认拒绝，需 `VIDEONOTE_ALLOW_EXTERNAL_PATHS=1`/插件 `allow_external_paths` 放行（#142）——报错即说明放行方式，转告用户即可。
-- **并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：超限会拒绝。不要在同一条消息里并行塞多个 `generate_note`（客户端不稳）。`provider_id` 可省略。
+- **并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：普通 `generate_note` / `prepare_note_material` 在提交锁内预占名额，预占覆盖排队与执行全生命周期，超限会拒绝。**`batch_generate_notes` 通过 thread-local bypass 不占普通 admission 名额，由线程池排队**，单次最多 50 条；不要在同一条消息里并行塞多个 `generate_note`（客户端不稳），也不要并发调用多个 batch。`provider_id` 可省略。
 
 ### `inspect_video(url, platform?)`
 - **只解析、不下载、不提交**。B 站分 P / YouTube 播放列表 / 单集。
@@ -34,7 +34,7 @@
   - **默认剥转写**——转写可能数万 token，一次工具调用就会撑爆 context。note 任务要全文走 `task(task_id, action="transcript", segment_range="all")`；material 任务的转写是主产物，默认直接返回。
 - **`action="transcript"`**：读取已完成任务的**转写文本**（不耗 LLM），按需分段取。`segment_range` 空（默认）只返回前 50 段（`meta.truncated=true` 时用 `"50-"` 续取或 `"all"` 拿全文）；`"0-50"` / `"50-"` / `"150-200"` 按段切片。返回 `{task_id, ok, language, segments, full_text, meta:{total_segments, returned_segments, total_chars, returned_chars, truncated}}`。任务未成功/无转写时 `ok:false`。
   - **MCP Resource `videonote://task/{task_id}/transcript`**：转写全文按时间轴渲染的纯文本（含说话人标签），适合整篇直读；工具版用于切片/结构化。
-- **`action="cancel"`**：取消进行中/排队任务（协作式，下一阶段边界生效，LLM 总结时每 chunk 检查）；返回 `{ok, task_id, status, message?}`。
+- **`action="cancel"`**：取消进行中/排队任务（协作式，下一阶段边界生效，LLM 总结时每 chunk 检查）；取消事件沿字幕、下载、ASR、预处理、ffmpeg、抽帧、说话人分离与后处理传播，可控 ffmpeg/下载子进程会尽快退出，但不能硬中断第三方阻塞调用。B 站弹幕/评论 helper 不接收该事件。运行中通常先返回 `CANCELLING`，排队任务可直接写 `CANCELLED`。
 
 ## AGENT 直接生成（准备素材）
 
@@ -62,7 +62,7 @@
 ## 媒体加工（导出 / 合并 / 说话人分离）
 
 ### `process_media(action="export", task_id?, formats?, out_dir?, files?, audio_file?, num_speakers?, hf_token?)`
-- 媒体/转写加工（#138）：三个分支共用入口，参数按 action 分支生效（如 `formats` 仅 export 用）；分支缺参各自显式报错（export 缺 `task_id` / merge 缺 `files` / diarize 缺 `audio_file` → ValueError）。
+- 媒体/转写加工（#138）：三个分支共用入口，参数按 action 分支生效（如 `formats` 仅 export 用）；分支缺参各自显式报错（export 缺 `task_id` / merge 缺 `files` / diarize 缺 `audio_file` → ValueError）。**该工具保持同步执行，不进入任务注册表，不产生可由 `task(action="cancel")` 控制的 task_id；第三方阻塞调用不能硬中断。**
 - **`action="export"`（默认）**：把已完成任务的转写导出为**确定性格式**（srt/vtt/json），**不耗 LLM**。同步返回。
   - `formats` 缺省取 setup 配置的「导出格式默认」（任务成功后也会自动导出这些格式）。
   - `out_dir` 缺省 `{task_id}/gen/`；支持 `file://` URI。
@@ -83,6 +83,7 @@
 - 转写前先把音频归一化为 16kHz mono wav；超长音频（>1800s）自动分块转写并时间偏移拼接。
 - **默认关**（`enable_preprocess`）。开启后 `generate_note` / `prepare_note_material` 自动生效。
 - 零额外依赖（FFmpeg）；降噪（noisereduce）可选 extras，未装静默降级。
+- **时长探测区别**：VideoReader 的视频 ffprobe 有 120 秒硬超时，并拒绝无法解析、NaN、Inf、负数；`audio_preprocess.probe_duration` 是 best-effort，失败返回 0，`chunk_duration_guess` 会回退 1800 秒并 warning。
 
 ## 全自动 / 手动模式
 
@@ -117,6 +118,11 @@
 - **任务仍在运行（或排队中）时拒绝**（单任务返回 `{ok: false, error}`；全局返回 `{ok: false, running, running_task_ids, error}`）：先 `task(task_id, action="cancel")` 或等终态再清理。`include_models=True` 且仍有模型在后台下载时也拒绝（删 `models/` 会打断下载线程，#123 A1）。
 - 以任务文件夹为边界，`resolve()` 校验在数据目录内（防路径穿越）。返回 `{deleted, missing, errors, note_kept, notes_kept_outside}`——`notes_kept_outside` 列出数据目录**外**的便携笔记副本（用户指定 `notes_dir` 时常见）：沙箱红线不删，但路径会列出，不会成无人知晓的孤儿。
 
+### 提交回滚、索引与迁移边界（#149）
+
+- 普通任务的 admission、线程池 submit、Future/Event 登记在同一锁内；batch 明确绕过普通 admission，由线程池排队。若 admission、参数准备或 submit 失败，服务端回滚任务目录、manifest、内存注册表和 `video_tasks` 索引。
+- 回滚清理是尽力而为，但不会覆盖原始提交异常；清理失败通过 `errors`、`manifest_error`、`index_error`、`cleanup_error` 等诊断写入日志并附加到原始异常。
+- DAO 的索引插入/更新/删除失败会 rollback 后重新抛出；笔记完成阶段的索引写入失败会阻止伪造 `SUCCESS`。SQLite 兼容迁移只在 SQLite 上执行；缺失 `video_tasks` 表时迁移 helper 安全 no-op，迁移失败则 re-raise。
 ## 配置（只读）
 
 - `get_config(provider_id?)` —— **唯一**配置工具（只读）：`app_config` 默认值（默认供应商/模型、风格、开关，敏感项过滤）+ `providers`（key 掩码）+ `transcriber`（引擎/尺寸/就绪）+ `cookie_configured`（已配 Cookie 的平台名）+ `transcript_source`（固定 `platform_subtitles_first`：平台官方字幕优先，无字幕才转写引擎）。传 `provider_id` 附加该供应商连通性探测（用已存 key，不接受 key 参数）→ `{probe: {ok, models, error}}`。

@@ -19,7 +19,7 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 5. 长视频 / 首次使用 / 最近改过转写引擎 → `health_check(url)` 体检（ffmpeg/磁盘/转写器/供应商 key，`ok=false` 先修）。
 6. 直接 `generate_note(video_url)`（`provider_id` 可省略）。参数不传 = setup / userConfig 默认。
    - **转写素材自动优先平台官方字幕**（YouTube/B 站人工+自动字幕 / 小宇宙官方文稿）——有官方字幕的视频不会走本地转写引擎；无字幕/获取失败才下载音轨转写。用户问「为什么走/没走转写引擎」先看该视频有无官方字幕。小宇宙官方文稿需用户先 `! videonote login xiaoyuzhou`（终端扫码）。
-7. **`task(task_id)` 轮询**到 SUCCESS / FAILED / CANCELLED。等待中可用 `stage` / `elapsed_secs` 报进度（如「转写中，已 3 分钟」）。
+7. **`task(task_id)` 轮询**到 SUCCESS / FAILED / CANCELLED。等待中可用 `stage` / `elapsed_secs` 报进度（如「转写中，已 3 分钟」）。取消是协作式：可控下载/ffmpeg 会尽快终止，第三方阻塞调用不能被硬中断；B 站弹幕/评论 helper 目前不接收 `cancel_event`，不要向用户承诺立即停止。
 8. 呈现 `result.markdown`（要点 + 章节 + 原文链接）。用户要细节再用 `task(task_id, action="transcript")`（默认前 50 段；全文 `segment_range="all"`）。
 9. **不要主动问「要不要后续优化」**。用户要精修再读笔记 + 转写改。
 
@@ -28,10 +28,11 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 ## 强制规则
 
 1. **必须用 MCP 工具**。凭证例外：本会话 `! videonote providers set`、`! videonote login bilibili`、`! videonote login xiaoyuzhou`、`! videonote login xiaohongshu`。
-2. **单视频一回合一个提交**。**合集 / 分 P / 播放列表**（inspect_video `kind=multi`）：一条 `batch_generate_notes` 服务端展开并逐条排队，单次最多 50 条；它绕过普通 `generate_note` admission，由线程池排队，**不要并发调用多个 batch**。**互相独立的多个链接**：每个 url 一个 **subagent**（提交 → 轮询 → 汇报），主 agent 汇总。不要在同一条消息里并行多个 `generate_note`。普通 `generate_note` / `prepare_note_material` 受 `VIDEONOTE_MAX_WORKERS`（默认 3）限制，超限拒绝。
+2. **单视频一回合一个提交**。**合集 / 分 P / 播放列表**（inspect_video `kind=multi`）：一条 `batch_generate_notes` 服务端展开并逐条排队，单次最多 50 条；它绕过普通 `generate_note` admission，由线程池排队，**不要并发调用多个 batch**。普通 `generate_note` / `prepare_note_material` 在提交锁内预占名额，预占覆盖排队和执行全生命周期，超限拒绝。**互相独立的多个链接**：每个 url 一个 **subagent**（提交 → 轮询 → 汇报），主 agent 汇总。不要在同一条消息里并行多个 `generate_note`。
 3. **AGENT 自己写笔记**（用户明确要 `agent_direct` / 「你自己写」）：`prepare_note_material` → 轮询 → `task(task_id, action="transcript")` + Read `frames` → 你写 Markdown。有 `comments_danmaku` 加「观众观点」一节（不捏造）。这是可选分支，不是默认。
 4. **handoff**：只有返回 `handoff: true`（或 generic **下载失败**）才接手。未知 URL 现在是 `generic`（yt-dlp），**不要**一看到非内置平台就当失败。接手：WebFetch / 浏览器取源，或下到本地再 `generate_note(platform="local")`。
 5. **API key / Cookie / HF token 绝不进对话或 MCP 参数。**
+6. **`process_media` 保持同步**：export / merge / diarize 不登记后台任务注册表，没有可供 `task(action="cancel")` 控制的任务；需要取消时不要承诺能硬中断其第三方阻塞调用。
 
 ## 工作流（默认 = 配置 LLM）
 

@@ -859,3 +859,12 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **报告与文档**：新增 `docs/07-全库代码审查报告.md`，同步 `docs/00`、`docs/04`、Skill、`VENDOR.md` 与历史档案。
 - **开放 P2**：yt-dlp 内部 egress SSRF、manifest 清理 TOCTOU、stderr 日志路径安全仍需部署/网络策略或平台原语支持；本批不虚报为已解决。
 - **验证**：`948 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean；`git diff --check` 通过；实现已合入 `8b0aed8`，文档同步随后提交。
+
+## Wave O 批 40（2026-09-03 · #149 流水线协作式取消、生命周期与迁移边界）
+
+- **协作式取消**：取消事件贯穿平台字幕、下载、ASR、音频预处理、ffmpeg、VideoReader 抽帧、说话人分离和笔记后处理；可控 ffmpeg/流式下载子进程会 terminate/kill 收尾，`TaskCancelledError` 不再被 fallback 吞掉。第三方网络、模型推理或 SDK 阻塞调用不能被线程外硬中断；B 站弹幕/评论 helper 仍不接收 `cancel_event`。
+- **任务生命周期**：普通任务 admission、reservation、submit、Future/Event 登记在同一锁内；batch 通过 thread-local bypass 不占普通 admission，由线程池排队。提交失败回滚任务目录、manifest、内存注册表和索引；清理失败以 `errors` / `manifest_error` / `index_error` / `cleanup_error` 诊断附加到原始异常，不覆盖根因。
+- **同步媒体边界**：`process_media` 仍是同步工具，不登记任务注册表，没有可由 `task(action="cancel")` 控制的后台 task。
+- **SQLite 与 DAO**：兼容迁移只在 SQLite 执行；缺失 `video_tasks` 表时迁移 helper 安全 no-op，迁移失败 re-raise；DAO insert/update/delete rollback 后 re-raise，完成阶段索引失败不能伪造 SUCCESS。
+- **manifest 与 ffprobe**：manifest 模块级 RLock 只保护同进程读-改-写与删除，跨进程检查—删除 TOCTOU 仍为 P2；VideoReader 使用严格 120 秒 ffprobe，音频预处理探测失败则 best-effort 回退 1800 秒并记录 warning。
+- **验证口径**：新增/更新 `tests/test_cancellation_pipeline.py`、`tests/test_149_migration.py` 及相关生命周期聚焦回归；#148 的全量 948 passed 为前序基线，本次文档回填不把未重跑的全量结果写成通过。
