@@ -5,6 +5,7 @@
 ## 生成笔记
 
 ### `generate_note(video_url, platform?, quality?, provider_id?, model_name?, format?, style?, screenshot?, link?, video_understanding?, video_interval?, grid_size?, notes_dir?, extras?, include_comments?, comments_limit?)`
+- **后备路径**：用配置 LLM 异步生成笔记。当前对话 Agent 无法看图，或用户明确要求配置 LLM 时才用。默认路径是 `prepare_note_material` + Agent 自己写。
 - 提交视频，异步生成，返回 `{task_id, status: "PENDING", platform, model_name}`。
 - **同视频（`platform:video_id`）再次生成会复用上次转写缓存**（`note_cache`，按引擎/尺寸分键），不再重下+重转写；命中时音频也从缓存复制到新任务，`audio_path` 指向真实文件。缓存默认 30 天滑动 TTL + 2048MB 总量上限。`cleanup`（全局清理）会清缓存。
 - `quality`: fast / medium / slow。
@@ -14,17 +15,17 @@
 - `include_comments=True` + `comments_limit`（默认 20）：整合 B 站弹幕+评论（需 SESSDATA；失败不阻断）。弹幕/评论 helper 在请求边界检查 `cancel_event`；正在进行的 HTTP 仍要等返回。
 - `screenshot=True`：插截图，产出便携笔记 note.md + Assets/（相对引用）。**布尔开关与 `format` 双向闭合（#120）**：`screenshot=True` 自动并入 `format`（否则 prompt 不注入标记指令 → LLM 不输出 `*Screenshot-[mm:ss]` → 视频白下载但笔记无图）；`format=["screenshot"]` 等价（即使布尔省略也会下载视频做截图）。`link=True` 同理自动并入 `format`。
 - `notes_dir`: 便携笔记目录（指定即写 note.md，即使不插图片；支持 `file://` URI）。**安全边界**：数据目录外（含 env `VIDEONOTE_NOTES_DIR` 兜底）默认拒绝，需 `VIDEONOTE_ALLOW_EXTERNAL_PATHS=1`/插件 `allow_external_paths` 放行（#142）——报错即说明放行方式，转告用户即可。
-- **并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：普通 `generate_note` / `prepare_note_material` 在提交锁内预占名额，预占覆盖排队与执行全生命周期，超限会拒绝。**`batch_generate_notes` 通过 thread-local bypass 不占普通 admission 名额，由线程池排队**，单次最多 50 条；不要在同一条消息里并行塞多个 `generate_note`（客户端不稳），也不要并发调用多个 batch。`provider_id` 可省略。
+- **并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：普通 `generate_note` / `prepare_note_material` 在提交锁内预占名额，预占覆盖排队与执行全生命周期，超限会拒绝。**`batch_generate_notes` 仅后备 LLM**，通过 thread-local bypass 不占普通 admission 名额，由线程池排队，单次最多 50 条；不要在同一条消息里并行塞多个 `generate_note` / `prepare_note_material`（客户端不稳），也不要并发调用多个 batch。`provider_id` 可省略。
 
 ### `inspect_video(url, platform?)`
 - **只解析、不下载、不提交**。B 站分 P / YouTube 播放列表 / 单集。
 - 返回 `{ok, platform, kind: single|multi, title, current_p?, total, truncated, entries:[{p, title, duration, url, video_id}]}`。
-- `kind=multi`：用户只要一集 → 直接用对应那条 `entries[].url` 按单集流程提交；要全出 → 用 `batch_generate_notes`（服务端逐个排队，见下）。**不要逐条 subagent 提交**——并发上限 3，逐条会被拒。超过 200 条 `truncated=true`。
-- **批量**：多集要全出笔记用 `batch_generate_notes(url, max_entries=10)` 一次排队（服务端逐个提交，单次最多 50 条；绕过普通 admission，由线程池排队），省去逐条 subagent；不要并发调用多个 batch。
+- `kind=multi`：用户只要一集 → 直接用对应那条 `entries[].url`。要全出 → **默认**每集 `prepare_note_material`（当前 Agent 写笔记）；仅后备 LLM 才用 `batch_generate_notes`。超过 200 条 `truncated=true`。
+- **批量（仅后备 LLM）**：合集要配置 LLM 全出笔记时用 `batch_generate_notes(url, max_entries=10)` 一次排队（服务端逐个提交，单次最多 50 条；绕过普通 admission，由线程池排队）；不要并发调用多个 batch。
 - 内置平台之外 `platform:"generic"` 走 yt-dlp 通用提取（覆盖 1800+ 站点）；链接无效（空/本地缺失/内网/解析失败）→ `{ok:false, platform?, error}`。
 
 ### `batch_generate_notes(video_url, max_entries=10, quality?, provider_id?, model_name?, format?, style?, screenshot?, extras?, link?, video_understanding?, video_interval?, grid_size?, include_comments?, comments_limit?, notes_dir?)`
-- **播放列表/合集/分 P 批量提交**：内部先 `inspect_video` 展开，再逐条提交笔记任务（单次最多 50 条；绕过普通 admission，由线程池排队）。高级参数与 `generate_note` 一致（视频理解/弹幕/notes_dir 批量共享同一套设置）；不要并发调用多个 batch，避免队列堆积。
+- **仅后备 LLM**：播放列表/合集/分 P 批量提交配置 LLM 笔记。内部先 `inspect_video` 展开，再逐条 `generate_note`（单次最多 50 条；绕过普通 admission，由线程池排队）。**默认路径不要用它**——每集 `prepare_note_material`，由当前 Agent 写。
 - 返回 `{ok, total, submitted, truncated?, errors:[{p, title, url, error}], tasks:[{p, title, duration, url, task_id, status}]}`；单条失败不阻断其余，inspect 失败也走同一形状（`total:0, submitted:0, errors:[...]`）。
 - 之后逐个 `task(task_id)` 轮询（多任务逐个汇报进度，不要同时并行轮询过多）。
 
@@ -36,7 +37,7 @@
   - **MCP Resource `videonote://task/{task_id}/transcript`**：转写全文按时间轴渲染的纯文本（含说话人标签），适合整篇直读；工具版用于切片/结构化。
 - **`action="cancel"`**：取消进行中/排队任务（协作式，下一阶段边界生效，LLM 总结时每 chunk 检查）；取消事件沿字幕、下载、ASR、预处理、ffmpeg、抽帧、说话人分离、B 站弹幕/评论与后处理传播，可控 ffmpeg/下载子进程会尽快退出，但不能硬中断正在进行的第三方 HTTP。运行中通常先返回 `CANCELLING`，排队任务可直接写 `CANCELLED`。
 
-## AGENT 直接生成（准备素材）
+## 默认路径（准备素材）
 
 ### `prepare_note_material(video_url, platform?, video_understanding?, video_interval?, grid_size?, include_comments?, comments_limit?)`
 - **只准备素材、不调用配置 LLM**：跑下载 → 转写 →（可选）抽帧 →（可选）评论/弹幕，返回素材包（`kind: "material"`）。
@@ -57,7 +58,7 @@
     "audio_path": "/绝对/路径/audio.mp3"
   }
   ```
-- 用途：**AGENT 直接生成**（agent_direct）—— AGENT 自己读转写、用 Read 看 `frames` 图片、按 `comments_danmaku` 写「观众观点」章节，不经配置 LLM。转写文本优先用 `task(task_id, action="transcript", segment_range=...)` 按需取（超长分段，避免撑爆 context）；评论/弹幕默认已在素材包 result 里（`raw` 恒剥）。
+- 用途：**默认路径**——当前对话 Agent 读转写、用 Read 看 `frames` 图片、按 `comments_danmaku` 写「观众观点」章节，不经配置 LLM。转写文本优先用 `task(task_id, action="transcript", segment_range=...)` 按需取（超长分段，避免撑爆 context）；评论/弹幕默认已在素材包 result 里（`raw` 恒剥）。
 
 ## 媒体加工（导出 / 合并 / 说话人分离）
 
@@ -85,11 +86,11 @@
 - 零额外依赖（FFmpeg）；降噪（noisereduce）可选 extras，未装静默降级。
 - **时长探测区别**：VideoReader 的视频 ffprobe 有 120 秒硬超时，并拒绝无法解析、NaN、Inf、负数；`audio_preprocess.probe_duration` 是 best-effort，失败返回 0，`chunk_duration_guess` 会回退 1800 秒并 warning。
 
-## 全自动 / 手动模式
+## 默认 / 手动 / 后备 LLM
 
-- **默认全自动**：不要先问模式；`generate_note` 不传可选参数即套 setup / userConfig。不要主动问后续优化。
-- **手动**：仅当用户说「手动 / 我要选参数」时逐项问（模型、风格、视频理解、评论、截图）。
-- **AGENT 直接生成**：仅当用户明确要「你自己写」/`agent_direct`。`agent_direct` 配置键 server 不读，只是编排选择。
+- **默认**：当前对话 Agent 写笔记。`health_check(need_provider=False)` → `prepare_note_material` → 读转写/帧 → 你写。不要先问模式，不要主动问后续优化。
+- **手动**：仅当用户说「手动 / 我要选参数」时逐项问（风格、视频理解、评论、截图；后备路径再问模型）。
+- **后备 LLM**：仅当你无法看图，或用户明确要配置 LLM。`health_check(need_provider=True)` → `generate_note` / 合集 `batch_generate_notes`。`agent_direct` 配置键 server 不读；不要因为该键是 false 就改走后备。
 
 ## 任务索引与清理
 
@@ -134,11 +135,11 @@
 
 ## 体检（提交前）
 
-### `health_check(need_provider=true, provider_id?, url?, platform?)`
+### `health_check(need_provider=false, provider_id?, url?, platform?)`
 - 体检（#138）：检查 MCP 运行环境与提交前就绪状态，`checks` 数组逐项给出 `{name, ok, detail}`。
 - 检查项：ffmpeg / 数据库 / 磁盘剩余 / 转写器就绪（本地模型已下载/云端 key）/ 供应商 key 与模型（仅 `need_provider=True`）/ 任务队列；`url` 非空时顺带预解析视频时长（仅参考，不拦截），返回额外 `duration_secs`。
 - 返回 `{ok, server_version, plugin_version, whisper_models, engine_advice, audio_enhance, keyed_providers, queue_length, max_workers, data_dir, skill_refresh, checks, duration_secs?}`。`ok=false` 时先解决 `detail` 里的问题再提交，避免长任务跑到半路才因模型未下载 / 磁盘满失败。
-- **`need_provider` 默认 True**（generate_note 需要 LLM 供应商）。只做素材包（prepare_note_material 不调 LLM）时传 False，跳过供应商 key/模型检查——否则会得到「无已填 key 的供应商」的误导结论（#124 A12）。
+- **`need_provider` 默认 False**（#151：默认路径 Agent 写笔记，不需要供应商）。走 `generate_note` / `batch_generate_notes` 后备时传 True，才检查供应商 key/模型。
 
 ## 配置要点
 
@@ -153,13 +154,13 @@
 | B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA） |
 | 小宇宙官方文稿 | 用户在本会话 `! videonote login xiaoyuzhou` 用小宇宙 App 扫码（或 `--token` 粘贴）；未登录会回退本地下载+ASR，长节目会非常慢 |
 | 小红书视频笔记 | 用户在本会话 `! videonote login xiaohongshu` 用小红书 App 扫码（或 `--cookie` 粘贴）；图文笔记无法转写；无官方字幕，走转写引擎 |
-| 本地文件 | `generate_note(video_url="file:///绝对/路径/foo%20bar.mp4")` 或普通路径，`platform` 可省略 |
+| 本地文件 | `prepare_note_material(video_url="file:///绝对/路径/foo%20bar.mp4")` 或普通路径，`platform` 可省略；后备 LLM 用 `generate_note` |
 | 视频理解默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `video_understanding`/`video_interval` 即套用（默认关/6s） |
 | 评论/弹幕整合默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `include_comments`/`comments_limit` 即套用（默认关/20 条） |
-| 笔记默认（setup ③ 新增） | `default_style`（默认 detailed）/ `default_screenshot`（默认关）/ `agent_direct`（默认关，行为与之前一致）；全自动模式不传即套用 |
+| 笔记默认（setup ③） | `default_style`（默认 detailed）/ `default_screenshot`（默认关）/ `agent_direct`（Skill 默认 Agent 写笔记，server 不读此键；旧向导曾默认关，忽略 false） |
 | 导出格式默认（setup ③ 新增） | `default_export_formats`（srt/vtt/json，默认空）；任务成功后自动导出这些格式，`process_media(action="export")` 不传 formats 时也套用它 |
 | 音频预处理（setup ②） | `transcriber preprocess on/off` 或 setup ② 勾选；16kHz 归一 + 超长分块（默认关，零依赖） |
 | 说话人分离（setup ②） | `transcriber diarization on/off` 或 setup ② 勾选；pyannote 可选重依赖 + HF_TOKEN + 模型授权 |
 | 切中文转写（funasr） | `! videonote transcriber set funasr`；需 `uvx --with funasr --with torch`（重依赖可选），模型自动下载 |
 | 其他平台（非内置平台） | `inspect_video` 返回 `platform:"generic"` → 自动走 yt-dlp 通用提取（覆盖 1800+ 站点） |
-| AGENT 直接生成 | `prepare_note_material(video_url, ...)` → 轮询 SUCCESS → 读素材包 → **AGENT 自己写笔记**（不调用配置 LLM） |
+| 默认路径（当前 Agent 写） | `prepare_note_material(video_url, ...)` → 轮询 SUCCESS → 读素材包 → **当前 Agent 自己写笔记**（不调用配置 LLM） |

@@ -6,8 +6,8 @@
    全局 dry_run 预览形状保留；
 3. process_media 三分支必填参数校验（export 缺 task_id / merge 缺 files / diarize 缺
    audio_file），hf_token 蜜罐与 action 无关（防切换分支绕过凭证红线）；
-4. health_check 统一形状：ok/checks 恒在（db 检查项并入），need_provider=False 跳过
-   provider 检查。
+4. health_check 统一形状：ok/checks 恒在（db 检查项并入），need_provider 默认 False（#151），
+   显式 True 才查供应商。
 """
 import json
 import sys
