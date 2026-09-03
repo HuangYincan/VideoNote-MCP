@@ -101,7 +101,6 @@ def _extract_audio_from_video(
         "-hide_banner", "-loglevel", "error",
     ]
     try:
-        _check_cancel(cancel_event)
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         except OSError as exc:
