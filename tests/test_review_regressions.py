@@ -146,6 +146,65 @@ def test_task_submit_failure_rolls_back_task_files_and_index(entrypoint, monkeyp
         assert task_id not in server._status_memory
 
 
+def test_submit_failure_preserves_original_error_when_cleanup_reports_failures(monkeypatch):
+    """Cleanup diagnostics must be attached without replacing executor failure."""
+    submitted_ids = []
+
+    class FailingPool:
+        def submit(self, _fn, task_id, *_args, **_kwargs):
+            submitted_ids.append(task_id)
+            raise RuntimeError("executor unavailable")
+
+    monkeypatch.setattr(server, "_pool", FailingPool())
+    monkeypatch.setattr(server, "_MAX_WORKERS", 10_000)
+    monkeypatch.setattr(server, "_guard_remote_url", lambda *_args: None)
+    monkeypatch.setattr(server, "get_app_config", dict)
+    try:
+        with mock.patch(
+            "app.utils.task_manifest._delete_all",
+            return_value={
+                "deleted": [],
+                "missing": [],
+                "errors": [{"path": "task-dir", "error": "permission denied"}],
+            },
+        ), mock.patch(
+            "app.db.video_task_dao.delete_task",
+            side_effect=RuntimeError("index unavailable"),
+        ):
+            with pytest.raises(RuntimeError, match="executor unavailable") as caught:
+                server.prepare_note_material(
+                    "https://example.com/video",
+                    platform="generic",
+                    video_understanding=False,
+                    video_interval=0,
+                    include_comments=False,
+                    comments_limit=20,
+                    grid_size=[],
+                )
+        notes = "\n".join(caught.value.__notes__ or [])
+        assert "index unavailable" in notes
+        assert "permission denied" in notes
+    finally:
+        if submitted_ids:
+            shutil.rmtree(server.NOTE_OUTPUT_DIR / submitted_ids[0], ignore_errors=True)
+
+
+def test_cleanup_task_files_reports_index_failure_after_removing_files(monkeypatch):
+    """Per-task cleanup exposes DAO failure while still deleting task files."""
+    task_id = f"cleanup-index-{uuid.uuid4().hex}"
+    task_dir = server.NOTE_OUTPUT_DIR / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "result.json").write_text("{}", encoding="utf-8")
+    (task_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    try:
+        with mock.patch("app.db.video_task_dao.delete_task", side_effect=RuntimeError("index unavailable")):
+            result = server.cleanup_task_files(task_id, include_note=True)
+        assert result["index_error"] == "index unavailable"
+        assert not task_dir.exists()
+    finally:
+        shutil.rmtree(task_dir, ignore_errors=True)
+
+
 def test_get_transcript_propagates_cancellation_without_fallback(tmp_path):
     generator = _bare_generator()
     fallback = mock.Mock()

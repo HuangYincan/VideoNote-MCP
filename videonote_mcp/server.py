@@ -227,6 +227,7 @@ _task_events: Dict[str, threading.Event] = {}
 # 旧测试/清理代码仅移除 _task_futures 时产生残留 reservation。batch 任务显式旁路，
 # 只由 ThreadPoolExecutor 排队，不占普通任务的预占名额。
 _CONCURRENCY_RESERVED_ATTR = "_videonote_concurrency_reserved"
+_CONCURRENCY_BATCH_ATTR = "_videonote_batch_kind"
 _batch_ctx = threading.local()  # batch_generate_notes 内部批量提交的旁路标志（#121 C1）
 # 最近一次 _write_status 的写盘快照（写盘失败/文件损坏时状态查询回退，
 # 避免把运行中/已完成任务误报成 PENDING，见 #118）
@@ -624,16 +625,26 @@ def _future_is_running(future: Future) -> bool:
         return False
 
 
+def _future_is_batch(future: Future) -> bool:
+    """返回 Future 是否明确属于 batch 提交。"""
+    # 只把明确写入的 True 当成 batch；旧 Future/测试替身没有该属性时
+    # 继续走 running() 兜底，避免悄悄放过旧式普通任务。
+    return getattr(future, _CONCURRENCY_BATCH_ATTR, None) is True
+
+
 def _active_task_count_locked() -> int:
     """在 `_tasks_lock` 已持有时计算并发容量占用。"""
-    reserved = sum(_future_is_reserved(future) for future in _task_futures.values())
-    # batch/旧式测试替身没有 reservation 标记时，仍按已启动的 Future 计入；
-    # 普通任务已由 reservation 覆盖，不能再把 running() 叠加计算两次。
-    running_without_reservation = sum(
-        not _future_is_reserved(future) and _future_is_running(future)
-        for future in _task_futures.values()
-    )
-    return reserved + running_without_reservation
+    active = 0
+    for future in _task_futures.values():
+        # Batch Future 明确由线程池排队，不占普通任务的 admission 名额，
+        # 即使它已经 running 也不能阻塞 ordinary admission。
+        if _future_is_batch(future):
+            continue
+        # 普通任务由 reservation 覆盖排队及执行全生命周期；旧式未标记
+        # Future/测试 fake 没有 reservation 时，按 running() 兼容计数。
+        if _future_is_reserved(future) or _future_is_running(future):
+            active += 1
+    return active
 
 
 def _concurrency_error(active: int) -> ValueError:
@@ -682,6 +693,7 @@ def _submit_registered_task(task_id: str, cancel_event: threading.Event, **param
             raise
 
         try:
+            setattr(future, _CONCURRENCY_BATCH_ATTR, bypass_guard)
             setattr(future, _CONCURRENCY_RESERVED_ATTR, not bypass_guard)
             # 自定义/测试 executor 可能同步返回已完成 Future；此时没有 worker
             # finally 可负责释放 reservation，直接视为已释放。真实线程池 Future
@@ -696,13 +708,14 @@ def _submit_registered_task(task_id: str, cancel_event: threading.Event, **param
         return future
 
 
-def _rollback_unsubmitted_task(task_id: str) -> None:
+def _rollback_unsubmitted_task(task_id: str, original_error: Optional[BaseException] = None) -> Dict[str, Any]:
     """撤销已创建但尚未可靠提交到线程池的任务。
 
     ``generate_note`` / ``prepare_note_material`` 会先创建任务目录、状态文件和
     全局索引，再提交后台 Future。若 admission、参数准备或线程池提交失败，不能
     把这些半成品留给 ``list_tasks`` / ``task``，否则会形成永远排队的幽灵任务。
-    清理本身必须是尽力而为，绝不能覆盖触发回滚的原始异常。
+    清理本身必须是尽力而为，绝不能覆盖触发回滚的原始异常；返回并记录结构化
+    清理诊断，必要时附加到原始异常的 notes。
     """
     with _tasks_lock:
         future = _task_futures.pop(task_id, None)
@@ -721,13 +734,26 @@ def _rollback_unsubmitted_task(task_id: str) -> None:
             pass
 
     try:
-        cleanup_task_files(task_id, include_note=True)
+        diagnostics = cleanup_task_files(task_id, include_note=True)
+        if not isinstance(diagnostics, dict):
+            diagnostics = {
+                "cleanup_error": f"清理返回了非字典诊断: {type(diagnostics).__name__}"
+            }
     except Exception as exc:  # noqa: BLE001 —— 回滚不能覆盖原始异常
-        logger.warning(
-            "回滚未提交任务失败 task_id=%s: %s",
-            task_id,
-            sanitize_error_text(exc),
-        )
+        diagnostics = {"cleanup_error": str(exc)}
+
+    failures = bool(diagnostics.get("errors")) or any(
+        diagnostics.get(key) for key in ("manifest_error", "index_error", "cleanup_error")
+    )
+    if failures:
+        detail = json.dumps(diagnostics, ensure_ascii=False, default=str)
+        logger.error("回滚未提交任务的清理不完整 task_id=%s: %s", task_id, detail)
+        if original_error is not None:
+            try:
+                original_error.add_note(f"任务回滚清理诊断: {detail}")
+            except Exception:
+                pass
+    return diagnostics
 
 
 def _index_step_task(task_id: str, kind: str, title: str = "") -> None:
@@ -1074,8 +1100,8 @@ def generate_note(
         )
         cancel_event = threading.Event()
         _submit_registered_task(task_id, cancel_event, **params)
-    except Exception:
-        _rollback_unsubmitted_task(task_id)
+    except Exception as exc:
+        _rollback_unsubmitted_task(task_id, original_error=exc)
         raise
     logger.info(f"已提交任务 task_id={task_id} platform={platform} model={model_name}")
     return json.dumps(
@@ -1159,8 +1185,8 @@ def prepare_note_material(
         )
         cancel_event = threading.Event()
         _submit_registered_task(task_id, cancel_event, **params)
-    except Exception:
-        _rollback_unsubmitted_task(task_id)
+    except Exception as exc:
+        _rollback_unsubmitted_task(task_id, original_error=exc)
         raise
     logger.info(f"已提交素材任务 task_id={task_id} platform={platform}")
     return json.dumps(

@@ -21,7 +21,7 @@ from app.utils.task_manifest import manifest_path
 
 def _audio_meta():
     return AudioDownloadResult(
-        file_path="/tmp/test-success.mp3",
+        file_path="fixture-success.mp3",
         title="测试视频",
         duration=3.0,
         cover_url=None,
@@ -65,6 +65,7 @@ def test_run_note_task_publishes_success_after_result_and_manifest(material):
     task_id = f"success-order-{uuid.uuid4().hex}"
     task_dir = server.NOTE_OUTPUT_DIR / task_id
     events = []
+    strict_manifest_calls = []
     real_atomic_write = server._atomic_write_json
     real_record_paths = server.record_task_paths
     real_write_status = server._write_status
@@ -75,6 +76,7 @@ def test_run_note_task_publishes_success_after_result_and_manifest(material):
             events.append("result")
 
     def record_paths(tid, paths, **kwargs):
+        strict_manifest_calls.append(kwargs.get("strict"))
         real_record_paths(tid, paths, **kwargs)
         if tid == task_id and any(Path(p).name == "result.json" for p in paths):
             events.append("manifest")
@@ -97,10 +99,18 @@ def test_run_note_task_publishes_success_after_result_and_manifest(material):
             server._run_note_task(task_id)
 
         assert events[-3:] == ["result", "manifest", "SUCCESS"]
+        assert strict_manifest_calls == [True]
+        persisted_manifest = json.loads(manifest_path(task_id).read_text(encoding="utf-8"))
+        assert str(task_dir / "result.json") in persisted_manifest["paths"]
+        assert str(task_dir / "status.json") in persisted_manifest["paths"]
+        assert events.index("SUCCESS") > events.index("manifest")
         generator_cls.return_value.generate.assert_called_once()
         assert generator_cls.return_value.generate.call_args.kwargs["publish_success"] is False
         payload = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
-        assert payload["kind"] == "material" if material else "markdown" in payload
+        if material:
+            assert payload["kind"] == "material"
+        else:
+            assert "markdown" in payload
     finally:
         shutil.rmtree(task_dir, ignore_errors=True)
         with server._tasks_lock:

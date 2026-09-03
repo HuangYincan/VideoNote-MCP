@@ -3,9 +3,10 @@ import json
 import shutil
 import threading
 import unittest
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from unittest import mock
 
+from app.utils import task_manifest
 from videonote_mcp import server
 
 
@@ -120,7 +121,54 @@ class ConcurrencyAdmissionTest(unittest.TestCase):
 
         self.assertIs(getattr(normal, server._CONCURRENCY_RESERVED_ATTR), True)
         self.assertIs(getattr(batch, server._CONCURRENCY_RESERVED_ATTR), False)
+        self.assertIs(getattr(batch, server._CONCURRENCY_BATCH_ATTR), True)
         self.assertIn("admission-batch", server._task_futures)
+
+    def test_running_batch_future_does_not_block_ordinary_admission(self):
+        batch = mock.Mock()
+        batch.running.return_value = True
+        setattr(batch, server._CONCURRENCY_BATCH_ATTR, True)
+        with server._tasks_lock:
+            server._task_futures["running-batch"] = batch
+        with mock.patch.object(server, "_MAX_WORKERS", 1):
+            server._guard_concurrency()
+
+    def test_running_unmarked_future_still_counts_for_compatibility(self):
+        legacy = mock.Mock()
+        legacy.running.return_value = True
+        with server._tasks_lock:
+            server._task_futures["legacy-running"] = legacy
+        with mock.patch.object(server, "_MAX_WORKERS", 1), self.assertRaises(ValueError):
+            server._guard_concurrency()
+
+
+class ManifestConcurrencyTest(unittest.TestCase):
+    def test_concurrent_recorders_preserve_disjoint_union(self):
+        task_id = f"manifest-union-{id(self):x}"
+        original_read = task_manifest._read_manifest
+        barrier = threading.Barrier(2)
+
+        def coordinated_read(tid):
+            data = original_read(tid)
+            try:
+                barrier.wait(timeout=0.2)
+            except threading.BrokenBarrierError:
+                # A correct same-process lock serializes the reads, so the first
+                # reader times out and the second proceeds after it releases.
+                pass
+            return data
+
+        try:
+            with mock.patch.object(task_manifest, "_read_manifest", side_effect=coordinated_read):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    futures = [
+                        pool.submit(task_manifest.record_task_paths, task_id, [f"path-{i}"])
+                        for i in range(2)
+                    ]
+                    self.assertTrue(all(f.result(timeout=2) for f in futures))
+            self.assertEqual(set(task_manifest.get_task_paths(task_id)), {"path-0", "path-1"})
+        finally:
+            shutil.rmtree(task_manifest.task_dir(task_id), ignore_errors=True)
 
 
 class CorruptTerminalStatusTest(unittest.TestCase):

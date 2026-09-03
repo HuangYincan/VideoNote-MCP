@@ -19,10 +19,17 @@ import json
 import logging
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
+
+
+# Same-process writers must serialize the complete read-modify-write transaction.
+# The unique temporary file and atomic replace still protect readers and other
+# processes; cross-process coordination is intentionally out of scope.
+_MANIFEST_LOCK = threading.RLock()
 
 
 # ---------------- 目录解析（读环境变量，测试可注入） ----------------
@@ -107,37 +114,38 @@ def record_task_paths(task_id: str, paths: Sequence, *, strict: bool = False) ->
             raise ValueError("task_id 不能为空")
         return False
     try:
-        data = _read_manifest(task_id)
-        seen = set(data["paths"])
-        additions: List[str] = []
-        for p in paths:
-            if not p:
-                continue
-            s = str(p)
-            if s not in seen:
-                seen.add(s)
-                additions.append(s)
-        if additions:
-            data["paths"] = list(data["paths"]) + additions
-        f = manifest_path(task_id)
-        f.parent.mkdir(parents=True, exist_ok=True)
-        # 唯一 tmp + 创建即 0600（#140 A5，#133 A2 登记项收尾：与 json_store/status 同口径）——
-        # 固定 <path>.tmp 在 CLI 与 MCP server 双进程并发写时互相截断丢更新
-        from app.utils.json_store import _unique_tmp, _write_bytes_with_mode
+        with _MANIFEST_LOCK:
+            data = _read_manifest(task_id)
+            seen = set(data["paths"])
+            additions: List[str] = []
+            for p in paths:
+                if not p:
+                    continue
+                s = str(p)
+                if s not in seen:
+                    seen.add(s)
+                    additions.append(s)
+            if additions:
+                data["paths"] = list(data["paths"]) + additions
+            f = manifest_path(task_id)
+            f.parent.mkdir(parents=True, exist_ok=True)
+            # 唯一 tmp + 创建即 0600（#140 A5，#133 A2 登记项收尾：与 json_store/status 同口径）——
+            # 固定 <path>.tmp 在 CLI 与 MCP server 双进程并发写时互相截断丢更新
+            from app.utils.json_store import _unique_tmp, _write_bytes_with_mode
 
-        tmp = _unique_tmp(f)
-        _write_bytes_with_mode(
-            tmp, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), 0o600
-        )
-        tmp.replace(f)
-        if strict:
-            persisted = json.loads(f.read_text(encoding="utf-8"))
-            persisted_paths = persisted.get("paths") if isinstance(persisted, dict) else None
-            if not isinstance(persisted_paths, list) or any(
-                path not in persisted_paths for path in data["paths"]
-            ):
-                raise IOError(f"manifest 写入后校验失败: {f}")
-        return True
+            tmp = _unique_tmp(f)
+            _write_bytes_with_mode(
+                tmp, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), 0o600
+            )
+            tmp.replace(f)
+            if strict:
+                persisted = json.loads(f.read_text(encoding="utf-8"))
+                persisted_paths = persisted.get("paths") if isinstance(persisted, dict) else None
+                if not isinstance(persisted_paths, list) or any(
+                    path not in persisted_paths for path in data["paths"]
+                ):
+                    raise IOError(f"manifest 写入后校验失败: {f}")
+            return True
     except Exception as e:  # noqa: BLE001 —— 默认记录是尽力而为
         logger.warning("记录 task 路径失败 task_id=%s: %s", task_id, e)
         if strict:
@@ -147,7 +155,8 @@ def record_task_paths(task_id: str, paths: Sequence, *, strict: bool = False) ->
 
 def get_task_paths(task_id: str) -> List[str]:
     """读 manifest 的 paths；不存在或损坏返回 []。"""
-    return list(_read_manifest(task_id).get("paths", []))
+    with _MANIFEST_LOCK:
+        return list(_read_manifest(task_id).get("paths", []))
 
 
 def get_task_meta(task_id: str) -> dict:
@@ -156,15 +165,19 @@ def get_task_meta(task_id: str) -> dict:
     写端 record_task_meta 已删（#134 死代码）——生产不再写 meta，此读函数
     保留仅为 list_task_files 的响应形状稳定。
     """
-    return dict(_read_manifest(task_id).get("meta", {}))
+    with _MANIFEST_LOCK:
+        return dict(_read_manifest(task_id).get("meta", {}))
 
 
-def remove_manifest(task_id: str) -> None:
+def remove_manifest(task_id: str, *, strict: bool = False) -> None:
     """删除 manifest 文件（include_note=True 的整删收尾）。失败只记日志。"""
     try:
-        manifest_path(task_id).unlink(missing_ok=True)
+        with _MANIFEST_LOCK:
+            manifest_path(task_id).unlink(missing_ok=True)
     except Exception as e:  # noqa: BLE001
         logger.warning("删除 manifest 失败 task_id=%s: %s", task_id, e)
+        if strict:
+            raise
 
 
 # ---------------- 安全删除辅助 ----------------
@@ -293,6 +306,8 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
 
     to_delete: set = set()
     kept_outside: List[str] = []
+    manifest_error = None
+    index_error = None
 
     if include_note:
         # 整删：任务文件夹 + manifest + 全局索引
@@ -317,7 +332,11 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
                 # 数据目录外 → 沙箱红线不删，列出目录路径供报告
                 kept_outside.append(str(resolved if resolved.is_dir() else resolved.parent))
         kept_outside = sorted(set(kept_outside))
-        remove_manifest(task_id)
+        # Keep manifest removal in the same critical section as manifest writers.
+        try:
+            remove_manifest(task_id, strict=True)
+        except Exception as exc:
+            manifest_error = str(exc)
         try:
             from app.db.video_task_dao import delete_task
 
@@ -325,7 +344,8 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
         except Exception as exc:
             # 磁盘已清但索引删除失败 → list_tasks 出现 note_dir 悬空幽灵任务；
             # 不能静默吞（曾 except: pass 连哪个任务失败都丢，与 #126 B7 同口径）
-            logger.warning(f"清理任务 {task_id} 全局索引失败（文件已清理，索引可能残留）: {exc}")
+            index_error = str(exc)
+            logger.warning("清理任务 %s 全局索引失败（文件已清理，索引可能残留）: %s", task_id, exc)
     else:
         # 保留 note：删 raw/ 整个 + gen/ 内非 note.md 的子项
         raw = tdir / "raw"
@@ -343,13 +363,18 @@ def cleanup_task_files(task_id: str, include_note: bool = False) -> Dict:
                 to_delete.add(child)
 
     stats = _delete_all(to_delete)
-    return {
+    result = {
         "task_id": task_id,
         "include_note": include_note,
         "note_kept": (not include_note) and bool(notes),
         "notes_kept_outside": kept_outside,
         **stats,
     }
+    if manifest_error:
+        result["manifest_error"] = manifest_error
+    if index_error:
+        result["index_error"] = index_error
+    return result
 
 
 def cleanup_targets_inside_data_root() -> dict:
