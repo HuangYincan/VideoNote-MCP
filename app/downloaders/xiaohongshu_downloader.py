@@ -14,7 +14,7 @@ from app.downloaders.base import Downloader
 from app.downloaders.common import stream_download
 from app.downloaders.xiaohongshu_auth import XiaohongshuAuth, XiaohongshuNote
 from app.enmus.note_enums import DownloadQuality
-from app.exceptions.task import TaskCancelledError
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.audio_model import AudioDownloadResult
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
@@ -97,6 +97,7 @@ class XiaohongshuDownloader(Downloader):
         import time as _time
 
         cmd = ["ffmpeg", "-y", "-i", mp4_path, "-vn", "-acodec", "libmp3lame", mp3_path]
+        check_cancel(cancel_event)
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -119,7 +120,17 @@ class XiaohongshuDownloader(Downloader):
                 proc.kill()
                 proc.wait()
                 raise RuntimeError("ffmpeg 转换 MP3 超时")
-            _time.sleep(0.2)
+            if cancel_event is not None and cancel_event.wait(0.2):
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                raise TaskCancelledError("任务已取消")
+            elif cancel_event is None:
+                _time.sleep(0.2)
+        check_cancel(cancel_event)
         if proc.returncode != 0 or not os.path.exists(mp3_path) or os.path.getsize(mp3_path) <= 0:
             raise RuntimeError(
                 f"ffmpeg 转换 MP3 失败（退出码 {proc.returncode}）"
@@ -146,6 +157,7 @@ class XiaohongshuDownloader(Downloader):
         skip_download: bool = False,
         cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
+        check_cancel(cancel_event)
         assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()
@@ -155,6 +167,8 @@ class XiaohongshuDownloader(Downloader):
 
         try:
             note = self._fetch(video_url)
+        except TaskCancelledError:
+            raise
         except Exception as exc:
             if skip_download and "不是视频" not in str(exc):
                 nid = extract_video_id(video_url, "xiaohongshu")
@@ -185,6 +199,7 @@ class XiaohongshuDownloader(Downloader):
 
         self._download_mp4(note, mp4_path, cancel_event=cancel_event)
         self._to_mp3(mp4_path, mp3_path, cancel_event=cancel_event)
+        check_cancel(cancel_event)
         return self._result(note, mp3_path, mp4_path)
 
     def download_video(
@@ -193,6 +208,7 @@ class XiaohongshuDownloader(Downloader):
         output_dir: Union[str, None] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
+        check_cancel(cancel_event)
         assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()

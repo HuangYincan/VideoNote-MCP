@@ -28,7 +28,11 @@ from typing import List, Optional, Union
 from uuid import uuid4
 
 from app.downloaders.base import Downloader
-from app.exceptions.task import OfficialTranscriptFetchError
+from app.exceptions.task import (
+    OfficialTranscriptFetchError,
+    TaskCancelledError,
+    check_cancel,
+)
 from app.gpt.base import GPT
 from app.models.gpt_model import GPTSource
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
@@ -134,18 +138,32 @@ def build_transcriber() -> Transcriber:
 
 # ---------------- 步骤 1：平台字幕 ----------------
 
-def fetch_subtitles(video_url: str, platform: Optional[str] = None) -> Optional[dict]:
+def fetch_subtitles(
+    video_url: str,
+    platform: Optional[str] = None,
+    cancel_event=None,
+) -> Optional[dict]:
     """只取平台字幕（人工/自动字幕），不下载音视频、不转写。
 
     返回 TranscriptResult 的 asdict（{language, full_text, segments}）；无字幕/失败返回 None。
     """
     if platform is None:
         platform = detect_platform(video_url)
+    check_cancel(cancel_event)
     try:
-        tr = get_downloader(platform).download_subtitles(video_url)
+        downloader = get_downloader(platform)
+        if cancel_event is None:
+            tr = downloader.download_subtitles(video_url)
+        else:
+            tr = downloader.download_subtitles(
+                video_url, cancel_event=cancel_event
+            )
+        check_cancel(cancel_event)
         if tr and getattr(tr, "segments", None):
             return asdict(tr)
     except OfficialTranscriptFetchError:
+        raise
+    except TaskCancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 —— 字幕失败不阻断
         logger.warning(f"获取平台字幕失败 platform={platform}: {exc}")
@@ -158,6 +176,7 @@ def apply_diarization(
     audio_file: str,
     segments: List,
     wav_path: Optional[str] = None,
+    cancel_event=None,
 ) -> List:
     """配置启用说话人分离时给转写段打 speaker；未启用/失败原样返回（docs/05 #31）。
 
@@ -166,6 +185,7 @@ def apply_diarization(
     自己归一化产生的临时 wav（_16k.wav）在 finally 中清理。
     """
     try:
+        check_cancel(cancel_event)
         from app.services.transcriber_config_manager import TranscriberConfigManager
 
         mgr = TranscriberConfigManager()
@@ -185,9 +205,23 @@ def apply_diarization(
                 # 立即置位（#127 B4）：normalize_to_wav 抛错时 finally 也能清掉目录，
                 # 不再泄漏 /tmp/vn_dia_XXXX
                 created = True
-                wav = normalize_to_wav(audio_file, out_dir=prep_dir)
-            turns = diarize_audio(wav, num_speakers=mgr.get_diarization_speakers())
-            segments = assign_speakers(segments, turns)
+                if cancel_event is None:
+                    wav = normalize_to_wav(audio_file, out_dir=prep_dir)
+                else:
+                    wav = normalize_to_wav(
+                        audio_file, out_dir=prep_dir, cancel_event=cancel_event
+                    )
+            check_cancel(cancel_event)
+            if cancel_event is None:
+                turns = diarize_audio(wav, num_speakers=mgr.get_diarization_speakers())
+                segments = assign_speakers(segments, turns)
+            else:
+                turns = diarize_audio(
+                    wav,
+                    num_speakers=mgr.get_diarization_speakers(),
+                    cancel_event=cancel_event,
+                )
+                segments = assign_speakers(segments, turns, cancel_event=cancel_event)
             speaker_count = len(
                 {s.speaker for s in segments if getattr(s, "speaker", None)}
             )
@@ -196,12 +230,18 @@ def apply_diarization(
         finally:
             if created and prep_dir:
                 shutil.rmtree(prep_dir, ignore_errors=True)
+    except TaskCancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001 —— diarization 失败不阻断笔记生成
         logger.warning("说话人分离失败（跳过）: %s", exc)
         return segments
 
 
-def transcribe_audio(audio_file: Union[str, Path], transcriber: Optional[Transcriber] = None) -> dict:
+def transcribe_audio(
+    audio_file: Union[str, Path],
+    transcriber: Optional[Transcriber] = None,
+    cancel_event=None,
+) -> dict:
     """只做语音识别：给定音频/视频文件 → 转写结果 asdict（{language, full_text, segments}）。
 
     不配置 transcriber 时按当前转写器配置构建。
@@ -210,21 +250,32 @@ def transcribe_audio(audio_file: Union[str, Path], transcriber: Optional[Transcr
     配置启用说话人分离（diarization）时给每段打 speaker（docs/05 #31）。
     """
     audio_file = str(audio_file)
+    check_cancel(cancel_event)
     if not Path(audio_file).exists():
         raise FileNotFoundError(f"音频/视频文件不存在: {audio_file}")
     if transcriber is None:
         transcriber = build_transcriber()
 
     if not _preprocess_enabled():
-        tr = transcriber.transcript(file_path=audio_file)
-        segments = apply_diarization(audio_file, list(tr.segments or []))
+        if cancel_event is None:
+            tr = transcriber.transcript(file_path=audio_file)
+            segments = apply_diarization(audio_file, list(tr.segments or []))
+        else:
+            tr = transcriber.transcript(file_path=audio_file, cancel_event=cancel_event)
+            check_cancel(cancel_event)
+            segments = apply_diarization(
+                audio_file, list(tr.segments or []), cancel_event=cancel_event
+            )
+        check_cancel(cancel_event)
         _ensure_transcript_content(tr.full_text or "", list(tr.segments or []))
         return asdict(
             TranscriptResult(language=tr.language, full_text=tr.full_text, segments=segments)
         )
 
     # 预处理模式：归一 + 分块 → 逐块转写 + 时间偏移拼接
-    return _transcribe_with_preprocess(audio_file, transcriber)
+    if cancel_event is None:
+        return _transcribe_with_preprocess(audio_file, transcriber)
+    return _transcribe_with_preprocess(audio_file, transcriber, cancel_event=cancel_event)
 
 
 def _preprocess_enabled() -> bool:
@@ -250,7 +301,11 @@ def _ensure_transcript_content(full_text: str, segments: list) -> None:
         )
 
 
-def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> dict:
+def _transcribe_with_preprocess(
+    audio_file: str,
+    transcriber: Transcriber,
+    cancel_event=None,
+) -> dict:
     """预处理后逐块转写并拼接 segments（时间偏移补偿）。"""
     from app.models.transcriber_model import TranscriptSegment
     from app.transcriber.audio_preprocess import chunk_if_long, normalize_to_wav
@@ -260,8 +315,17 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
     # 正在转写的 wav；mkdtemp 隔离后各任务只碰自己的目录。
     prep_dir = tempfile.mkdtemp(prefix="vn_prep_")
     try:
-        wav = normalize_to_wav(audio_file, out_dir=prep_dir)
-        chunks = chunk_if_long(wav, max_seconds=1800)
+        check_cancel(cancel_event)
+        if cancel_event is None:
+            wav = normalize_to_wav(audio_file, out_dir=prep_dir)
+            chunks = chunk_if_long(wav, max_seconds=1800)
+        else:
+            wav = normalize_to_wav(
+                audio_file, out_dir=prep_dir, cancel_event=cancel_event
+            )
+            check_cancel(cancel_event)
+            chunks = chunk_if_long(wav, max_seconds=1800, cancel_event=cancel_event)
+        check_cancel(cancel_event)
 
         all_segments: List[TranscriptSegment] = []
         offset = 0.0
@@ -269,9 +333,19 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
         failed = 0
         first_error: Optional[Exception] = None
         for chunk in chunks:
-            chunk_dur = chunk_duration_guess(chunk)
+            check_cancel(cancel_event)
+            if cancel_event is None:
+                chunk_dur = chunk_duration_guess(chunk)
+            else:
+                chunk_dur = chunk_duration_guess(chunk, cancel_event=cancel_event)
             try:
-                tr = transcriber.transcript(file_path=chunk)
+                if cancel_event is None:
+                    tr = transcriber.transcript(file_path=chunk)
+                else:
+                    tr = transcriber.transcript(file_path=chunk, cancel_event=cancel_event)
+                check_cancel(cancel_event)
+            except TaskCancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001 —— 单块失败跳过，不阻断整段
                 logger.warning(f"预处理分块转写失败（跳过该块）: {exc}")
                 if first_error is None:
@@ -283,6 +357,7 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
             if language is None and tr.language:
                 language = tr.language
             for seg in tr.segments or []:
+                check_cancel(cancel_event)
                 all_segments.append(
                     TranscriptSegment(
                         start=round(seg.start + offset, 3),
@@ -293,7 +368,13 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
             offset += chunk_dur
 
         # 说话人分离：复用已归一化的 wav，在临时目录清理前完成（docs/05 #31）
-        all_segments = apply_diarization(audio_file, all_segments, wav_path=wav)
+        if cancel_event is None:
+            all_segments = apply_diarization(audio_file, all_segments, wav_path=wav)
+        else:
+            all_segments = apply_diarization(
+                audio_file, all_segments, wav_path=wav, cancel_event=cancel_event
+            )
+        check_cancel(cancel_event)
         # 分块文本用空格连接：无分隔拼接会让英文 chunk 边界连词（"hello"+"hello" → "hellohello"）
         full_text = " ".join(s.text for s in all_segments)
         if failed == len(chunks):
@@ -317,15 +398,22 @@ def _transcribe_with_preprocess(audio_file: str, transcriber: Transcriber) -> di
         shutil.rmtree(prep_dir, ignore_errors=True)
 
 
-def chunk_duration_guess(wav_path: str) -> float:
+def chunk_duration_guess(wav_path: str, cancel_event=None) -> float:
     """估算分块时长（秒），用于时间偏移。用 ffprobe 精确值，失败回退块时长。"""
     try:
+        check_cancel(cancel_event)
         from app.transcriber.audio_preprocess import probe_duration
 
-        d = probe_duration(wav_path)
+        if cancel_event is None:
+            d = probe_duration(wav_path)
+        else:
+            d = probe_duration(wav_path, cancel_event=cancel_event)
+        check_cancel(cancel_event)
         if d > 0:
             return d
         logger.warning("probe_duration 返回非正值 %r，分块时长回退 1800s（时间轴可能漂移）: %s", d, wav_path)
+    except TaskCancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001 —— 探测失败按默认分块时长兜底，但必须留痕
         logger.warning("probe_duration 失败，分块时长回退 1800s（时间轴可能漂移）: %s: %s", wav_path, exc)
     return 1800.0  # 兜底：等于默认分块时长
@@ -338,6 +426,7 @@ def extract_frames(
     video_interval: int = 6,
     grid_size: Optional[List[int]] = None,
     save_dir: Optional[Union[str, Path]] = None,
+    cancel_event=None,
 ) -> List[str]:
     """只做视频画面理解素材：给定本地 mp4 → 按间隔抽帧并持久化。
 
@@ -346,18 +435,26 @@ def extract_frames(
     并发处理不再互相覆盖帧文件，重复处理也不会混入旧帧（#124 B19）。
     """
     video_path = str(video_path)
+    check_cancel(cancel_event)
     if not Path(video_path).exists():
         raise FileNotFoundError(f"视频文件不存在: {video_path}")
     grid = tuple(grid_size) if grid_size else (3, 3)
-    reader = VideoReader(
-        video_path=video_path,
-        grid_size=grid,
-        frame_interval=int(video_interval) or 6,
-        unit_width=960,
-        unit_height=540,
-        save_quality=80,
-    )
-    data_uris = reader.run()
+    reader_kwargs = {
+        "video_path": video_path,
+        "grid_size": grid,
+        "frame_interval": int(video_interval) or 6,
+        "unit_width": 960,
+        "unit_height": 540,
+        "save_quality": 80,
+    }
+    if cancel_event is not None:
+        reader_kwargs["cancel_event"] = cancel_event
+    reader = VideoReader(**reader_kwargs)
+    if cancel_event is None:
+        data_uris = reader.run()
+    else:
+        data_uris = reader.run(cancel_event=cancel_event)
+    check_cancel(cancel_event)
 
     if save_dir is None:
         save_dir = NOTE_OUTPUT_DIR / f"frames_{Path(video_path).stem}_{uuid4().hex[:8]}"
@@ -366,6 +463,7 @@ def extract_frames(
 
     frames: List[str] = []
     for i, data_uri in enumerate(data_uris, start=1):
+        check_cancel(cancel_event)
         try:
             if isinstance(data_uri, str) and data_uri.startswith("data:image"):
                 b64 = data_uri.split(",", 1)[1]
@@ -374,6 +472,8 @@ def extract_frames(
                 frames.append(p.as_uri())
             else:
                 logger.warning(f"跳过非 data URI 帧 (index={i}): {str(data_uri)[:60]}")
+        except TaskCancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"帧 {i} 落盘失败，跳过: {exc}")
     return frames

@@ -11,7 +11,11 @@ from typing import Optional, Union
 from app.downloaders.generic_downloader import GenericDownloader
 from app.downloaders.xiaoyuzhou_subtitle import XiaoyuzhouTranscriptFetcher
 from app.enmus.note_enums import DownloadQuality
-from app.exceptions.task import OfficialTranscriptFetchError
+from app.exceptions.task import (
+    OfficialTranscriptFetchError,
+    TaskCancelledError,
+    check_cancel,
+)
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
 from app.services.cookie_manager import CookieConfigManager
@@ -56,7 +60,9 @@ class XiaoyuzhouDownloader(GenericDownloader):
         video_url: str,
         output_dir: str = None,
         langs: list = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[TranscriptResult]:
+        check_cancel(cancel_event)
         if not CookieConfigManager().get("xiaoyuzhou"):
             logger.info(
                 "未配置小宇宙登录态：官方文稿拿不到，将走语音识别。"
@@ -64,9 +70,14 @@ class XiaoyuzhouDownloader(GenericDownloader):
                 "`videonote cookie set xiaoyuzhou '...'`；MCP 工具不收 token（安全红线）"
             )
         try:
-            result = XiaoyuzhouTranscriptFetcher().fetch_subtitles(video_url)
+            result = XiaoyuzhouTranscriptFetcher().fetch_subtitles(
+                video_url, cancel_event=cancel_event
+            )
+            check_cancel(cancel_event)
             if result and result.segments:
                 return result
+        except TaskCancelledError:
+            raise
         except OfficialTranscriptFetchError:
             raise
         except Exception as exc:  # noqa: BLE001

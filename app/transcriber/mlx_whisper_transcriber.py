@@ -6,6 +6,7 @@ from pathlib import Path
 from huggingface_hub import snapshot_download
 
 from app.decorators.timeit import timeit
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
@@ -77,8 +78,13 @@ class MLXWhisperTranscriber(Transcriber):
         logger.info(f"初始化 MLX Whisper 转录器，模型：{self.model_name}")
 
     @timeit
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        cancel_event: threading.Event = None,
+    ) -> TranscriptResult:
         with self._lock:
+            check_cancel(cancel_event)
             # 惰性导入：mlx-whisper 是可选 extras（pyproject `mlx`），未装时给安装提示
             # 而非 ModuleNotFoundError 天书（与 diarization 的可选依赖模式同款）。
             # 同时保证 MLX_MODEL_MAP 等元数据在未装时仍可 import（#126 C4 前置校验）。
@@ -98,11 +104,13 @@ class MLXWhisperTranscriber(Transcriber):
                     file_path,
                     path_or_hf_repo=local_path
                 )
+                check_cancel(cancel_event)
 
                 # 转换为标准格式
                 segments = []
 
                 for segment in result["segments"]:
+                    check_cancel(cancel_event)
                     text = segment["text"].strip()
                     segments.append(TranscriptSegment(
                         start=segment["start"],
@@ -118,6 +126,8 @@ full_text=" ".join(seg.text for seg in segments).strip(),
                 )
                 return transcript_result
 
+            except TaskCancelledError:
+                raise
             except Exception as e:
                 logger.error(f"MLX Whisper 转写失败：{e}")
                 raise e

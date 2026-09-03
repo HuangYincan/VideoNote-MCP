@@ -14,6 +14,7 @@ from app.downloaders.base import QUALITY_MAP, Downloader, DownloadQuality
 from app.downloaders.bilibili_dm_patch import apply_bilibili_dm_img_patch
 from app.downloaders.bilibili_subtitle import BilibiliSubtitleFetcher
 from app.downloaders.common import ytdlp_cancel_hook, ytdlp_retry
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.cookie_manager import CookieConfigManager
@@ -81,6 +82,7 @@ class BilibiliDownloader(Downloader, ABC):
         skip_download: bool = False,
         cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
+        check_cancel(cancel_event)
         if output_dir is None:
             output_dir = get_data_dir()
         if not output_dir:
@@ -114,7 +116,13 @@ class BilibiliDownloader(Downloader, ABC):
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # skip_download=True（已有字幕只需元信息）：download=False 只取 metadata
-            info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
+            info = ytdlp_retry(
+                ydl.extract_info,
+                video_url,
+                download=not skip_download,
+                cancel_event=cancel_event,
+            )
+            check_cancel(cancel_event)
             video_id = info.get("id")
             title = info.get("title")
             duration = info.get("duration", 0)
@@ -145,6 +153,7 @@ class BilibiliDownloader(Downloader, ABC):
         """
         下载视频，返回视频文件路径
         """
+        check_cancel(cancel_event)
 
         if output_dir is None:
             output_dir = get_data_dir()
@@ -194,7 +203,13 @@ class BilibiliDownloader(Downloader, ABC):
             ydl_opts['cookiefile'] = self._cookiefile
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ytdlp_retry(ydl.extract_info, video_url, download=True)
+            info = ytdlp_retry(
+                ydl.extract_info,
+                video_url,
+                download=True,
+                cancel_event=cancel_event,
+            )
+            check_cancel(cancel_event)
             video_id = info.get("id")
             video_path = os.path.join(output_dir, f"{video_id}.mp4")
 
@@ -204,15 +219,17 @@ class BilibiliDownloader(Downloader, ABC):
         return video_path
 
     def download_subtitles(self, video_url: str, output_dir: str = None,
-                           langs: List[str] = None) -> Optional[TranscriptResult]:
+                           langs: List[str] = None,
+                           cancel_event: Optional[threading.Event] = None) -> Optional[TranscriptResult]:
         """
         尝试获取B站视频字幕
 
         :param video_url: 视频链接
         :param output_dir: 输出路径
         :param langs: 优先语言列表
-        :return: TranscriptResult 或 None
+        :return: TranscriptResult 或 None（无字幕时）
         """
+        check_cancel(cancel_event)
         # B 站 AI 字幕需要登录态（SESSDATA cookie）：没配 cookie 时 API 返回空列表，
         # 只能走语音识别。提示用户配置后可跳过转写。
         if not CookieConfigManager().get("bilibili"):
@@ -223,9 +240,14 @@ class BilibiliDownloader(Downloader, ABC):
             )
         # 1) 优先走 B 站官方 player API（直拉，无需下视频；AI 字幕需 SESSDATA cookie）
         try:
-            result = BilibiliSubtitleFetcher().fetch_subtitles(video_url)
+            result = BilibiliSubtitleFetcher().fetch_subtitles(
+                video_url, cancel_event=cancel_event
+            )
+            check_cancel(cancel_event)
             if result and result.segments:
                 return result
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"player API 直拉字幕异常，回退到 yt-dlp: {sanitize_error_text(e)}")
 
@@ -262,7 +284,13 @@ class BilibiliDownloader(Downloader, ABC):
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ytdlp_retry(ydl.extract_info, video_url, download=True)
+                info = ytdlp_retry(
+                    ydl.extract_info,
+                    video_url,
+                    download=True,
+                    cancel_event=cancel_event,
+                )
+                check_cancel(cancel_event)
 
                 # 查找下载的字幕文件
                 subtitles = info.get('requested_subtitles') or {}
@@ -274,6 +302,7 @@ class BilibiliDownloader(Downloader, ABC):
                 detected_lang = None
                 sub_info = None
                 for lang in langs:
+                    check_cancel(cancel_event)
                     if lang in subtitles:
                         detected_lang = lang
                         sub_info = subtitles[lang]
@@ -282,6 +311,7 @@ class BilibiliDownloader(Downloader, ABC):
                 # 如果按优先级没找到，取第一个可用的（排除弹幕）
                 if not detected_lang:
                     for lang, info_item in subtitles.items():
+                        check_cancel(cancel_event)
                         if lang != 'danmaku':  # 排除弹幕
                             detected_lang = lang
                             sub_info = info_item
@@ -294,7 +324,7 @@ class BilibiliDownloader(Downloader, ABC):
                 # 检查是否有内嵌数据（yt-dlp 有时直接返回字幕内容）
                 if 'data' in sub_info and sub_info['data']:
                     logger.info(f"直接从返回数据解析字幕: {detected_lang}")
-                    return self._parse_srt_content(sub_info['data'], detected_lang)
+                    return self._parse_srt_content(sub_info['data'], detected_lang, cancel_event)
 
                 # 查找字幕文件
                 ext = sub_info.get('ext', 'srt')
@@ -306,11 +336,13 @@ class BilibiliDownloader(Downloader, ABC):
 
                 # 根据格式解析字幕文件
                 if ext == 'json3':
-                    return self._parse_json3_subtitle(subtitle_file, detected_lang)
+                    return self._parse_json3_subtitle(subtitle_file, detected_lang, cancel_event)
                 else:
                     with open(subtitle_file, 'r', encoding='utf-8') as f:
-                        return self._parse_srt_content(f.read(), detected_lang)
+                        return self._parse_srt_content(f.read(), detected_lang, cancel_event)
 
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"获取B站字幕失败: {sanitize_error_text(e)}")
             return None
@@ -319,7 +351,12 @@ class BilibiliDownloader(Downloader, ABC):
             if owned_tmpdir:
                 shutil.rmtree(owned_tmpdir, ignore_errors=True)
 
-    def _parse_srt_content(self, srt_content: str, language: str) -> Optional[TranscriptResult]:
+    def _parse_srt_content(
+        self,
+        srt_content: str,
+        language: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[TranscriptResult]:
         """
         解析 SRT 格式字幕内容
 
@@ -328,6 +365,7 @@ class BilibiliDownloader(Downloader, ABC):
         :return: TranscriptResult
         """
         import re
+        check_cancel(cancel_event)
         try:
             segments = []
             # 部分工具产出的 SRT 是 CRLF 行尾，正则按 \n 匹配会整段失配
@@ -337,6 +375,7 @@ class BilibiliDownloader(Downloader, ABC):
             matches = re.findall(pattern, srt_content, re.DOTALL)
 
             for match in matches:
+                check_cancel(cancel_event)
                 idx, start_time, end_time, text = match
                 text = text.strip()
                 if not text:
@@ -365,11 +404,18 @@ class BilibiliDownloader(Downloader, ABC):
                 raw={'source': 'bilibili_subtitle', 'format': 'srt'}
             )
 
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"解析SRT字幕失败: {sanitize_error_text(e)}")
             return None
 
-    def _parse_json3_subtitle(self, subtitle_file: str, language: str) -> Optional[TranscriptResult]:
+    def _parse_json3_subtitle(
+        self,
+        subtitle_file: str,
+        language: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[TranscriptResult]:
         """
         解析 json3 格式字幕文件
 
@@ -378,6 +424,7 @@ class BilibiliDownloader(Downloader, ABC):
         :return: TranscriptResult
         """
         try:
+            check_cancel(cancel_event)
             with open(subtitle_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
@@ -385,6 +432,7 @@ class BilibiliDownloader(Downloader, ABC):
             events = data.get('events', [])
 
             for event in events:
+                check_cancel(cancel_event)
                 # json3 格式中时间单位是毫秒
                 start_ms = event.get('tStartMs', 0)
                 duration_ms = event.get('dDurationMs', 0)
@@ -413,6 +461,8 @@ class BilibiliDownloader(Downloader, ABC):
                 raw={'source': 'bilibili_subtitle', 'file': subtitle_file}
             )
 
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"解析字幕文件失败: {sanitize_error_text(e)}")
             return None

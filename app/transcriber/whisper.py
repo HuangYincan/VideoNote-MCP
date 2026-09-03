@@ -5,6 +5,7 @@ from pathlib import Path
 from faster_whisper import WhisperModel
 
 from app.decorators.timeit import timeit
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.transcriber.whisper_models import (
@@ -150,17 +151,24 @@ class WhisperTranscriber(Transcriber):
             return False
 
     @timeit
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        cancel_event: threading.Event = None,
+    ) -> TranscriptResult:
         # fast-whisper 模型非线程安全：共享单例上串行化转写（正确性优先于该步骤并行度）。
         # 锁须覆盖 transcribe 调用和 segments 生成器迭代（生成器同样读取共享模型）。
         with self._lock:
+            check_cancel(cancel_event)
             try:
 
                 segments_raw, info = self.model.transcribe(file_path)
+                check_cancel(cancel_event)
 
                 segments = []
 
                 for seg in segments_raw:
+                    check_cancel(cancel_event)
                     text = seg.text.strip()
                     segments.append(TranscriptSegment(
                         start=seg.start,
@@ -175,6 +183,8 @@ full_text=" ".join(seg.text for seg in segments).strip(),
                     raw=info
                 )
                 return result
+            except TaskCancelledError:
+                raise
             except Exception as e:
                 # 抛给调用方（note._transcribe_audio 捕获并写入 FAILED 状态）；不要返回 None，
                 # 否则上层 asdict(None) 会报误导性的 TypeError

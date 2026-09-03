@@ -6,6 +6,7 @@ from typing import Optional, Union
 from app.downloaders.base import Downloader
 from app.downloaders.common import run_ffmpeg_cancellable, stream_download
 from app.downloaders.kuaishou_helper.kuaishou import KuaiShou
+from app.exceptions.task import check_cancel
 from app.models.audio_model import AudioDownloadResult
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
@@ -65,7 +66,9 @@ class KuaiShouDownloader(Downloader, ABC):
         os.makedirs(output_dir, exist_ok=True)
 
         ks = KuaiShou()
+        check_cancel(cancel_event)
         video_raw_info = ks.run(video_url)
+        check_cancel(cancel_event)
         logger.debug("快手视频原始信息已获取")
         photo_info = KuaiShouDownloader._extract_photo(video_raw_info)
         video_id = photo_info["id"]
@@ -157,7 +160,9 @@ class KuaiShouDownloader(Downloader, ABC):
             output_dir = self.cache_data
         os.makedirs(output_dir, exist_ok=True)
         ks = KuaiShou()
+        check_cancel(cancel_event)
         video_raw_info = ks.run(video_url)
+        check_cancel(cancel_event)
         photo_info = KuaiShouDownloader._extract_photo(video_raw_info)
         mp4_path = os.path.join(output_dir, f"{photo_info['id']}.mp4")
         self._download_mp4(photo_info, mp4_path, cancel_event=cancel_event)

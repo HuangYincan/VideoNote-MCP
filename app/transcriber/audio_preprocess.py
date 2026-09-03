@@ -9,8 +9,13 @@ faster-whisper 内部已自带 Silero VAD + 16kHz 重采样，所以本模块主
 import logging
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import List, Optional, Union
+
+from app.downloaders.common import run_ffmpeg_cancellable
+from app.exceptions.task import TaskCancelledError, check_cancel
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +23,25 @@ logger = logging.getLogger(__name__)
 _FFMPEG_TIMEOUT = 1800
 
 
-def _ffmpeg(args: List[str], desc: str) -> None:
+def _ffmpeg(
+    args: List[str],
+    desc: str,
+    cancel_event: Optional[threading.Event] = None,
+) -> None:
+    if cancel_event is not None:
+        check_cancel(cancel_event)
+        try:
+            run_ffmpeg_cancellable(
+                ["ffmpeg", "-y"] + args,
+                cancel_event=cancel_event,
+                timeout=_FFMPEG_TIMEOUT,
+            )
+        except TaskCancelledError:
+            raise
+        except RuntimeError as exc:
+            raise RuntimeError(f"{desc} 失败: {exc}") from exc
+        check_cancel(cancel_event)
+        return
     r = subprocess.run(["ffmpeg", "-y"] + args, capture_output=True, timeout=_FFMPEG_TIMEOUT)
     if r.returncode != 0:
         raise RuntimeError(
@@ -29,12 +52,14 @@ def _ffmpeg(args: List[str], desc: str) -> None:
 def normalize_to_wav(
     input_path: Union[str, Path],
     out_dir: Optional[Union[str, Path]] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> str:
     """把任意音频/视频转为 16kHz mono wav（PCM s16le）。返回输出路径。
 
     out_dir 缺省：输入文件同目录下 `<原名>_16k.wav`。
     """
     src = str(Path(input_path).expanduser())
+    check_cancel(cancel_event)
     if not os.path.exists(src):
         raise FileNotFoundError(f"文件不存在: {src}")
     out_dir = Path(out_dir).expanduser() if out_dir else Path(src).parent
@@ -44,19 +69,60 @@ def normalize_to_wav(
     _ffmpeg(
         ["-i", src, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", out],
         "转 16kHz mono wav",
+        cancel_event=cancel_event,
     )
+    check_cancel(cancel_event)
     return out
 
 
-def probe_duration(wav_path: str) -> float:
+def probe_duration(
+    wav_path: str,
+    cancel_event: Optional[threading.Event] = None,
+) -> float:
     """用 ffprobe 取音频时长（秒）。失败返回 0。"""
     try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "csv=p=0", wav_path],
-            capture_output=True, text=True, timeout=60,
-        )
-        return float(r.stdout.strip())
+        check_cancel(cancel_event)
+        if cancel_event is None:
+            r = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", wav_path],
+                capture_output=True, text=True, timeout=60,
+            )
+            output = r.stdout
+        else:
+            proc = subprocess.Popen(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", wav_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + 60
+                while proc.poll() is None:
+                    check_cancel(cancel_event)
+                    if time.monotonic() >= deadline:
+                        proc.kill()
+                        proc.wait()
+                        raise TimeoutError("ffprobe 探测时长超时")
+                    if cancel_event.wait(0.2):
+                        check_cancel(cancel_event)
+                output, _ = proc.communicate()
+                check_cancel(cancel_event)
+            except TaskCancelledError:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                raise
+            if proc.returncode != 0:
+                return 0.0
+        return float(output.strip())
+    except TaskCancelledError:
+        raise
     except Exception as exc:
         # ffprobe 失败静默返回 0 会让 chunk_if_long 把未知时长当「不长」——超长音频
         # 整块喂给云端引擎（可能超限），且无任何留痕（#118）
@@ -68,13 +134,16 @@ def chunk_if_long(
     wav_path: str,
     max_seconds: int = 1800,
     out_dir: Optional[Union[str, Path]] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> List[str]:
     """超长 wav 按固定时长分块（ffmpeg `-f segment`）。返回分块路径列表。
 
     - 时长 ≤ max_seconds：返回 [wav_path]（不切分）；
     - 超长：按 max_seconds 秒切成多段 `part_000/001/....wav`（编码不变 PCM）。
     """
-    duration = probe_duration(wav_path)
+    check_cancel(cancel_event)
+    duration = probe_duration(wav_path, cancel_event=cancel_event)
+    check_cancel(cancel_event)
     if duration <= 0 or duration <= max_seconds:
         return [wav_path]
     out_dir = Path(out_dir).expanduser() if out_dir else Path(wav_path).parent
@@ -87,7 +156,9 @@ def chunk_if_long(
             "-c", "copy", pattern,
         ],
         "超长音频分块",
+        cancel_event=cancel_event,
     )
+    check_cancel(cancel_event)
     chunks = sorted(str(p) for p in Path(out_dir).glob(f"{Path(wav_path).stem}_part_*.wav"))
     return chunks or [wav_path]
 

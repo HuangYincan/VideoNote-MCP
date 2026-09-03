@@ -10,6 +10,7 @@ import yt_dlp
 from app.downloaders.base import Downloader, DownloadQuality
 from app.downloaders.common import ytdlp_cancel_hook, ytdlp_retry
 from app.downloaders.youtube_subtitle import YouTubeSubtitleFetcher
+from app.exceptions.task import check_cancel
 from app.models.notes_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
 from app.services.cookie_manager import CookieConfigManager
@@ -179,7 +180,13 @@ class YoutubeDownloader(Downloader, ABC):
         _apply_browser_headers(ydl_opts)
         _apply_js_challenge(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
+            info = ytdlp_retry(
+                ydl.extract_info,
+                video_url,
+                download=not skip_download,
+                cancel_event=cancel_event,
+            )
+            check_cancel(cancel_event)
             video_id = info.get("id")
             title = info.get("title")
             duration = info.get("duration", 0)
@@ -246,7 +253,13 @@ class YoutubeDownloader(Downloader, ABC):
         _apply_browser_headers(ydl_opts)
         _apply_js_challenge(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ytdlp_retry(ydl.extract_info, video_url, download=True)
+            info = ytdlp_retry(
+                ydl.extract_info,
+                video_url,
+                download=True,
+                cancel_event=cancel_event,
+            )
+            check_cancel(cancel_event)
             video_id = info.get("id")
             video_path = os.path.join(output_dir, f"{video_id}.mp4")
 
@@ -256,7 +269,8 @@ class YoutubeDownloader(Downloader, ABC):
         return video_path
 
     def download_subtitles(self, video_url: str, output_dir: str = None,
-                           langs: List[str] = None) -> Optional[TranscriptResult]:
+                           langs: List[str] = None,
+                           cancel_event: Optional[threading.Event] = None) -> Optional[TranscriptResult]:
         """
         通过 YouTube InnerTube API 直接获取字幕（优先人工字幕，其次自动生成）。
         比 yt_dlp 方式更轻量，无需写临时文件到磁盘。
@@ -268,12 +282,20 @@ class YoutubeDownloader(Downloader, ABC):
         """
         if langs is None:
             langs = ['zh-Hans', 'zh', 'zh-CN', 'zh-TW', 'en', 'en-US', 'ja']
+        check_cancel(cancel_event)
 
         video_id = extract_video_id(video_url, "youtube")
         fetcher = YouTubeSubtitleFetcher()
         logger.info("尝试获取字幕，video_id=%s, langs=%s", video_id, langs)
         try:
-            return fetcher.fetch_subtitles(video_id, langs)
+            if cancel_event is None:
+                result = fetcher.fetch_subtitles(video_id, langs)
+            else:
+                result = fetcher.fetch_subtitles(
+                    video_id, langs, cancel_event=cancel_event
+                )
+            check_cancel(cancel_event)
+            return result
         finally:
             # 显式释放代理 Session（#125 B16 定义了 close 但唯一生产调用路径
             # 直接 return 没调——MCP 长驻进程 GC 不保证及时，连接池泄漏仍在，#126 B2）

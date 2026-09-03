@@ -13,6 +13,7 @@ from app.downloaders.base import Downloader
 from app.downloaders.common import stream_download
 from app.downloaders.douyin_helper.abogus import ABogus
 from app.enmus.note_enums import DownloadQuality
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.audio_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
@@ -177,7 +178,8 @@ class DouyinDownloader(Downloader):
                     return match.group(1)
         return ""
 
-    def gen_real_msToken(self) -> str:
+    def gen_real_msToken(self, cancel_event: Optional[threading.Event] = None) -> str:
+        check_cancel(cancel_event)
         # msToken 是分钟级有效会话 cookie（docs/05 第 16 轮 C2）：任务内复用，
         # 不再每次 fetch_video_info 都 POST mssdk.bytedance.com
         if self._ms_token:
@@ -203,6 +205,7 @@ class DouyinDownloader(Downloader):
                     response = client.post(
                         self.ms_token_config["url"], content=payload, headers=headers
                     )
+                    check_cancel(cancel_event)
                     response.raise_for_status()
 
                     msToken = str(httpx.Cookies(response.cookies).get("msToken"))
@@ -211,20 +214,25 @@ class DouyinDownloader(Downloader):
 
                     self._ms_token = msToken
                     return msToken
+                except TaskCancelledError:
+                    raise
                 except Exception as e:
                     raise ValueError("Douyin msToken API 请求失败：%s" % sanitize_error_text(e)) from e
+        except TaskCancelledError:
+            raise
         except Exception as e:
             raise ValueError("Douyin msToken API%s" % sanitize_error_text(e)) from e
 
-    def fetch_video_info(self, video_url: str) -> json:
+    def fetch_video_info(self, video_url: str, cancel_event: Optional[threading.Event] = None) -> json:
         # memo（docs/05 第 16 轮 C2）：download_video 与 download(skip) 同任务双调时复用
+        check_cancel(cancel_event)
         aweme_id = self.extract_video_id(video_url)
         if aweme_id and aweme_id in self._info_cache:
             return self._info_cache[aweme_id]
         try:
             kwargs = self.headers_config
             base_params = BaseRequestModel().model_dump()
-            base_params["msToken"] = self.gen_real_msToken()
+            base_params["msToken"] = self.gen_real_msToken(cancel_event=cancel_event)
 
             base_params["aweme_id"] = aweme_id
             ab_value = self._bogus.get_value(base_params)
@@ -236,11 +244,14 @@ class DouyinDownloader(Downloader):
             logger.debug("抖音 API 请求 URL 已构造")
 
             response = public_get(full_url, headers=kwargs, timeout=(5, 10))
+            check_cancel(cancel_event)
 
             result = response.json()
             if aweme_id:
                 self._info_cache[aweme_id] = result
             return result
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning("抖音视频信息请求失败: %s", sanitize_error_text(e))
             # 旧写法 ValueError("请求失败:", e) 是元组参数——str() 输出
@@ -265,7 +276,7 @@ class DouyinDownloader(Downloader):
             output_dir = self.cache_data
         os.makedirs(output_dir, exist_ok=True)
 
-        video_data = self.fetch_video_info(video_url)
+        video_data = self.fetch_video_info(video_url, cancel_event=cancel_event)
         detail = video_data.get('aweme_detail') or {}
         aweme_id = detail.get('aweme_id') or ''
         if not aweme_id:
@@ -290,6 +301,7 @@ class DouyinDownloader(Downloader):
             stream_download(
                 url, output_path, headers=self.headers_config, cancel_event=cancel_event
             )
+            check_cancel(cancel_event)
 
         # 封面：优先 cover_original_scale → cover → dynamic_cover；
         # 旧代码的 else 分支引用了不存在的顶层 video_data['video']，会 KeyError
@@ -342,7 +354,7 @@ class DouyinDownloader(Downloader):
 
             # 直接 Path 拼接（#123 B10）：旧实现 output_path % {...} 对整个字符串做
             # %-格式化——output_dir 含字面 %（如 /tmp/100%off/）→ ValueError 下载失败。
-            video_data = self.fetch_video_info(video_url)
+            video_data = self.fetch_video_info(video_url, cancel_event=cancel_event)
             detail = video_data.get('aweme_detail') or {}
             aweme_id = detail.get('aweme_id') or ''
             if not aweme_id:
@@ -359,8 +371,11 @@ class DouyinDownloader(Downloader):
             stream_download(
                 url, output_path, headers=self.headers_config, cancel_event=cancel_event
             )
+            check_cancel(cancel_event)
 
             return output_path
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning("抖音下载请求失败: %s", sanitize_error_text(e))
             raise ValueError(f"抖音下载请求失败: {sanitize_error_text(e)}") from e

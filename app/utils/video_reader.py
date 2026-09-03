@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PIL import Image, ImageDraw, ImageFont
 
+from app.downloaders.common import run_ffmpeg_cancellable
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -47,7 +49,8 @@ class VideoReader:
                  save_quality=90,
                  font_path="fonts/arial.ttf",
                  frame_dir=None,
-                 grid_dir=None):
+                 grid_dir=None,
+                 cancel_event=None):
         self.video_path = video_path
         self.grid_size = grid_size
         self.frame_interval = frame_interval
@@ -59,6 +62,7 @@ class VideoReader:
         # 并发任务不再互相清空对方已提取的帧/网格图（旧的共享 output_frames/ 是竞态根因）
         self.frame_dir = frame_dir
         self.grid_dir = grid_dir
+        self.cancel_event = cancel_event
         self.font_path = font_path
 
     @staticmethod
@@ -85,15 +89,23 @@ class VideoReader:
             return mm * 60 + ss
         return float('inf')
 
-    def _extract_single_frame(self, ts: int) -> str | None:
+    def _extract_single_frame(self, ts: int, cancel_event=None) -> str | None:
         """提取单帧，返回输出路径或 None（失败时）。"""
+        check_cancel(cancel_event or self.cancel_event)
         time_label = self.format_time(ts)
         output_path = os.path.join(self.frame_dir, f"frame_{time_label}.jpg")
         cmd = ["ffmpeg", "-ss", str(ts), "-i", self.video_path, "-frames:v", "1", "-q:v", "2", "-y", output_path,
                "-hide_banner", "-loglevel", "error"]
         try:
-            subprocess.run(cmd, check=True, timeout=120)
+            event = cancel_event or self.cancel_event
+            if event is None:
+                subprocess.run(cmd, check=True, timeout=120)
+            else:
+                run_ffmpeg_cancellable(cmd, cancel_event=event, timeout=120)
+            check_cancel(event)
             return output_path
+        except TaskCancelledError:
+            raise
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             # TimeoutExpired 未捕获会从 future.result() 冒出，外层兜底把整个抽帧任务
             # 打成「视频处理失败」——已抽出的几百帧全丢（#124 B12）：单帧失败本就该跳过
@@ -140,11 +152,14 @@ class VideoReader:
             raise ValueError(f"ffprobe 返回负的视频时长: {duration}")
         return duration
 
-    def extract_frames(self, max_frames=1000) -> list[str]:
+    def extract_frames(self, max_frames=1000, cancel_event=None) -> list[str]:
 
+        event = cancel_event or self.cancel_event
+        check_cancel(event)
         try:
             os.makedirs(self.frame_dir, exist_ok=True)
             duration = self._probe_duration()
+            check_cancel(event)
             # 帧组数封顶：超限时自适应拉大间隔，而不是截断视频尾部（docs/05 #33）
             cells = self.grid_size[0] * self.grid_size[1]
             self.frame_interval = effective_frame_interval(duration, self.frame_interval, cells)
@@ -159,8 +174,15 @@ class VideoReader:
             max_workers = max(1, min(os.cpu_count() or 4, 8, len(timestamps)))
             frame_results: dict[int, str | None] = {}
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {pool.submit(self._extract_single_frame, ts): ts for ts in timestamps}
+                if event is None:
+                    futures = {pool.submit(self._extract_single_frame, ts): ts for ts in timestamps}
+                else:
+                    futures = {
+                        pool.submit(self._extract_single_frame, ts, event): ts
+                        for ts in timestamps
+                    }
                 for future in as_completed(futures):
+                    check_cancel(event)
                     ts = futures[future]
                     frame_results[ts] = future.result()
 
@@ -168,6 +190,7 @@ class VideoReader:
             image_paths = []
             last_hash = None
             for ts in timestamps:
+                check_cancel(event)
                 output_path = frame_results.get(ts)
                 if not output_path or not os.path.exists(output_path):
                     continue
@@ -181,23 +204,31 @@ class VideoReader:
 
                 image_paths.append(output_path)
             return image_paths
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.error(f"分割帧发生错误：{str(e)}")
             raise ValueError(f"视频处理失败：{e}") from e
 
-    def group_images(self) -> list[list[str]]:
+    def group_images(self, cancel_event=None) -> list[list[str]]:
+        event = cancel_event or self.cancel_event
+        check_cancel(event)
         image_files = [os.path.join(self.frame_dir, f) for f in os.listdir(self.frame_dir) if
                        f.startswith("frame_") and f.endswith(".jpg")]
+        check_cancel(event)
         image_files.sort(key=lambda f: self.extract_time_from_filename(os.path.basename(f)))
         group_size = self.grid_size[0] * self.grid_size[1]
         return [image_files[i:i + group_size] for i in range(0, len(image_files), group_size)]
 
-    def concat_images(self, image_paths: list[str], name: str) -> str:
+    def concat_images(self, image_paths: list[str], name: str, cancel_event=None) -> str:
+        event = cancel_event or self.cancel_event
+        check_cancel(event)
         os.makedirs(self.grid_dir, exist_ok=True)
         font = ImageFont.truetype(self.font_path, 48) if os.path.exists(self.font_path) else ImageFont.load_default()
         images = []
 
         for path in image_paths:
+            check_cancel(event)
             img = Image.open(path).convert("RGB").resize((self.unit_width, self.unit_height), Image.Resampling.LANCZOS)
             timestamp = re.search(r"frame_(\d+)_(\d{2})\.jpg", os.path.basename(path))
             time_text = f"{timestamp.group(1)}:{timestamp.group(2)}" if timestamp else ""
@@ -209,23 +240,31 @@ class VideoReader:
         grid_img = Image.new("RGB", (self.unit_width * cols, self.unit_height * rows), (255, 255, 255))
 
         for i, img in enumerate(images):
+            check_cancel(event)
             x = (i % cols) * self.unit_width
             y = (i // cols) * self.unit_height
             grid_img.paste(img, (x, y))
 
         save_path = os.path.join(self.grid_dir, f"{name}.jpg")
+        check_cancel(event)
         grid_img.save(save_path, quality=self.save_quality)
+        check_cancel(event)
         return save_path
 
-    def encode_images_to_base64(self, image_paths: list[str]) -> list[str]:
+    def encode_images_to_base64(self, image_paths: list[str], cancel_event=None) -> list[str]:
+        event = cancel_event or self.cancel_event
+        check_cancel(event)
         base64_images = []
         for path in image_paths:
+            check_cancel(event)
             with open(path, "rb") as img_file:
                 encoded_string = base64.b64encode(img_file.read()).decode("utf-8")
                 base64_images.append(f"data:image/jpeg;base64,{encoded_string}")
         return base64_images
 
-    def run(self)->list[str]:
+    def run(self, cancel_event=None)->list[str]:
+        event = cancel_event or self.cancel_event
+        check_cancel(event)
         logger.info("开始提取视频帧...")
         # 每个任务独立临时目录：并发任务不再互相清空对方已提取的帧/网格图
         temp_frame_dir = None
@@ -240,11 +279,19 @@ class VideoReader:
             # 确保目录存在（显式传入的目录同样保证可用）
             os.makedirs(self.frame_dir, exist_ok=True)
             os.makedirs(self.grid_dir, exist_ok=True)
-            self.extract_frames()
+            if event is None:
+                self.extract_frames()
+            else:
+                self.extract_frames(cancel_event=event)
+            check_cancel(event)
             logger.info("开始拼接网格图...")
             image_paths = []
-            groups = self.group_images()
+            if event is None:
+                groups = self.group_images()
+            else:
+                groups = self.group_images(cancel_event=event)
             for idx, group in enumerate(groups, start=1):
+                check_cancel(event)
                 if len(group) < self.grid_size[0] * self.grid_size[1]:
                     # 短视频（帧数不足一组）曾被整批跳过 → 静默产出 0 张网格图，
                     # 上层拿到空 frames 当成功。只有这一组时照常拼接（白格兜底），
@@ -256,11 +303,18 @@ class VideoReader:
                         f"⚠️ 帧数不足一组（{len(group)}/{self.grid_size[0] * self.grid_size[1]}），"
                         "按单组拼接兜底，避免短视频零帧"
                     )
-                out_path = self.concat_images(group, f"grid_{idx}")
+                if event is None:
+                    out_path = self.concat_images(group, f"grid_{idx}")
+                else:
+                    out_path = self.concat_images(group, f"grid_{idx}", cancel_event=event)
                 image_paths.append(out_path)
 
             logger.info("📤 开始编码图像...")
-            return self.encode_images_to_base64(image_paths)
+            if event is None:
+                return self.encode_images_to_base64(image_paths)
+            return self.encode_images_to_base64(image_paths, cancel_event=event)
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.error(f"发生错误：{str(e)}")
             raise ValueError(f"视频处理失败：{e}") from e

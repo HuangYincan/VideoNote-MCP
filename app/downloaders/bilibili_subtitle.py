@@ -14,9 +14,11 @@
 AI 字幕需要登录态 cookie（SESSDATA）；通过 CookieConfigManager 注入。
 """
 
+import threading
 from typing import List, Optional
 
 from app.downloaders.common import public_get_retry
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
@@ -50,14 +52,32 @@ class BilibiliSubtitleFetcher:
             h["Cookie"] = self._cookie
         return h
 
-    def _get_cid(self, bvid: str, p: Optional[int] = None) -> Optional[int]:
+    def _get_cid(
+        self,
+        bvid: str,
+        p: Optional[int] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[int]:
         url = "https://api.bilibili.com/x/web-interface/view"
         params = {"bvid": bvid}
         if p is not None and p >= 1:
             params["p"] = p
         try:
-            resp = public_get_retry(url, params=params, headers=self._headers(), timeout=10)
+            check_cancel(cancel_event)
+            if cancel_event is None:
+                resp = public_get_retry(url, params=params, headers=self._headers(), timeout=10)
+            else:
+                resp = public_get_retry(
+                    url,
+                    params=params,
+                    headers=self._headers(),
+                    timeout=10,
+                    cancel_event=cancel_event,
+                )
+            check_cancel(cancel_event)
             data = resp.json()
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"获取 cid 失败: {sanitize_error_text(e)}")
             return None
@@ -86,13 +106,23 @@ class BilibiliSubtitleFetcher:
         cid = data.get("data", {}).get("cid")
         return int(cid) if cid else None
 
-    def _list_subtitles(self, bvid: str, cid: int) -> List[dict]:
+    def _list_subtitles(
+        self,
+        bvid: str,
+        cid: int,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> List[dict]:
         url = "https://api.bilibili.com/x/player/wbi/v2"
         try:
-            resp = public_get_retry(
-                url, params={"bvid": bvid, "cid": cid}, headers=self._headers(), timeout=10
-            )
+            check_cancel(cancel_event)
+            kwargs = {"params": {"bvid": bvid, "cid": cid}, "headers": self._headers(), "timeout": 10}
+            if cancel_event is not None:
+                kwargs["cancel_event"] = cancel_event
+            resp = public_get_retry(url, **kwargs)
+            check_cancel(cancel_event)
             data = resp.json()
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"获取字幕列表失败: {sanitize_error_text(e)}")
             return []
@@ -130,24 +160,41 @@ class BilibiliSubtitleFetcher:
             return "https:" + url
         return url
 
-    def _fetch_body(self, subtitle_url: str) -> Optional[List[dict]]:
+    def _fetch_body(
+        self,
+        subtitle_url: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[List[dict]]:
         try:
-            # public_get 逐跳校验（#140）：subtitle_url 来自 B 站 API 返回（已签 auth_key
-            # 的完整地址），与抖音/快手资源 URL 同类——入口校验覆盖不到，出站前校验
+            check_cancel(cancel_event)
+            kwargs = {
+                "headers": self._headers(),
+                "timeout": 15,
+            }
+            if cancel_event is not None:
+                kwargs["cancel_event"] = cancel_event
             resp = public_get_retry(
                 BilibiliSubtitleFetcher._normalize_url(subtitle_url),
-                headers=self._headers(),
-                timeout=15,
+                **kwargs,
             )
+            check_cancel(cancel_event)
             data = resp.json()
             return data.get("body") or []
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"下载字幕 JSON 失败: {sanitize_error_text(e)}")
             return None
 
-    def fetch_subtitles(self, video_url: str) -> Optional[TranscriptResult]:
+    def fetch_subtitles(
+        self,
+        video_url: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[TranscriptResult]:
+        check_cancel(cancel_event)
         # 统一 resolve 短链，避免 extract_video_id 和 extract_bilibili_p_number 各 resolve 一次
         if "b23.tv" in video_url:
+            check_cancel(cancel_event)
             video_url = resolve_bilibili_short_url(video_url) or video_url
 
         bvid = extract_video_id(video_url, "bilibili")
@@ -158,12 +205,12 @@ class BilibiliSubtitleFetcher:
         # 提取分 P 序号
         p = extract_bilibili_p_number(video_url)
 
-        cid = self._get_cid(bvid, p)
+        cid = self._get_cid(bvid, p, cancel_event=cancel_event)
         if not cid:
             logger.info(f"{bvid} (p={p}) 没有取到 cid")
             return None
 
-        subtitles = self._list_subtitles(bvid, cid)
+        subtitles = self._list_subtitles(bvid, cid, cancel_event=cancel_event)
         if not subtitles:
             if not self._cookie:
                 # B 站 AI 字幕需要登录态（SESSDATA cookie）；没配 cookie 时 API 返回空列表
@@ -182,12 +229,13 @@ class BilibiliSubtitleFetcher:
             return None
 
         lan = track.get("lan") or "zh"
-        body = self._fetch_body(track["subtitle_url"])
+        body = self._fetch_body(track["subtitle_url"], cancel_event=cancel_event)
         if not body:
             return None
 
         segments: List[TranscriptSegment] = []
         for item in body:
+            check_cancel(cancel_event)
             text = (item.get("content") or "").strip()
             if not text:
                 continue

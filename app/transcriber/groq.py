@@ -1,7 +1,10 @@
 import os
+import threading
 from abc import ABC
 
 from app.decorators.timeit import timeit
+from app.downloaders.common import run_ffmpeg_cancellable
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
@@ -18,13 +21,30 @@ if not os.environ.get("VIDEONOTE_DATA_DIR"):
     load_dotenv()
 MAX_SIZE_MB = 18
 MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
-def compress_audio(input_path: str, target_bitrate='64k') -> str:
+def compress_audio(
+    input_path: str,
+    target_bitrate='64k',
+    cancel_event: threading.Event = None,
+) -> str:
+    check_cancel(cancel_event)
     output_fd, output_path = tempfile.mkstemp(suffix=".mp3")  # 临时输出文件
     os.close(output_fd)  # 关闭文件描述符，ffmpeg 会用路径操作
     try:
-        ffmpeg.input(input_path).output(output_path, audio_bitrate=target_bitrate).run(
-            quiet=True, overwrite_output=True, timeout=600
-        )
+        if cancel_event is None:
+            ffmpeg.input(input_path).output(output_path, audio_bitrate=target_bitrate).run(
+                quiet=True, overwrite_output=True, timeout=600
+            )
+        else:
+            run_ffmpeg_cancellable(
+                ["ffmpeg", "-y", "-i", input_path, "-vn", "-b:a", target_bitrate, output_path],
+                cancel_event=cancel_event,
+                timeout=600,
+                output_path=output_path,
+                require_nonzero=True,
+            )
+        check_cancel(cancel_event)
+    except TaskCancelledError:
+        raise
     except Exception:
         # mkstemp 已落盘、ffmpeg 失败 → 不清理就残留临时 mp3（调用方拿不到
         # temp_file，finally 无从删起）（#121 B7）
@@ -39,14 +59,20 @@ class GroqTranscriber(Transcriber, ABC):
 
 
     @timeit
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        cancel_event: threading.Event = None,
+    ) -> TranscriptResult:
+        check_cancel(cancel_event)
         file_size = os.path.getsize(file_path)
         temp_file = None  # 压缩产生的临时 mp3，结束后清理
         if file_size > MAX_SIZE_BYTES:
             logger.info(f"文件超过 {MAX_SIZE_MB}MB，开始压缩（当前 {round(file_size / (1024 * 1024), 2)}MB）...")
-            file_path = compress_audio(file_path)
+            file_path = compress_audio(file_path, cancel_event=cancel_event)
             temp_file = file_path
             logger.info(f"压缩完成，临时路径：{file_path}")
+        check_cancel(cancel_event)
         # 按名称查找（#127 B1）：CLI providers add 强制 uuid id，硬编码 id='groq' 只对
         # seed 行生效——按向导新建 groq 得到 uuid id 后引擎永远读空 key 的 seed 行；
         # 库非空时 seed 被跳过 id='groq' 永不出现。名称可配（seed 或用户 add 都叫 Groq）。
@@ -73,9 +99,11 @@ class GroqTranscriber(Transcriber, ABC):
                     model=model,
                     response_format="verbose_json",
                 )
+            check_cancel(cancel_event)
             segments = []
 
             for seg in transcription.segments:
+                check_cancel(cancel_event)
                 text = seg.text.strip()
                 segments.append(TranscriptSegment(
                     start=seg.start,

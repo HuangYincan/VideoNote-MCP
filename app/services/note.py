@@ -121,7 +121,17 @@ def _extract_audio_from_video(
                 proc.wait()
                 process_finished = True
                 raise RuntimeError(f"从视频提取音频超时: {src.name}")
-            _time.sleep(0.2)
+            if cancel_event is not None and cancel_event.wait(0.2):
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                process_finished = True
+                raise TaskCancelledError("任务已取消")
+            elif cancel_event is None:
+                _time.sleep(0.2)
         process_finished = True
         _, stderr = proc.communicate()
         if proc.returncode != 0 or not tmp_out.is_file():
@@ -368,7 +378,12 @@ class NoteGenerator:
             if transcript is None:
                 logger.info("尝试获取平台字幕（优先于音频下载）...")
                 try:
-                    transcript = downloader.download_subtitles(video_url)
+                    if cancel_event is None:
+                        transcript = downloader.download_subtitles(video_url)
+                    else:
+                        transcript = downloader.download_subtitles(
+                            video_url, cancel_event=cancel_event
+                        )
                     if transcript and transcript.segments:
                         logger.info(f"成功获取平台字幕，共 {len(transcript.segments)} 段")
                         write_json_atomic(transcript_cache_file, asdict(transcript))
@@ -448,7 +463,10 @@ class NoteGenerator:
 
             # 3.0 material_only：只组装素材包返回（转写/帧/评论/音视频路径），不调 LLM；仍写全局索引
             if material_only:
-                material = self._build_note_material(task_id, audio_meta, transcript, comments_danmaku)
+                material = self._build_note_material(
+                    task_id, audio_meta, transcript, comments_danmaku, cancel_event=cancel_event
+                )
+                _check_cancel(cancel_event)
                 # 先持久化全局索引，再发布 SUCCESS；否则数据库写失败时会短暂留下
                 # 「状态成功但任务不可枚举」的假成功。MCP 编排传 False，最终状态由
                 # _run_note_task 在 result.json/manifest 落盘后发布。
@@ -496,6 +514,7 @@ class NoteGenerator:
                     audio_meta=audio_meta,
                     platform=platform,
                     assets_dir=assets_dir,
+                    cancel_event=cancel_event,
                 )
             _check_cancel(cancel_event)  # 阶段边界：可取消点
 
@@ -813,14 +832,16 @@ class NoteGenerator:
                 record_task_paths(task_id, [self.video_path])
 
                 if grid_size:
-                    self.video_img_urls = VideoReader(
+                    reader = VideoReader(
                         video_path=str(self.video_path),
                         grid_size=tuple(grid_size),
                         frame_interval=frame_interval,
                         unit_width=960,
                         unit_height=540,
                         save_quality=80,
-                    ).run()
+                        cancel_event=cancel_event,
+                    )
+                    self.video_img_urls = reader.run(cancel_event=cancel_event)
                 else:
                     logger.info("未指定 grid_size，跳过缩略图生成")
             except TaskCancelledError:
@@ -927,7 +948,7 @@ class NoteGenerator:
             logger.info("尝试获取平台字幕...")
             try:
                 _check_cancel(cancel_event)
-                data = pipeline.fetch_subtitles(video_url)
+                data = pipeline.fetch_subtitles(video_url, cancel_event=cancel_event)
                 if data:
                     transcript = TranscriptResult(
                         language=data.get("language"),
@@ -999,7 +1020,9 @@ class NoteGenerator:
             _check_cancel(cancel_event)
             logger.info("开始转写音频")
             # 委托 pipeline 步骤层（返回 asdict dict，与 asdict(transcript) 写缓存等价）
-            transcript_dict = pipeline.transcribe_audio(audio_file, transcriber=self.transcriber)
+            transcript_dict = pipeline.transcribe_audio(
+                audio_file, transcriber=self.transcriber, cancel_event=cancel_event
+            )
             write_json_atomic(transcript_cache_file, transcript_dict)
             self._transcript_engine = note_cache.engine_key(self.transcriber_type, self.model_size)
             # 重建 TranscriptResult，保持返回类型一致（generate 下游仍按对象访问）。
@@ -1097,6 +1120,8 @@ class NoteGenerator:
                 )
                 write_text_atomic(markdown_cache_file, markdown)
             return markdown
+        except TaskCancelledError:
+            raise
         except Exception as exc:
             logger.error(f"GPT 总结失败：{sanitize_error_text(exc)}")
             self._handle_exception(task_id, exc)
@@ -1124,6 +1149,7 @@ class NoteGenerator:
         audio_meta: AudioDownloadResult,
         transcript: TranscriptResult,
         comments_danmaku: Optional[str],
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """组装素材包：转写全文+分段、持久化帧图片（file:// 绝对路径）、评论/弹幕、音视频路径。
 
@@ -1138,15 +1164,19 @@ class NoteGenerator:
 
         frames: List[str] = []
         if self.video_img_urls:
+            _check_cancel(cancel_event)
             # 数据层重构：帧落盘到 {task_dir}/gen/frames/
             task_dir, _, gen_dir = task_dirs(task_id)
             frames_dir = gen_dir / "frames"
             try:
                 frames_dir.mkdir(parents=True, exist_ok=True)
+            except TaskCancelledError:
+                raise
             except Exception as exc:
                 logger.warning(f"创建帧目录失败 (task_id={task_id})，跳过帧持久化: {sanitize_error_text(exc)}")
                 self.video_img_urls = []  # 目录都建不了，后续逐张必然失败，直接清空
             for i, data_uri in enumerate(self.video_img_urls, start=1):
+                _check_cancel(cancel_event)
                 try:
                     if isinstance(data_uri, str) and data_uri.startswith("data:image"):
                         b64 = data_uri.split(",", 1)[1]
@@ -1155,6 +1185,8 @@ class NoteGenerator:
                         frames.append(frame_path.as_uri())
                     else:
                         logger.warning(f"跳过非 data URI 帧 (index={i}): {str(data_uri)[:60]}")
+                except TaskCancelledError:
+                    raise
                 except Exception as exc:
                     logger.warning(f"帧 {i} 解码/落盘失败，跳过: {sanitize_error_text(exc)}")
 
@@ -1175,6 +1207,7 @@ class NoteGenerator:
         audio_meta: AudioDownloadResult,
         platform: str,
         assets_dir: Optional[Path] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """
         对生成的 Markdown 做后期处理：插入截图和/或插入链接。
@@ -1189,19 +1222,33 @@ class NoteGenerator:
         """
         if "screenshot" in formats and video_path:
             try:
-                markdown = self._insert_screenshots(markdown, video_path, assets_dir)
+                markdown = self._insert_screenshots(
+                    markdown, video_path, assets_dir, cancel_event=cancel_event
+                )
+            except TaskCancelledError:
+                raise
             except Exception as exc:
-                logger.warning("截图插入失败，跳过该步骤：%s", exc)
+                logger.warning("截图插入失败，跳过该步骤：%s", sanitize_error_text(exc))
 
         if "link" in formats:
             try:
+                _check_cancel(cancel_event)
                 markdown = replace_content_markers(markdown, video_id=audio_meta.video_id, platform=platform)
+                _check_cancel(cancel_event)
+            except TaskCancelledError:
+                raise
             except Exception as e:
                 logger.warning(f"链接插入失败，跳过该步骤：{sanitize_error_text(e)}")
 
         return markdown
 
-    def _insert_screenshots(self, markdown: str, video_path: Path, assets_dir: Optional[Path] = None) -> str | None | Any:
+    def _insert_screenshots(
+        self,
+        markdown: str,
+        video_path: Path,
+        assets_dir: Optional[Path] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str | None | Any:
         """
         扫描 Markdown 文本中所有 Screenshot 标记，并替换为实际生成的截图链接。
 
@@ -1213,19 +1260,24 @@ class NoteGenerator:
         """
         matches: List[Tuple[str, int]] = extract_screenshot_timestamps(markdown)
         for idx, (marker, ts) in enumerate(matches):
+            _check_cancel(cancel_event)
             try:
                 if assets_dir is not None:
                     assets_dir.mkdir(parents=True, exist_ok=True)
                     img_path = generate_screenshot(str(video_path), str(assets_dir), ts, idx)
+                    _check_cancel(cancel_event)
                     filename = Path(img_path).name
                     # 便携笔记：相对引用，note.md 与 Assets/ 同层
                     img_url = f"Assets/{filename}"
                 else:
                     img_path = generate_screenshot(str(video_path), str(IMAGE_OUTPUT_DIR), ts, idx)
+                    _check_cancel(cancel_event)
                     filename = Path(img_path).name
                     # 构建前端可访问的 URL，例如 /static/screenshots/{filename}
                     img_url = f"{IMAGE_BASE_URL.rstrip('/')}/{filename}"
                 markdown = markdown.replace(marker, f"![]({img_url})", 1)
+            except TaskCancelledError:
+                raise
             except Exception as exc:
                 logger.error(f"生成截图失败 (timestamp={ts})：{sanitize_error_text(exc)}")
                 # 单帧失败只移除该 marker，绝不让整篇笔记作废（返回 None 会让上层

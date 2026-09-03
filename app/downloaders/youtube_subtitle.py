@@ -3,10 +3,12 @@
 优先人工字幕，其次自动生成字幕。不依赖 yt_dlp，无需下载任何文件。
 """
 
+import threading
 from typing import List, Optional
 
 from youtube_transcript_api import YouTubeTranscriptApi
 
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.utils.logger import get_logger
@@ -58,16 +60,20 @@ class YouTubeSubtitleFetcher:
         self,
         video_id: str,
         langs: Optional[List[str]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[TranscriptResult]:
+        check_cancel(cancel_event)
         if langs is None:
             langs = ["zh-Hans", "zh", "zh-CN", "zh-TW", "en", "en-US", "ja"]
 
         try:
             # 1. 列出所有可用字幕
             transcript_list = self._api.list(video_id)
+            check_cancel(cancel_event)
 
             available = []
             for t in transcript_list:
+                check_cancel(cancel_event)
                 available.append(
                     f"{t.language_code}({'auto' if t.is_generated else 'manual'})"
                 )
@@ -76,15 +82,22 @@ class YouTubeSubtitleFetcher:
             # 2. 按优先级查找：先人工字幕，再自动字幕
             transcript = None
             try:
+                check_cancel(cancel_event)
                 transcript = transcript_list.find_manually_created_transcript(langs)
                 logger.info(f"选中人工字幕: {transcript.language_code} ({transcript.language})")
+            except TaskCancelledError:
+                raise
             except Exception:
                 try:
+                    check_cancel(cancel_event)
                     transcript = transcript_list.find_generated_transcript(langs)
                     logger.info(f"选中自动字幕: {transcript.language_code} ({transcript.language})")
+                except TaskCancelledError:
+                    raise
                 except Exception:
                     # 都没匹配，取第一个可用的
                     for t in transcript_list:
+                        check_cancel(cancel_event)
                         transcript = t
                         source = "auto" if t.is_generated else "manual"
                         logger.info(f"使用首个可用字幕: {t.language_code} ({source})")
@@ -99,8 +112,10 @@ class YouTubeSubtitleFetcher:
             # dataclass（.text/.start/.duration），旧版是 dict。不能用 str(snippet)——
             # dataclass 的 str() 是整条 repr，会把每条字幕变成垃圾文本。
             fetched = transcript.fetch()
+            check_cancel(cancel_event)
             segments = []
             for snippet in fetched:
+                check_cancel(cancel_event)
                 if isinstance(snippet, dict):
                     text = (snippet.get("text") or "").strip()
                     start = float(snippet.get("start", 0))
@@ -136,6 +151,8 @@ class YouTubeSubtitleFetcher:
                 },
             )
 
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"YouTube 字幕获取失败: {sanitize_error_text(e)}")
             return None
