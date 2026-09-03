@@ -70,6 +70,33 @@ class FfmpegCancellationContractTest(unittest.TestCase):
                 run_ffmpeg_cancellable(["ffmpeg", "-version"], cancel_event=event)
         popen.assert_not_called()
 
+    def test_stream_download_removes_partial_output_on_cancel(self):
+        from pathlib import Path
+
+        from app.downloaders import common
+
+        event = threading.Event()
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = None
+
+        def iter_content(_chunk_size):
+            event.set()
+            yield b"partial"
+
+        response.iter_content.side_effect = iter_content
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "audio.mp3"
+            with mock.patch.object(common, "_follow_redirects_public", return_value=response), \
+                 mock.patch.object(common, "assert_public_http_url"):
+                with self.assertRaises(TaskCancelledError):
+                    common.stream_download(
+                        "https://example.com/audio.mp3",
+                        str(output),
+                        cancel_event=event,
+                    )
+            self.assertFalse(output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -182,7 +182,11 @@ def stream_download(
     check_cancel(cancel_event)
     assert_public_http_url(url)
 
+    output_started = False
+
     def _remove_partial_output() -> None:
+        if not output_started:
+            return
         try:
             os.unlink(output_path)
         except OSError:
@@ -195,18 +199,17 @@ def stream_download(
             check_cancel(cancel_event)
             with resp:
                 resp.raise_for_status()
+                output_started = True
                 with open(output_path, "wb") as f:
                     for chunk in resp.iter_content(1024 * 1024):
                         if cancel_event is not None and cancel_event.is_set():
-                            _remove_partial_output()
                             raise TaskCancelledError("任务已取消")
                         f.write(chunk)
-            try:
-                check_cancel(cancel_event)
-            except TaskCancelledError:
-                _remove_partial_output()
-                raise
+            check_cancel(cancel_event)
             return
+        except TaskCancelledError:
+            _remove_partial_output()
+            raise
         except requests.exceptions.RequestException as exc:
             retriable = isinstance(
                 exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
