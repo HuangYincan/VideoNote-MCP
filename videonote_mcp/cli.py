@@ -2156,7 +2156,7 @@ def _export_cli(argv) -> None:
     p_run = sub.add_parser("export", help="导出指定任务（<task_id> 必填）")
     p_run.add_argument("task_id", help="已完成任务的 task_id（generate_note 返回）")
     p_run.add_argument("--format", default=None, help="逗号分隔的格式（srt,vtt,json），缺省取 setup 默认")
-    p_run.add_argument("--out-dir", default=None, help="输出目录（缺省 note_results/{task_id}/gen/）")
+    p_run.add_argument("--out-dir", default=None, help="输出目录（缺省该任务 note_results/{task_id}/gen/；可指定桌面等任意目录）")
 
     opts = parser.parse_args(argv)
     if opts.cmd == "list":

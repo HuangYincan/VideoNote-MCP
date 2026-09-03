@@ -77,10 +77,15 @@
 #149 将协作式取消、任务生命周期和 SQLite 迁移边界固化为本仓库语义；上游同步时不得覆盖这些改动：
 
 - `app/downloaders/base.py`、各平台 downloader/subtitle 与 `app/downloaders/common.py`：下载、字幕和流式/yt-dlp 调用接收 `cancel_event`；可控 ffmpeg/下载子进程可尽快退出，但第三方阻塞调用无法被线程外硬中断。
-- `app/services/note.py`、`app/services/pipeline.py`、`app/services/diarization.py`、`app/transcriber/base.py`、各转写器、`app/transcriber/audio_preprocess.py`、`app/utils/video_reader.py`：取消事件贯穿 ASR、预处理、ffmpeg、抽帧、说话人分离和后处理边界；B 站弹幕/评论聚合 helper 仍在 `cancel_event` 之外。
+- `app/services/note.py`、`app/services/pipeline.py`、`app/services/diarization.py`、`app/transcriber/base.py`、各转写器、`app/transcriber/audio_preprocess.py`、`app/utils/video_reader.py`：取消事件贯穿 ASR、预处理、ffmpeg、抽帧、说话人分离和后处理边界。B 站弹幕/评论 helper 的 `cancel_event` 由 #150 补齐，同步时不要覆盖。
 - `app/db/init_db.py`：兼容迁移仅限 SQLite；缺失 `video_tasks` 表时 helper 安全 no-op，迁移失败 re-raise。`app/db/*_dao.py` 的写失败 rollback 后 re-raise，`note.py` 的索引写入失败不能伪造 SUCCESS。
 - `app/utils/task_manifest.py`：模块级 `RLock` 只保护同一进程的读-改-写与删除；跨进程检查—删除 TOCTOU 仍是 P2，不得在同步时标成已完成。
 - `videonote_mcp/server.py`：普通 admission reservation、batch bypass、提交回滚及结构化清理诊断属于本地任务注册语义；`process_media` 仍为同步工具，不纳入任务注册表。
+
+## #150 新增语义分叉（2026-09-04）
+
+- `app/services/note_cache.py`：滑动 TTL + 总量 LRU（`VIDEONOTE_CACHE_TTL_DAYS` / `VIDEONOTE_CACHE_MAX_MB`）；上游若带无淘汰的永久缓存语义需人工合并。
+- `app/downloaders/bilibili_comment.py`、`app/services/pipeline.py`、`app/services/note.py`：弹幕/评论聚合接收 `cancel_event`，取消错误不吞掉。
 
 
 ```bash

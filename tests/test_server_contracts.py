@@ -1628,6 +1628,9 @@ class GetConfigTest(unittest.TestCase):
         self.assertTrue(resp["transcriber"]["ready"])
         self.assertEqual(resp["cookie_configured"], ["bilibili"])   # 只给平台名
         self.assertEqual(resp["transcript_source"], "platform_subtitles_first")  # #C3 字幕优先
+        self.assertEqual(resp["note_cache"]["policy"], "sliding-lru")
+        self.assertIn("ttl_days", resp["note_cache"])
+        self.assertIn("max_mb", resp["note_cache"])
         self.assertNotIn("probe", resp)
         # cookie 值绝不出现在返回里（凭证红线）
         self.assertNotIn("SESSDATA", json.dumps(resp))

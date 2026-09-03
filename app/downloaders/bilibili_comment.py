@@ -14,11 +14,13 @@ try/except 包住返回 error，绝不抛出去。
 """
 
 import re
+import threading
 from collections import Counter
 from typing import List, Optional, Tuple
 from xml.etree import ElementTree
 
 from app.downloaders.common import public_get_retry
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
 from app.utils.url_parser import (
@@ -68,15 +70,26 @@ class BilibiliCommentFetcher:
             video_url = resolve_bilibili_short_url(video_url) or video_url
         return video_url
 
-    def _get_meta(self, bvid: str, p: Optional[int] = None) -> Optional[Tuple[int, int]]:
+    def _get_meta(
+        self,
+        bvid: str,
+        p: Optional[int] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[Tuple[int, int]]:
         """拿视频元信息，返回 (aid, cid)，失败返回 None。"""
+        check_cancel(cancel_event)
         url = "https://api.bilibili.com/x/web-interface/view"
         params = {"bvid": bvid}
         if p is not None and p >= 1:
             params["p"] = p
         try:
-            resp = public_get_retry(url, params=params, headers=self._headers(), timeout=10)
+            resp = public_get_retry(
+                url, params=params, headers=self._headers(), timeout=10,
+                cancel_event=cancel_event,
+            )
             data = resp.json()
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"获取视频元信息失败: {sanitize_error_text(e)}")
             return None
@@ -177,8 +190,13 @@ class BilibiliCommentFetcher:
 
         return f"弹幕高密度时段：{dense}\n高频弹幕：{kw_str}"
 
-    def fetch_danmaku(self, video_url: str) -> dict:
+    def fetch_danmaku(
+        self,
+        video_url: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> dict:
         """抓取弹幕并聚合摘要。返回 {"ok", "source", "bvid", "cid", "danmaku_summary", "error"}。"""
+        check_cancel(cancel_event)
         video_url = BilibiliCommentFetcher._normalize_video_url(video_url)
 
         bvid = extract_video_id(video_url, "bilibili")
@@ -190,7 +208,7 @@ class BilibiliCommentFetcher:
             }
 
         p = extract_bilibili_p_number(video_url)
-        meta = self._get_meta(bvid, p)
+        meta = self._get_meta(bvid, p, cancel_event=cancel_event)
         if not meta:
             return {
                 "ok": False, "source": "bilibili", "bvid": bvid, "cid": 0,
@@ -204,6 +222,7 @@ class BilibiliCommentFetcher:
                 params={"oid": cid},
                 headers=self._headers(),
                 timeout=10,
+                cancel_event=cancel_event,
             )
             # 体积上限在 decode 前检查（#142 A3）：先解码再拒绝会先把恶意大响应拉进内存
             if len(resp.content) > DANMAKU_MAX_XML_BYTES:
@@ -213,6 +232,8 @@ class BilibiliCommentFetcher:
                     "danmaku_summary": "", "error": f"弹幕 XML 过大（{len(resp.content)} 字节），拒绝解析",
                 }
             xml_text = resp.content.decode("utf-8", errors="ignore")
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"获取弹幕失败: {sanitize_error_text(e)}")
             return {
@@ -236,8 +257,14 @@ class BilibiliCommentFetcher:
             "danmaku_summary": summary, "error": None,
         }
 
-    def fetch_comments(self, video_url: str, limit: int = 20) -> dict:
+    def fetch_comments(
+        self,
+        video_url: str,
+        limit: int = 20,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> dict:
         """抓取热门评论。返回 {"ok", "source", "bvid", "aid", "comments", "error"}。"""
+        check_cancel(cancel_event)
         video_url = BilibiliCommentFetcher._normalize_video_url(video_url)
 
         bvid = extract_video_id(video_url, "bilibili")
@@ -249,7 +276,7 @@ class BilibiliCommentFetcher:
             }
 
         p = extract_bilibili_p_number(video_url)
-        meta = self._get_meta(bvid, p)
+        meta = self._get_meta(bvid, p, cancel_event=cancel_event)
         if not meta:
             return {
                 "ok": False, "source": "bilibili", "bvid": bvid, "aid": 0,
@@ -261,14 +288,18 @@ class BilibiliCommentFetcher:
         seen: dict = {}
         page = 0
         for _ in range(2):  # 最多翻 2 页
+            check_cancel(cancel_event)
             try:
                 resp = public_get_retry(
                     url,
                     params={"type": 1, "oid": aid, "mode": 3, "next": page},
                     headers=self._headers(),
                     timeout=10,
+                    cancel_event=cancel_event,
                 )
                 data = resp.json()
+            except TaskCancelledError:
+                raise
             except Exception as e:
                 logger.warning(f"获取评论失败: {sanitize_error_text(e)}")
                 return {

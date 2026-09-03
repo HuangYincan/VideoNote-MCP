@@ -9,6 +9,7 @@ BilibiliCommentFetcher 测试（mock requests.get，不碰真实网络）。
 import json
 import os
 import sys
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ os.environ.setdefault("VIDEONOTE_DATA_DIR", "/tmp/bn_test_data")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.downloaders.bilibili_comment import BilibiliCommentFetcher  # noqa: E402
+from app.exceptions.task import TaskCancelledError  # noqa: E402
 
 VIDEO_URL = "https://www.bilibili.com/video/BV1xx411c7mD"
 VIDEO_URL_P2 = "https://www.bilibili.com/video/BV1xx411c7mD?p=2"
@@ -112,7 +114,7 @@ def _make_fake_get(reply_pages=None, dm_content=DANMAKU_XML):
     reply_pages = reply_pages if reply_pages is not None else {0: REPLY_PAGE0, 1: REPLY_PAGE1}
     calls = []
 
-    def fake_get(url, params=None, headers=None, timeout=None):
+    def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
         params = params or {}
         headers = headers or {}
         calls.append({"url": url, "params": params, "headers": headers})
@@ -304,7 +306,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
 
     def test_network_exception(self):
         # view 请求断网 → _get_meta 兜底返回 None，error 为通用提示
-        def boom_view(url, params=None, headers=None, timeout=None):
+        def boom_view(url, params=None, headers=None, timeout=None, **kwargs):
             raise ConnectionError("network down")
 
         with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=boom_view):
@@ -313,7 +315,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
         self.assertIn("获取视频元信息失败", d["error"])
 
         # view 正常、dm/reply 断网 → error 透传异常信息
-        def boom_dm(url, params=None, headers=None, timeout=None):
+        def boom_dm(url, params=None, headers=None, timeout=None, **kwargs):
             if "x/web-interface/view" in url:
                 return FakeResponse(VIEW_JSON)
             raise ConnectionError("network down")
@@ -338,6 +340,16 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
         with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=_make_fake_get()[0]):
             meta = self.fetcher._get_meta("BV1xx411c7mD", p=2)
         self.assertEqual(meta, (12345, 67891))  # pages[1] 的 cid
+
+    def test_cancel_skips_network(self):
+        event = threading.Event()
+        event.set()
+        with patch("app.downloaders.bilibili_comment.public_get_retry") as m:
+            with self.assertRaises(TaskCancelledError):
+                self.fetcher.fetch_danmaku(VIDEO_URL, cancel_event=event)
+            with self.assertRaises(TaskCancelledError):
+                self.fetcher.fetch_comments(VIDEO_URL, cancel_event=event)
+        m.assert_not_called()
 
 
 if __name__ == "__main__":

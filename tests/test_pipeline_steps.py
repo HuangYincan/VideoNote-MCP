@@ -231,6 +231,19 @@ class FetchCommentsDanmakuTest(unittest.TestCase):
             result = pipeline.fetch_comments_danmaku("https://www.bilibili.com/video/BV1xx")
         self.assertIsNone(result)
 
+    def test_cancel_before_fetch_raises(self):
+        import threading
+
+        from app.exceptions.task import TaskCancelledError
+
+        event = threading.Event()
+        event.set()
+        with self._patch_fetcher():
+            with self.assertRaises(TaskCancelledError):
+                pipeline.fetch_comments_danmaku(
+                    "https://www.bilibili.com/video/BV1xx", cancel_event=event
+                )
+
 
 class SummarizeMaterialTest(unittest.TestCase):
     def _material(self, frames=None):

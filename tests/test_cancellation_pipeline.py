@@ -98,5 +98,29 @@ class FfmpegCancellationContractTest(unittest.TestCase):
             self.assertFalse(output.exists())
 
 
+class CommentsCancellationContractTest(unittest.TestCase):
+    def test_fetch_comments_danmaku_checks_before_network(self):
+        event = threading.Event()
+        event.set()
+        with mock.patch("app.downloaders.bilibili_comment.BilibiliCommentFetcher") as fetcher_cls:
+            with self.assertRaises(TaskCancelledError):
+                pipeline.fetch_comments_danmaku(
+                    "https://www.bilibili.com/video/BV1xx", cancel_event=event
+                )
+        fetcher_cls.assert_not_called()
+
+    def test_fetch_comments_danmaku_does_not_swallow_cancel(self):
+        event = threading.Event()
+        fetcher_cls = mock.Mock()
+        inst = fetcher_cls.return_value
+        inst.fetch_danmaku.side_effect = TaskCancelledError("任务已取消")
+        with mock.patch("app.downloaders.bilibili_comment.BilibiliCommentFetcher", fetcher_cls):
+            with self.assertRaises(TaskCancelledError):
+                pipeline.fetch_comments_danmaku(
+                    "https://www.bilibili.com/video/BV1xx", cancel_event=event
+                )
+        inst.fetch_comments.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

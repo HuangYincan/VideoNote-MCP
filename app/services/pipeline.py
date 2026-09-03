@@ -22,6 +22,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional, Union
@@ -481,19 +482,25 @@ def extract_frames(
 
 # ---------------- 步骤 4：弹幕 + 评论区观点 ----------------
 
-def fetch_comments_danmaku(video_url: str, comments_limit: int = 20) -> Optional[str]:
+def fetch_comments_danmaku(
+    video_url: str,
+    comments_limit: int = 20,
+    cancel_event: Optional[threading.Event] = None,
+) -> Optional[str]:
     """抓取 B 站弹幕汇总 + 热门评论，拼成一段提示词文本（失败返回 None，不阻断）。
 
     与 fetch_comments / fetch_danmaku 两个独立工具同源（BilibiliCommentFetcher），
     这里是「拼接成一段」的聚合版，供 summarize_material / generate 直接注入。
+    取消事件沿请求边界传播；`TaskCancelledError` 不吞掉，交给编排层结束任务。
     """
+    check_cancel(cancel_event)
     parts: List[str] = []
     try:
         from app.downloaders.bilibili_comment import BilibiliCommentFetcher
 
         fetcher = BilibiliCommentFetcher()
 
-        danmaku = fetcher.fetch_danmaku(str(video_url))
+        danmaku = fetcher.fetch_danmaku(str(video_url), cancel_event=cancel_event)
         if danmaku.get("ok"):
             summary = danmaku.get("danmaku_summary") or ""
             if summary:
@@ -501,7 +508,10 @@ def fetch_comments_danmaku(video_url: str, comments_limit: int = 20) -> Optional
         else:
             logger.warning(f"弹幕抓取失败，跳过: {danmaku.get('error')}")
 
-        comments = fetcher.fetch_comments(str(video_url), limit=comments_limit)
+        check_cancel(cancel_event)
+        comments = fetcher.fetch_comments(
+            str(video_url), limit=comments_limit, cancel_event=cancel_event
+        )
         if comments.get("ok"):
             rows = comments.get("comments") or []
             if rows:
@@ -512,6 +522,8 @@ def fetch_comments_danmaku(video_url: str, comments_limit: int = 20) -> Optional
                 parts.append("【热门评论】\n" + "\n".join(lines))
         else:
             logger.warning(f"评论抓取失败，跳过: {comments.get('error')}")
+    except TaskCancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001 —— 任何网络/解析异常都不阻断任务
         logger.warning(f"弹幕/评论抓取失败，跳过: {exc}")
         return None

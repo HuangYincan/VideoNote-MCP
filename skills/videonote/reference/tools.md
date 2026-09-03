@@ -6,12 +6,12 @@
 
 ### `generate_note(video_url, platform?, quality?, provider_id?, model_name?, format?, style?, screenshot?, link?, video_understanding?, video_interval?, grid_size?, notes_dir?, extras?, include_comments?, comments_limit?)`
 - 提交视频，异步生成，返回 `{task_id, status: "PENDING", platform, model_name}`。
-- **同视频（`platform:video_id`）再次生成会复用上次转写缓存**（`note_cache`，按引擎/尺寸分键），不再重下+重转写；命中时音频也从缓存复制到新任务，`audio_path` 指向真实文件。`cleanup`（全局清理）会清缓存。
+- **同视频（`platform:video_id`）再次生成会复用上次转写缓存**（`note_cache`，按引擎/尺寸分键），不再重下+重转写；命中时音频也从缓存复制到新任务，`audio_path` 指向真实文件。缓存默认 30 天滑动 TTL + 2048MB 总量上限。`cleanup`（全局清理）会清缓存。
 - `quality`: fast / medium / slow。
 - `model_name` 省略：用 setup 默认模型，否则供应商第一个可用模型。
 - `style`: 9 种（minimal/detailed/academic/tutorial/xiaohongshu/life_journal/task_oriented/business/meeting_minutes）；自定义用 `extras="笔记风格要求：<描述>"`。
 - `video_understanding=True` + `video_interval`（默认 6）+ `grid_size`（默认 [3,3]）：视频理解，**需多模态模型**。
-- `include_comments=True` + `comments_limit`（默认 20）：整合 B 站弹幕+评论（需 SESSDATA；失败不阻断）。评论/弹幕聚合 helper 当前不接收 `cancel_event`，取消请求在该 helper 阻塞时只能等其返回后才会在阶段边界生效。
+- `include_comments=True` + `comments_limit`（默认 20）：整合 B 站弹幕+评论（需 SESSDATA；失败不阻断）。弹幕/评论 helper 在请求边界检查 `cancel_event`；正在进行的 HTTP 仍要等返回。
 - `screenshot=True`：插截图，产出便携笔记 note.md + Assets/（相对引用）。**布尔开关与 `format` 双向闭合（#120）**：`screenshot=True` 自动并入 `format`（否则 prompt 不注入标记指令 → LLM 不输出 `*Screenshot-[mm:ss]` → 视频白下载但笔记无图）；`format=["screenshot"]` 等价（即使布尔省略也会下载视频做截图）。`link=True` 同理自动并入 `format`。
 - `notes_dir`: 便携笔记目录（指定即写 note.md，即使不插图片；支持 `file://` URI）。**安全边界**：数据目录外（含 env `VIDEONOTE_NOTES_DIR` 兜底）默认拒绝，需 `VIDEONOTE_ALLOW_EXTERNAL_PATHS=1`/插件 `allow_external_paths` 放行（#142）——报错即说明放行方式，转告用户即可。
 - **并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：普通 `generate_note` / `prepare_note_material` 在提交锁内预占名额，预占覆盖排队与执行全生命周期，超限会拒绝。**`batch_generate_notes` 通过 thread-local bypass 不占普通 admission 名额，由线程池排队**，单次最多 50 条；不要在同一条消息里并行塞多个 `generate_note`（客户端不稳），也不要并发调用多个 batch。`provider_id` 可省略。
@@ -34,7 +34,7 @@
   - **默认剥转写**——转写可能数万 token，一次工具调用就会撑爆 context。note 任务要全文走 `task(task_id, action="transcript", segment_range="all")`；material 任务的转写是主产物，默认直接返回。
 - **`action="transcript"`**：读取已完成任务的**转写文本**（不耗 LLM），按需分段取。`segment_range` 空（默认）只返回前 50 段（`meta.truncated=true` 时用 `"50-"` 续取或 `"all"` 拿全文）；`"0-50"` / `"50-"` / `"150-200"` 按段切片。返回 `{task_id, ok, language, segments, full_text, meta:{total_segments, returned_segments, total_chars, returned_chars, truncated}}`。任务未成功/无转写时 `ok:false`。
   - **MCP Resource `videonote://task/{task_id}/transcript`**：转写全文按时间轴渲染的纯文本（含说话人标签），适合整篇直读；工具版用于切片/结构化。
-- **`action="cancel"`**：取消进行中/排队任务（协作式，下一阶段边界生效，LLM 总结时每 chunk 检查）；取消事件沿字幕、下载、ASR、预处理、ffmpeg、抽帧、说话人分离与后处理传播，可控 ffmpeg/下载子进程会尽快退出，但不能硬中断第三方阻塞调用。B 站弹幕/评论 helper 不接收该事件。运行中通常先返回 `CANCELLING`，排队任务可直接写 `CANCELLED`。
+- **`action="cancel"`**：取消进行中/排队任务（协作式，下一阶段边界生效，LLM 总结时每 chunk 检查）；取消事件沿字幕、下载、ASR、预处理、ffmpeg、抽帧、说话人分离、B 站弹幕/评论与后处理传播，可控 ffmpeg/下载子进程会尽快退出，但不能硬中断正在进行的第三方 HTTP。运行中通常先返回 `CANCELLING`，排队任务可直接写 `CANCELLED`。
 
 ## AGENT 直接生成（准备素材）
 
@@ -125,7 +125,7 @@
 - DAO 的索引插入/更新/删除失败会 rollback 后重新抛出；笔记完成阶段的索引写入失败会阻止伪造 `SUCCESS`。SQLite 兼容迁移只在 SQLite 上执行；缺失 `video_tasks` 表时迁移 helper 安全 no-op，迁移失败则 re-raise。
 ## 配置（只读）
 
-- `get_config(provider_id?)` —— **唯一**配置工具（只读）：`app_config` 默认值（默认供应商/模型、风格、开关，敏感项过滤）+ `providers`（key 掩码）+ `transcriber`（引擎/尺寸/就绪）+ `cookie_configured`（已配 Cookie 的平台名）+ `transcript_source`（固定 `platform_subtitles_first`：平台官方字幕优先，无字幕才转写引擎）。传 `provider_id` 附加该供应商连通性探测（用已存 key，不接受 key 参数）→ `{probe: {ok, models, error}}`。
+- `get_config(provider_id?)` —— **唯一**配置工具（只读）：`app_config` 默认值（默认供应商/模型、风格、开关，敏感项过滤）+ `providers`（key 掩码）+ `transcriber`（引擎/尺寸/就绪）+ `cookie_configured`（已配 Cookie 的平台名）+ `transcript_source`（固定 `platform_subtitles_first`：平台官方字幕优先，无字幕才转写引擎）+ `note_cache`（`ttl_days` / `max_mb` / `policy=sliding-lru`）。传 `provider_id` 附加该供应商连通性探测（用已存 key，不接受 key 参数）→ `{probe: {ok, models, error}}`。
 - **转写素材来源（自动，无需配置）**：`generate_note` / `prepare_note_material` / `batch_generate_notes` 都优先用平台官方字幕（YouTube/B 站人工+自动字幕，小宇宙官方文稿；YouTube 走 youtube-transcript-api；小宇宙走 `episode-transcript/get`，需 `! videonote login xiaoyuzhou`）。有官方字幕就不下载音轨、不耗转写引擎；无字幕或获取失败才下载音频走转写引擎（fast-whisper/groq/funasr 等）。因此「有官方字幕」≠「需要转写引擎」。
 - **配置修改一律走 CLI**（MCP 面无写配置工具，凭证红线最干净）：
   - 填 key：`! videonote providers set <id> --api-key '...'`（隐藏输入）

@@ -27,7 +27,7 @@
 | 转写输出异常（开预处理后） | 预处理默认关；若开了又出问题，`! videonote transcriber preprocess off` 关闭对比 |
 | 视频下载 403 / 需会员 | 让用户 `videonote setup` 向导里配「平台 Cookie」（MCP 工具不收 cookie，见安全红线） |
 | `generate_note` 报「已有 N 个进行中任务（上限 M）」 | 普通任务 admission 已达上限 —— 提交时已预占名额，覆盖排队与执行全生命周期；等其中一些完成（或 `task(task_id, action="cancel")` 取消）再提交。合集/多集用 `batch_generate_notes`（单次最多 50 条，绕过普通 admission，由线程池排队），不要并发调用多个 batch；互相独立的链接用 subagent 并行 |
-| `task(action="cancel")` 后仍显示 `CANCELLING` | 这是协作式取消：事件会在字幕、下载、ASR、预处理、ffmpeg、抽帧、说话人分离和后处理检查点传播；可控 ffmpeg/下载子进程会尽快退出，但第三方网络/模型/SDK 阻塞调用不能硬中断。B 站弹幕/评论 helper 未接入 `cancel_event`，可能要等请求返回后才变成 `CANCELLED` |
+| `task(action="cancel")` 后仍显示 `CANCELLING` | 这是协作式取消：事件会在字幕、下载、ASR、预处理、ffmpeg、抽帧、说话人分离、B 站弹幕/评论和后处理检查点传播；可控 ffmpeg/下载子进程会尽快退出，但正在进行的 HTTP/模型推理不能硬中断 |
 | 想取消 `process_media` | `process_media` 是同步工具，不登记任务注册表，没有可供 `task(action="cancel")` 控制的后台 task_id；只能等待当前 export/merge/diarize 调用自然返回 |
 
 ## 并发与多会话

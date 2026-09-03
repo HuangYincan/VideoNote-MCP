@@ -459,7 +459,9 @@ class NoteGenerator:
             # 3.5 抓取 B 站弹幕/热门评论（可选；失败不阻断笔记生成）
             comments_danmaku = None
             if include_comments:
-                comments_danmaku = self._fetch_comments_danmaku(video_url, comments_limit)
+                comments_danmaku = self._fetch_comments_danmaku(
+                    video_url, comments_limit, cancel_event=cancel_event
+                )
             _check_cancel(cancel_event)  # 阶段边界：可取消点
 
             # 3.0 material_only：只组装素材包返回（转写/帧/评论/音视频路径），不调 LLM；仍写全局索引
@@ -1132,17 +1134,22 @@ class NoteGenerator:
         self,
         video_url: Union[str, HttpUrl],
         comments_limit: int,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
         """
         抓取 B 站弹幕汇总与热门评论，拼成一段提示词文本（委托 pipeline 步骤层）。
 
         抓取失败（含 fetcher 模块缺失/接口异常）只记日志，返回 None，不阻断笔记生成。
+        `TaskCancelledError` 向上传播。
 
         :param video_url: 视频链接
         :param comments_limit: 抓取评论条数上限
+        :param cancel_event: 协作式取消事件
         :return: 拼接好的弹幕+评论文本；失败或无数据时返回 None
         """
-        return pipeline.fetch_comments_danmaku(str(video_url), comments_limit)
+        return pipeline.fetch_comments_danmaku(
+            str(video_url), comments_limit, cancel_event=cancel_event
+        )
 
     def _build_note_material(
         self,

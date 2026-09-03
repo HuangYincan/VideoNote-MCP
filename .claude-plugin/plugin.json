@@ -30,6 +30,8 @@
         "VIDEONOTE_DIARIZATION": "${user_config.diarization}",
         "VIDEONOTE_MAX_WORKERS": "${user_config.max_workers}",
         "VIDEONOTE_STDERR_LOG_MAX_MB": "${user_config.stderr_log_max_mb}",
+        "VIDEONOTE_CACHE_TTL_DAYS": "${user_config.cache_ttl_days}",
+        "VIDEONOTE_CACHE_MAX_MB": "${user_config.cache_max_mb}",
         "VIDEONOTE_ALLOW_EXTERNAL_PATHS": "${user_config.allow_external_paths}",
         "VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP": "${user_config.allow_destructive_cleanup}"
       }
@@ -119,6 +121,18 @@
       "title": "MCP 日志轮转上限（MB）",
       "description": "数字，默认 50。mcp_stderr.log 超过该大小后轮转为 .log.1",
       "default": 50
+    },
+    "cache_ttl_days": {
+      "type": "number",
+      "title": "转写缓存 TTL（天）",
+      "description": "数字，默认 30。note_cache 条目超过该天数未被命中则失效（命中会刷新）。0=不过期",
+      "default": 30
+    },
+    "cache_max_mb": {
+      "type": "number",
+      "title": "转写缓存总量上限（MB）",
+      "description": "数字，默认 2048。note_cache 超过该大小时按最久未用淘汰整条视频缓存。0=不限制",
+      "default": 2048
     },
     "allow_external_paths": {
       "type": "boolean",

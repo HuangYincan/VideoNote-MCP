@@ -21,7 +21,9 @@ TikTok；本地文件用 sha256）。b23 短链解析失败、快手、generic �
   - 本地/云端引擎：`transcript_{transcriber_type}[:{model_size}]`——本地引擎拼
     model_size，切换引擎或模型尺寸不会误用旧结果。
 
-淘汰：无 LRU。`cleanup_all` 连缓存一起清。
+淘汰：滑动 TTL（默认 30 天未命中失效）+ 总量上限（默认 2048MB，按身份目录 LRU
+淘汰最久未用的）。单文件媒体仍有 100MB 上限（#59）。`VIDEONOTE_CACHE_TTL_DAYS=0`
+或 `VIDEONOTE_CACHE_MAX_MB=0` 关闭对应限制。`cleanup_all` 仍连缓存一起清。
 """
 from __future__ import annotations
 
@@ -29,8 +31,11 @@ import functools
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -50,6 +55,11 @@ SUBTITLE_KEY = "subtitle"
 
 # 本地推理引擎：转写结果依赖模型尺寸，分键时要拼 model_size
 _LOCAL_ENGINES = {"fast-whisper", "whisper", "mlx-whisper", "funasr"}
+
+# 跨任务缓存治理（#150）：命中会刷新 mtime，因此 TTL 是滑动窗口；容量按身份目录淘汰。
+DEFAULT_CACHE_TTL_DAYS = 30
+DEFAULT_CACHE_MAX_MB = 2048
+_CACHE_LOCK = threading.Lock()
 
 
 def _fs_safe(s: str) -> str:
@@ -79,6 +89,192 @@ def engine_key(transcriber_type: str, model_size: str) -> str:
     if transcriber_type in _LOCAL_ENGINES and size:
         return _fs_safe(f"{transcriber_type}:{size}")
     return transcriber_type
+
+
+def _env_int(name: str, default: int) -> int:
+    """解析缓存治理 env；未设置或非法回 default（不从 videonote_mcp 反向 import）。"""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning("%s 非整数（%r），回退默认 %s", name, raw, default)
+        return default
+
+
+def cache_ttl_days() -> int:
+    """TTL 天数；≤0 表示关闭过期。非法 env 回退 30。"""
+    return _env_int("VIDEONOTE_CACHE_TTL_DAYS", DEFAULT_CACHE_TTL_DAYS)
+
+
+def cache_max_mb() -> int:
+    """总量上限 MB；≤0 表示不限制。非法 env 回退 2048。"""
+    return _env_int("VIDEONOTE_CACHE_MAX_MB", DEFAULT_CACHE_MAX_MB)
+
+
+def cache_ttl_seconds() -> Optional[float]:
+    days = cache_ttl_days()
+    if days <= 0:
+        return None
+    return days * 86400.0
+
+
+def cache_max_bytes() -> Optional[int]:
+    mb = cache_max_mb()
+    if mb <= 0:
+        return None
+    return mb * 1024 * 1024
+
+
+def _is_expired(path: Path, now: Optional[float] = None) -> bool:
+    ttl = cache_ttl_seconds()
+    if ttl is None:
+        return False
+    try:
+        age = (now if now is not None else time.time()) - path.stat().st_mtime
+    except OSError:
+        return True
+    return age > ttl
+
+
+def _touch(path: Path) -> None:
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+def _unlink_if_expired(path: Path) -> bool:
+    """过期则删除并返回 True（当作 miss）。"""
+    if not path.exists() or path.is_symlink() or not path.is_file():
+        return False
+    if not _is_expired(path):
+        return False
+    try:
+        path.unlink()
+        logger.info("跨任务缓存过期已删: %s", path)
+    except OSError as exc:
+        logger.warning("删除过期缓存失败 %s: %s", path, exc)
+    return True
+
+
+def _iter_ident_dirs(root: Path):
+    try:
+        for p in root.iterdir():
+            if p.is_dir() and not p.is_symlink() and not p.name.startswith("."):
+                yield p
+    except OSError:
+        return
+
+
+def _ident_stats(ident_dir: Path) -> tuple[int, float]:
+    """身份目录的合计大小与最新 mtime（不跟随符号链接）。"""
+    total = 0
+    newest = 0.0
+    try:
+        for dirpath, dirnames, filenames in os.walk(ident_dir, followlinks=False):
+            dirnames[:] = [d for d in dirnames if not (Path(dirpath) / d).is_symlink()]
+            for name in filenames:
+                fp = Path(dirpath) / name
+                if fp.is_symlink():
+                    continue
+                try:
+                    st = fp.stat()
+                except OSError:
+                    continue
+                total += st.st_size
+                if st.st_mtime > newest:
+                    newest = st.st_mtime
+    except OSError:
+        return 0, 0.0
+    return total, newest
+
+
+def _safe_rmtree(path: Path, root: Path) -> None:
+    try:
+        resolved = path.resolve()
+        root_resolved = root.resolve()
+        if not resolved.is_relative_to(root_resolved) or resolved == root_resolved:
+            logger.warning("拒绝删除越界缓存目录: %s", path)
+            return
+        shutil.rmtree(resolved)
+    except OSError as exc:
+        logger.warning("删除缓存目录失败 %s: %s", path, exc)
+
+
+def _rm_empty_ident(ident_dir: Path, root: Path) -> None:
+    """身份目录只剩空子目录时清掉，避免 LRU 统计到空壳。"""
+    try:
+        for dirpath, dirnames, filenames in os.walk(ident_dir, topdown=False, followlinks=False):
+            current = Path(dirpath)
+            if filenames:
+                return
+            if any((current / d).is_symlink() for d in dirnames):
+                return
+        if ident_dir.exists():
+            _safe_rmtree(ident_dir, root)
+    except OSError:
+        return
+
+
+def _prune_expired(root: Path) -> None:
+    ttl = cache_ttl_seconds()
+    if ttl is None or not root.is_dir():
+        return
+    now = time.time()
+    for ident_dir in list(_iter_ident_dirs(root)):
+        try:
+            for dirpath, dirnames, filenames in os.walk(ident_dir, followlinks=False):
+                dirnames[:] = [d for d in dirnames if not (Path(dirpath) / d).is_symlink()]
+                for name in filenames:
+                    fp = Path(dirpath) / name
+                    if fp.is_symlink() or not fp.is_file():
+                        continue
+                    if (now - fp.stat().st_mtime) > ttl:
+                        try:
+                            fp.unlink()
+                        except OSError as exc:
+                            logger.warning("删除过期缓存失败 %s: %s", fp, exc)
+        except OSError:
+            continue
+        _rm_empty_ident(ident_dir, root)
+
+
+def enforce_cache_limits(protect_ident: Optional[str] = None) -> None:
+    """删除过期条目，再按 LRU 把总量压到上限以下。protect_ident 刚写入的身份不删。"""
+    root = cache_root()
+    with _CACHE_LOCK:
+        if not root.is_dir():
+            return
+        _prune_expired(root)
+        max_bytes = cache_max_bytes()
+        if max_bytes is None:
+            return
+        entries = []
+        for ident_dir in _iter_ident_dirs(root):
+            size, recency = _ident_stats(ident_dir)
+            entries.append((recency, size, ident_dir))
+        total = sum(size for _, size, _ in entries)
+        if total <= max_bytes:
+            return
+        try:
+            protect_resolved = (root / protect_ident).resolve() if protect_ident else None
+        except OSError:
+            protect_resolved = None
+        entries.sort(key=lambda item: item[0])  # 最久未用的先删
+        for _, size, ident_dir in entries:
+            if total <= max_bytes:
+                break
+            try:
+                resolved = ident_dir.resolve()
+            except OSError:
+                continue
+            if protect_resolved is not None and resolved == protect_resolved:
+                continue
+            _safe_rmtree(ident_dir, root)
+            total -= size
+            logger.info("跨任务缓存超限淘汰: %s (%.1fMB)", ident_dir.name, size / (1024 * 1024))
 
 
 def _sha256_file(path: Path) -> str:
@@ -194,6 +390,8 @@ def lookup_transcript(
         src = base / f"transcript_{key}.json"
         if not src.exists():
             continue
+        if _unlink_if_expired(src):
+            continue
         if not _has_segments(src):
             # 历史遗留的空转写（静音视频）：当 miss 处理，继续找下一个分键
             logger.info("跳过空转写缓存 %s", src)
@@ -201,6 +399,7 @@ def lookup_transcript(
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dest)
+            _touch(src)
             logger.info("命中跨任务转写缓存: %s", src)
             return src
         except OSError as exc:
@@ -240,6 +439,7 @@ def promote_transcript(
         shutil.copyfile(src, tmp)
         tmp.replace(dst)  # 原子替换，避免读到半截文件
         logger.info("写入跨任务转写缓存: %s", dst)
+        enforce_cache_limits(protect_ident=ident)
     except OSError as exc:
         logger.warning("写跨任务转写缓存失败 %s: %s", ident, exc)
 
@@ -284,6 +484,7 @@ def promote_media(
         shutil.copy2(src, tmp)
         tmp.replace(dst)  # 原子替换，避免读到半截文件
         logger.info("写入跨任务媒体缓存: %s", dst)
+        enforce_cache_limits(protect_ident=ident)
     except OSError as exc:
         logger.warning("写跨任务媒体缓存失败 %s: %s", ident, exc)
 
@@ -304,8 +505,9 @@ def lookup_media(url: str, platform: str, dest_dir: Path) -> Optional[str]:
         # 与非常见媒体后缀——此前 iterdir 全选，.tmp 会被当音频复制给下游（#123 B2）。
         files = sorted(
             p for p in src_dir.iterdir()
-            if p.is_file() and not p.name.endswith(".tmp")
+            if p.is_file() and not p.is_symlink() and not p.name.endswith(".tmp")
             and p.suffix.lower() in _MEDIA_SUFFIXES
+            and not _unlink_if_expired(p)
         )
     except OSError:
         return None
@@ -316,6 +518,7 @@ def lookup_media(url: str, platform: str, dest_dir: Path) -> Optional[str]:
         dest_dir.mkdir(parents=True, exist_ok=True)
         dst = dest_dir / files[0].name
         shutil.copy2(files[0], dst)
+        _touch(files[0])
         logger.info("命中跨任务媒体缓存，复制到 %s", dst)
         return str(dst)
     except OSError as exc:

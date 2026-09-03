@@ -99,7 +99,7 @@ from app.enmus.note_enums import DownloadQuality
 from app.enmus.task_status_enums import TaskStatus
 from app.exceptions.task import TaskCancelledError
 from app.exceptions.task import check_cancel as _check_cancel
-from app.services import pipeline
+from app.services import note_cache, pipeline
 from app.services.cookie_manager import CookieConfigManager
 from app.services.note import NOTE_OUTPUT_DIR, NoteGenerator
 from app.services.provider import ProviderService
@@ -2087,7 +2087,8 @@ def get_config(provider_id: str = "") -> str:
     - cookie_configured: 已配置 Cookie 的平台名列表（只给布尔状态，不给值）；
     - transcript_source: 转写素材来源（固定 platform_subtitles_first——平台官方字幕优先，
       YouTube/B 站人工+自动字幕、小宇宙官方文稿可用时直接用官方字幕，无字幕/获取失败才下载音轨走转写引擎；
-      小宇宙文稿需 `! videonote login xiaoyuzhou`；官方字幕通常比本地 Whisper 更准，且不耗转写引擎资源）。
+      小宇宙文稿需 `! videonote login xiaoyuzhou`；官方字幕通常比本地 Whisper 更准，且不耗转写引擎资源）；
+    - note_cache: 跨任务转写缓存策略（ttl_days / max_mb / policy=sliding-lru）。
 
     传 provider_id 时额外对该供应商做连通性探测（用已保存的 key 请求
     /v1/models，15s 超时；**不接受 key 参数**），返回 {probe: {ok, models, error}}。
@@ -2125,6 +2126,11 @@ def get_config(provider_id: str = "") -> str:
         # 转写素材来源优先级：平台官方字幕（YouTube/B 站人工+自动字幕）总是优先，
         # 无字幕/获取失败才下载音轨走转写引擎（#C3 让 Agent 知道有官方字幕可用）。
         "transcript_source": "platform_subtitles_first",
+        "note_cache": {
+            "ttl_days": note_cache.cache_ttl_days(),
+            "max_mb": note_cache.cache_max_mb(),
+            "policy": "sliding-lru",
+        },
     }
     if provider_id:
         provider = ProviderService.get_provider_by_id(provider_id)
