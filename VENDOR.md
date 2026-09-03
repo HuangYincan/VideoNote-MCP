@@ -50,15 +50,43 @@
 - `app/services/transcriber_config_manager.py` / `app/utils/model_status.py` / `app/utils/path_helper.py` / `app/utils/logger.py`
 - `app/db/engine.py`（2026-08-25 #140 复扫 A3：SQLite 数据文件在 connect 事件 chmod 0600——上游无此安全收紧，同步时需人工合并）
 - `app/services/cookie_manager.py` / `proxy_config_manager.py` / **`app/utils/json_store.py`**（2026-08-17 #106：三个配置管理器改 `json_store` 安全读写——损坏不静默当空（warning + `.corrupt` 备份）、`_write` 原子化（tmp+replace+0600）；上游若带原生读写逻辑需人工合并）
-- `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py`
-- `app/downloaders/common.py` / `app/utils/url_parser.py` / `app/downloaders/douyin_downloader.py` / `app/downloaders/kuaishou_helper/kuaishou.py` / `app/downloaders/bilibili_subtitle.py`（2026-08-25 #140：出站请求逐跳 SSRF 校验——stream_download 入口校验 + 短链解析/视频页跟随/API 资源 URL 改走 `url_safety.public_get/public_head`；上游若带原生 requests 调用逻辑需人工合并）
+- `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py`（2026-09-01 #147：local ffmpeg 转 mp3/封面改为可取消 Popen）
+- `app/downloaders/common.py` / `app/utils/url_parser.py` / `app/downloaders/douyin_downloader.py` / `app/downloaders/kuaishou_helper/kuaishou.py` / `app/downloaders/bilibili_subtitle.py`（2026-08-25 #140：出站请求逐跳 SSRF 校验——stream_download 入口校验 + 短链解析/视频页跟随/API 资源 URL 改走 `url_safety.public_get/public_head`；2026-09-01 #147：`pin_public_host` 钉死校验 IP，堵住 DNS rebinding TOCTOU；上游若带原生 requests 调用逻辑需人工合并）
 - `app/transcriber/transcriber_provider.py`（funasr / mlx）
 - `app/transcriber/whisper.py` / `mlx_whisper_transcriber.py` / `app/utils/model_status.py`（2026-08-25 #142 A2：内置模型 revision 固定——whisper 经 `WhisperModel(revision=…)`、mlx 经 `snapshot_download(revision=…)`，映射/散列单一来源在 model_status；上游若带原生下载逻辑需人工合并）
 - `app/downloaders/youtube_downloader.py`（2026-08-25 #142 A4：`VIDEONOTE_YTDLP_EJS` 开关控制 `remote_components`——上游默认无此 env 门禁，同步需人工合并）
 - `app/gpt/universal_gpt.py`（checkpoint 损坏弃用时打 warning 留痕，#106）
-- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`xiaoyuzhou_downloader.py`、`xiaoyuzhou_subtitle.py`、`xiaohongshu_downloader.py`、`xiaohongshu_auth.py`、`xiaohongshu_sign.py`、`xiaohongshu_browser.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`
+- `app/downloaders/xiaohongshu_downloader.py` / `xiaohongshu_auth.py` / `xiaohongshu_browser.py` / `xiaoyuzhou_subtitle.py`（2026-09-01 #144：笔记页 host 钉死、cookie 域精确后缀、Playwright 响应/二维码官方域、官方文稿失败不回退 ASR；2026-09-01 #145：下载器 close 自建 Auth/Session；上游同步需人工合并）
+- `app/downloaders/douyin_downloader.py` / `kuaishou_helper/kuaishou.py` / `app/transcriber/bcut.py` / `app/downloaders/youtube_subtitle.py`（2026-09-01 #145：裸 requests 改 PublicOnlySession/public_get/post；必剪上传 URL 入口校验；YouTube 字幕 Session 默认超时）
+- 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`xiaoyuzhou_downloader.py`、`xiaoyuzhou_subtitle.py`、`xiaohongshu_downloader.py`、`xiaohongshu_auth.py`、`xiaohongshu_sign.py`、`xiaohongshu_browser.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`（2026-09-01 #147：`pin_public_host` / 连接期 DNS 钉死）
 
-## 如何同步上游更新
+## 本轮审查新增语义分叉（2026-09-01 #148）
+
+以下文件相对移植来源已增加任务编排、持久化一致性或安全语义；上游同步时必须人工合并，不能直接覆盖：
+
+- `app/services/note.py`：取消事件贯穿字幕获取、下载和转写；`TaskCancelledError` 不被 fallback 吞掉；ffmpeg 使用同目录临时文件并在成功后原子替换；`publish_success` 只在结果与 manifest 持久化完成后发布成功；metadata 索引写入失败向上抛出。
+- `app/db/engine.py` / `app/db/init_db.py` / `app/db/models/models.py`：每连接开启 SQLite 外键；旧 `models.provider_id` schema 迁移为字符串外键；为历史孤儿 provider 建立 disabled 占位记录；模型插入要求 provider 存在；补充任务索引。
+- `app/db/model_dao.py` / `app/db/provider_dao.py` / `app/db/video_task_dao.py`：写失败 rollback 后重新抛出；provider 删除显式清理关联 model；provider/model 一致性和任务索引错误不再静默吞掉。
+- `app/utils/task_manifest.py`：strict manifest 写入后回读校验；当前清理仍以 `resolve()` 做数据根边界检查，仅适用于受信任的本机数据目录。
+- `app/utils/video_reader.py`：ffprobe 增加 120 秒超时，并拒绝 NaN、Inf 和负数时长。
+- `videonote_mcp/server.py`：自有任务 admission、Future/Event 登记、状态发布和提交失败回滚语义；普通任务受 worker admission 限制，batch 单次最多 50 条并由线程池排队。成功顺序固定为 `result.json → manifest → SUCCESS`。
+- `videonote_mcp/crypto.py`：新增 `EncryptionError`；Fernet key 读取、创建和加密失败均 fail-closed，不回退明文；`encrypt_status()` 暴露 `fernet` 或 `encryption-error`。
+
+## #149 新增语义分叉（2026-09-03）
+
+#149 将协作式取消、任务生命周期和 SQLite 迁移边界固化为本仓库语义；上游同步时不得覆盖这些改动：
+
+- `app/downloaders/base.py`、各平台 downloader/subtitle 与 `app/downloaders/common.py`：下载、字幕和流式/yt-dlp 调用接收 `cancel_event`；可控 ffmpeg/下载子进程可尽快退出，但第三方阻塞调用无法被线程外硬中断。
+- `app/services/note.py`、`app/services/pipeline.py`、`app/services/diarization.py`、`app/transcriber/base.py`、各转写器、`app/transcriber/audio_preprocess.py`、`app/utils/video_reader.py`：取消事件贯穿 ASR、预处理、ffmpeg、抽帧、说话人分离和后处理边界。B 站弹幕/评论 helper 的 `cancel_event` 由 #150 补齐，同步时不要覆盖。
+- `app/db/init_db.py`：兼容迁移仅限 SQLite；缺失 `video_tasks` 表时 helper 安全 no-op，迁移失败 re-raise。`app/db/*_dao.py` 的写失败 rollback 后 re-raise，`note.py` 的索引写入失败不能伪造 SUCCESS。
+- `app/utils/task_manifest.py`：模块级 `RLock` 只保护同一进程的读-改-写与删除；跨进程检查—删除 TOCTOU 仍是 P2，不得在同步时标成已完成。
+- `videonote_mcp/server.py`：普通 admission reservation、batch bypass、提交回滚及结构化清理诊断属于本地任务注册语义；`process_media` 仍为同步工具，不纳入任务注册表。
+
+## #150 新增语义分叉（2026-09-04）
+
+- `app/services/note_cache.py`：滑动 TTL + 总量 LRU（`VIDEONOTE_CACHE_TTL_DAYS` / `VIDEONOTE_CACHE_MAX_MB`）；上游若带无淘汰的永久缓存语义需人工合并。
+- `app/downloaders/bilibili_comment.py`、`app/services/pipeline.py`、`app/services/note.py`：弹幕/评论聚合接收 `cancel_event`，取消错误不吞掉。
+
 
 ```bash
 # 1. 记下当前 vendored 版本

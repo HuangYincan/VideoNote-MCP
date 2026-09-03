@@ -802,3 +802,78 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **原因**：edith `qrcode/create` 拒绝旧版 x-s，HTTP 406 `{"code":-1,"success":false}`。
 - **修复**：`videonote login xiaohongshu` 用本机 Chrome/Edge 打开官网登录页（Playwright），拦截官方签名后的 create 响应，终端仍出 ASCII 码；无浏览器时回退直连接口并提示 `--cookie`。
 - 登录探测改为 GET 首页，不再打会 406 的 edith `user/me`。
+
+## Wave I 批 34（2026-09-01 · 第 19 轮全库扫描 #143，847→864 tests）
+
+- **结果边界收紧**（commit `53e56e4`）：B 站 yt-dlp 的完整 `raw_info` 不再写入 `audio.json` 或经 MCP 任务结果返回；缓存序列化、任务结果写入和历史结果读取均采用安全白名单，保留流水线所需 tags 与公开元数据。
+- **错误信息脱敏**（commit `b84f33d`）：统一清洗错误文本中的签名 URL query/fragment、Authorization、Cookie、token/signature，并移除任务主异常日志的原始 traceback，覆盖 status、inspect、batch 与主要下载器错误边界。
+- **B 站请求重试**（commit `87a0857`）：官方字幕、元信息、弹幕/评论 GET 增加复用逐跳 SSRF 守卫的有限重试；连接/超时、429、5xx 才重试，带指数退避和总 deadline，4xx 不重试。
+- **工程卫生**（commit `314bb5d`）：清理抖音正则及测试文档字符串的 invalid escape `SyntaxWarning`，并以 `-W error` 编译验证。
+- **文档同步**：活跃文档统一到 10 工具与 864 测试基线；删除当前流程中的旧步骤工具/不存在的 `models` CLI/`include_transcript` 参数说明；历史档案不改写。
+- **建议后续**：yt-dlp 内部 egress/重定向 SSRF、DNS fail-open 与 fake-IP 代理兼容策略、Docker/Actions/插件可变版本固定、`pyannote.audio` 版本上界，分别需部署策略、产品决策或兼容矩阵确认。
+- **验证**：`864 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean，`git diff --check` 通过。
+
+## Wave J 批 35（2026-09-01 · 第 20 轮扫描 #144，864→876 tests）
+
+- **小红书 host 钉死（A2/A3，中）**：Cookie 域与笔记页 URL 按精确 host 后缀匹配；显式 `platform=xiaohongshu` 不能把任意公网页当笔记解析。
+- **扫码出站（A1/A4，中）**：Chrome 响应/二维码只认 `*.xiaohongshu.com` 或 `xhsdiscover://`；小宇宙扫码改 `PublicOnlySession`，二维码钉官方域；Playwright 启动 15s 超时，失败路径关闭浏览器。
+- **MCP 输出（A5，中）**：`inspect_video` 小红书条目 URL 剥 query（`xsec_token`）；task 结果元数据白名单见 #143。
+- **官方文稿失败（B1，高）**：已登录小宇宙时网络/HTTP/CDN 失败抛 `OfficialTranscriptFetchError`，不再静默整集 ASR；5xx/超时重试一次。
+- **登录探测 / 取消 / 缓存（B2/B3/B5/B9）**：首页须有 userId；ffmpeg 转码响应 `cancel_event`；扫码成功只认 `code_status==2`；转写缓存命中时笔记页失败用 URL 存根。
+- **MCP docstring（B6）**：补小宇宙/小红书与 CLI 登录提示。
+- **验证**：合入 `dev` 后 `876 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean。
+
+## Wave K 批 36（2026-09-01 · 第 21 轮扫描 #145，876→902 tests）
+
+- **出站 SSRF 收口（A1–A3，中）**：B 站扫码跟随只认官方域并走 `PublicOnlySession`；必剪分片 PUT、抖音详情 GET、快手首页/GraphQL 全部纳入逐跳公网校验。
+- **MCP/磁盘边界（A4–A6）**：`audio.json` 封面 URL 剥签名 query；inspect 回传链接用 `public_replay_url`（保留 `v`/`p`，丢掉 token）；inspect 本地路径与 generate_note 同数据目录门禁。
+- **正确性（B1 高 / B2–B4/B6 中）**：抖音 HEAD 失败不再丢掉已有 `/video/{id}`；供应商 DB 故障与任务索引失败显式报错；Whisper 非 cache 错误不立刻重下。
+- **工程卫生（C1/C3/C5/C6）**：删除 #144 暂缓的四个零引用符号；YouTube 字幕 HTTP 默认 5s/20s 超时；`app.log` 轮转；faster-whisper 惰性 import。
+- **建议后续**：CLI export 外部目录、下载状态写 API 死代码、FastMCP 同步工具占事件循环、mlx 分块重复加载。
+- **验证**：`902 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit `ba4a7dd`）。
+
+## Wave L 批 37（2026-09-01 · 第 22 轮重试扫描 #146，902→906 tests）
+
+- **转写器缓存恢复（B1）**：模型重建先构造新实例，成功后才关闭并替换旧实例；新模型加载失败时保留旧实例，避免缓存留下 `model=None` 的失效对象。
+- **后台任务登记竞态（B2）**：`generate_note` 与 `prepare_note_material` 在 `_tasks_lock` 内完成取消事件登记、线程池提交和 Future 登记；极快 worker 不再与提交线程竞态留下注册表残骸。
+- **终态状态可观测性（B3）**：终态 `status.json` 损坏且无内存快照时返回 `UNKNOWN`，不再伪造 `PENDING` 让 Agent 无限轮询。
+- **batch 边界（B4）**：单集退化路径遵守 `max_entries=0`，只完成解析并返回 `submitted=0`，不再绕过批量上限提交任务。
+- **建议后续**：A1 DNS rebinding 解析—连接 TOCTOU 仍需连接器/部署 egress 策略与 fake-IP 代理兼容矩阵确认。
+- **验证**：`906 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit `1a31169`）。
+
+## Wave M 批 38（2026-09-01 · 开放项收口 #147，906→920 tests）
+
+- **DNS 钉死（A1，高）**：`pin_public_host` 在连接前重新解析并把本线程 `getaddrinfo` 钉到已校验公网 IP；`PublicOnlySession` 与 `stream_download` 每跳使用，堵住 DNS rebinding TOCTOU；fake-IP 代理段语义不变。
+- **取消与清理（B4/B5）**：diarize 的 `normalize_to_wav` 失败也会清旁边的 `_16k.wav`；local/kuaishou ffmpeg 改为可取消的 Popen 轮询。
+- **错误可见（B6/C2）**：Provider DAO 写失败不再假成功；CLI 模型下载接线进程内 downloading 态；删除零引用 `delete_model` / `TaskStatus.description` / `GPT.list_models`。
+- **mlx（C7）**：依赖上游 `ModelHolder` 按 path 缓存；`close()` 释放匹配的驻留权重。
+- **建议后续**：FastMCP 同步工具占事件循环、CLI export 外部目录、#143 部署侧 SSRF/版本钉死。
+- **验证**：`920 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean（commit `affae86`）。
+
+## Wave N 批 39（2026-09-01 · 第 23 轮全库代码审查与修复 #148，920→948 tests）
+
+- **任务持久化一致性**：SUCCESS 发布顺序固定为 `result.json → manifest → SUCCESS`；严格持久化失败转 FAILED；自动导出产物纳入最终 manifest。
+- **并发与取消**：普通任务 admission、线程池提交、Future/Event 登记在同一锁内；提交失败回滚；取消贯穿字幕/转写/下载；batch 单次最多 50 条并由线程池排队。
+- **数据层**：SQLite 每连接开启外键；旧 `models.provider_id` schema 迁移为字符串外键并保留孤儿模型；DAO rollback/re-raise；Provider 加密失败整笔回滚。
+- **媒体与安全**：ffmpeg 音频抽取采用临时文件+原子替换；Fernet 加密 fail-closed；manifest strict 回读；ffprobe 有 120 秒 timeout 并校验非法时长。
+- **报告与文档**：新增 `docs/07-全库代码审查报告.md`，同步 `docs/00`、`docs/04`、Skill、`VENDOR.md` 与历史档案。
+- **开放 P2**：yt-dlp 内部 egress SSRF、manifest 清理 TOCTOU、stderr 日志路径安全仍需部署/网络策略或平台原语支持；本批不虚报为已解决。
+- **验证**：`948 passed, 1 skipped, 10 subtests passed`；Ruff F/I clean；`git diff --check` 通过；实现已合入 `8b0aed8`，文档同步随后提交。
+
+## Wave O 批 40（2026-09-03 · #149 流水线协作式取消、生命周期与迁移边界）
+
+- **协作式取消**：取消事件贯穿平台字幕、下载、ASR、音频预处理、ffmpeg、VideoReader 抽帧、说话人分离和笔记后处理；可控 ffmpeg/流式下载子进程会 terminate/kill 收尾，`TaskCancelledError` 不再被 fallback 吞掉。第三方网络、模型推理或 SDK 阻塞调用不能被线程外硬中断；B 站弹幕/评论 helper 仍不接收 `cancel_event`。
+- **任务生命周期**：普通任务 admission、reservation、submit、Future/Event 登记在同一锁内；batch 通过 thread-local bypass 不占普通 admission，由线程池排队。提交失败回滚任务目录、manifest、内存注册表和索引；清理失败以 `errors` / `manifest_error` / `index_error` / `cleanup_error` 诊断附加到原始异常，不覆盖根因。
+- **同步媒体边界**：`process_media` 仍是同步工具，不登记任务注册表，没有可由 `task(action="cancel")` 控制的后台 task。
+- **SQLite 与 DAO**：兼容迁移只在 SQLite 执行；缺失 `video_tasks` 表时迁移 helper 安全 no-op，迁移失败 re-raise；DAO insert/update/delete rollback 后 re-raise，完成阶段索引失败不能伪造 SUCCESS。
+- **manifest 与 ffprobe**：manifest 模块级 RLock 只保护同进程读-改-写与删除，跨进程检查—删除 TOCTOU 仍为 P2；VideoReader 使用严格 120 秒 ffprobe，音频预处理探测失败则 best-effort 回退 1800 秒并记录 warning。
+- **验证口径**：新增/更新 `tests/test_cancellation_pipeline.py`、`tests/test_149_migration.py` 及相关生命周期聚焦回归；#148 的全量 948 passed 为前序基线，本次文档回填不把未重跑的全量结果写成通过。
+- **最终合并验证补充（2026-09-03）**：实现与文档最终落位 `dev`；全量 `pytest` 为 **963 passed, 1 skipped, 10 subtests passed**，Ruff F/I、`git diff --check`、import/CLI smoke 均通过。
+
+## Wave 批 41（2026-09-04 · #150 本机 Agent 缓存治理与弹幕取消，commit `1eb6308`）
+
+- **缓存**：`note_cache` 增加滑动 TTL（默认 30 天）与总量 LRU（默认 2048MB）；`0` 关闭对应限制。插件 userConfig 与 `get_config.note_cache` 暴露。
+- **取消**：B 站弹幕/评论 helper 在请求边界检查 `cancel_event`，不再被 best-effort 异常处理吞掉取消。
+- **导出**：CLI 缺省仍写任务 `gen/`，`--out-dir` 可指定桌面；MCP 导出仍受数据目录门禁。
+- **明确不做**：yt-dlp 内部 SSRF、跨进程 manifest TOCTOU、stderr no-follow、batch 全局背压（本机 Agent 模型 / 已接受的产品语义）。
+- **验证**：全量 `pytest` **973 passed, 1 skipped, 10 subtests passed**；Ruff F/I、`git diff --check` 通过。

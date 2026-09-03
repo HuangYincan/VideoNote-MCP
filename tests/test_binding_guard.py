@@ -62,7 +62,7 @@ def _decorator_names(node) -> set:
 
 
 def _parse(src: str):
-    """ast.parse 包装：文件内 `\d` 等正则字符串字面量触发 SyntaxWarning，压掉噪音。"""
+    """ast.parse 包装：文件内 `\\d` 等正则字符串字面量触发 SyntaxWarning，压掉噪音。"""
     import warnings
 
     with warnings.catch_warnings():

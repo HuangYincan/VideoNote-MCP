@@ -6,35 +6,35 @@
 
 ### `generate_note(video_url, platform?, quality?, provider_id?, model_name?, format?, style?, screenshot?, link?, video_understanding?, video_interval?, grid_size?, notes_dir?, extras?, include_comments?, comments_limit?)`
 - 提交视频，异步生成，返回 `{task_id, status: "PENDING", platform, model_name}`。
-- **同视频（`platform:video_id`）再次生成会复用上次转写缓存**（`note_cache`，按引擎/尺寸分键），不再重下+重转写；命中时音频也从缓存复制到新任务，`audio_path` 指向真实文件。`cleanup`（全局清理）会清缓存。
+- **同视频（`platform:video_id`）再次生成会复用上次转写缓存**（`note_cache`，按引擎/尺寸分键），不再重下+重转写；命中时音频也从缓存复制到新任务，`audio_path` 指向真实文件。缓存默认 30 天滑动 TTL + 2048MB 总量上限。`cleanup`（全局清理）会清缓存。
 - `quality`: fast / medium / slow。
 - `model_name` 省略：用 setup 默认模型，否则供应商第一个可用模型。
 - `style`: 9 种（minimal/detailed/academic/tutorial/xiaohongshu/life_journal/task_oriented/business/meeting_minutes）；自定义用 `extras="笔记风格要求：<描述>"`。
 - `video_understanding=True` + `video_interval`（默认 6）+ `grid_size`（默认 [3,3]）：视频理解，**需多模态模型**。
-- `include_comments=True` + `comments_limit`（默认 20）：整合 B 站弹幕+评论（需 SESSDATA；失败不阻断）。
+- `include_comments=True` + `comments_limit`（默认 20）：整合 B 站弹幕+评论（需 SESSDATA；失败不阻断）。弹幕/评论 helper 在请求边界检查 `cancel_event`；正在进行的 HTTP 仍要等返回。
 - `screenshot=True`：插截图，产出便携笔记 note.md + Assets/（相对引用）。**布尔开关与 `format` 双向闭合（#120）**：`screenshot=True` 自动并入 `format`（否则 prompt 不注入标记指令 → LLM 不输出 `*Screenshot-[mm:ss]` → 视频白下载但笔记无图）；`format=["screenshot"]` 等价（即使布尔省略也会下载视频做截图）。`link=True` 同理自动并入 `format`。
 - `notes_dir`: 便携笔记目录（指定即写 note.md，即使不插图片；支持 `file://` URI）。**安全边界**：数据目录外（含 env `VIDEONOTE_NOTES_DIR` 兜底）默认拒绝，需 `VIDEONOTE_ALLOW_EXTERNAL_PATHS=1`/插件 `allow_external_paths` 放行（#142）——报错即说明放行方式，转告用户即可。
-- **并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：超限会拒绝。不要在同一条消息里并行塞多个 `generate_note`（客户端不稳）。`provider_id` 可省略。
+- **并发上限 `VIDEONOTE_MAX_WORKERS`（默认 3）**：普通 `generate_note` / `prepare_note_material` 在提交锁内预占名额，预占覆盖排队与执行全生命周期，超限会拒绝。**`batch_generate_notes` 通过 thread-local bypass 不占普通 admission 名额，由线程池排队**，单次最多 50 条；不要在同一条消息里并行塞多个 `generate_note`（客户端不稳），也不要并发调用多个 batch。`provider_id` 可省略。
 
 ### `inspect_video(url, platform?)`
 - **只解析、不下载、不提交**。B 站分 P / YouTube 播放列表 / 单集。
 - 返回 `{ok, platform, kind: single|multi, title, current_p?, total, truncated, entries:[{p, title, duration, url, video_id}]}`。
 - `kind=multi`：用户只要一集 → 直接用对应那条 `entries[].url` 按单集流程提交；要全出 → 用 `batch_generate_notes`（服务端逐个排队，见下）。**不要逐条 subagent 提交**——并发上限 3，逐条会被拒。超过 200 条 `truncated=true`。
-- **批量**：多集要全出笔记用 `batch_generate_notes(url, max_entries=10)` 一次排队（服务端逐个提交），省去逐条 subagent。
+- **批量**：多集要全出笔记用 `batch_generate_notes(url, max_entries=10)` 一次排队（服务端逐个提交，单次最多 50 条；绕过普通 admission，由线程池排队），省去逐条 subagent；不要并发调用多个 batch。
 - 内置平台之外 `platform:"generic"` 走 yt-dlp 通用提取（覆盖 1800+ 站点）；链接无效（空/本地缺失/内网/解析失败）→ `{ok:false, platform?, error}`。
 
 ### `batch_generate_notes(video_url, max_entries=10, quality?, provider_id?, model_name?, format?, style?, screenshot?, extras?, link?, video_understanding?, video_interval?, grid_size?, include_comments?, comments_limit?, notes_dir?)`
-- **播放列表/合集/分 P 批量提交**：内部先 `inspect_video` 展开，再逐条提交笔记任务（同一并发门禁，超出 worker 数的排队等待）。高级参数与 `generate_note` 一致（视频理解/弹幕/notes_dir 批量共享同一套设置）。
+- **播放列表/合集/分 P 批量提交**：内部先 `inspect_video` 展开，再逐条提交笔记任务（单次最多 50 条；绕过普通 admission，由线程池排队）。高级参数与 `generate_note` 一致（视频理解/弹幕/notes_dir 批量共享同一套设置）；不要并发调用多个 batch，避免队列堆积。
 - 返回 `{ok, total, submitted, truncated?, errors:[{p, title, url, error}], tasks:[{p, title, duration, url, task_id, status}]}`；单条失败不阻断其余，inspect 失败也走同一形状（`total:0, submitted:0, errors:[...]`）。
 - 之后逐个 `task(task_id)` 轮询（多任务逐个汇报进度，不要同时并行轮询过多）。
 
 ### `task(task_id, action="status", segment_range="")`
 - 任务控制面（#138）：查询 / 取转写 / 取消，一个入口三分支。`segment_range` 仅 transcript 分支生效，其余分支忽略；返回结构随 action 不同。
-- **`action="status"`（默认）**：轻量快照轮询。返回 `{status, stage, elapsed_secs, message, task_id, result?}`；`stage` 是中文阶段（如「转写中」），`elapsed_secs` 是任务已耗时——轮询汇报可用「转写中，已 3 分钟」。`SUCCESS` 时 `result` 含 `markdown`（或 material 模式的 `frames`/`video_path`/`audio_path`）、`note_dir`、`title`。`note_dir` 指向 `note.md` 所在目录（默认 `{task_id}/gen/`）；生成时指定了 `notes_dir` 会另有 `portable_note_dir` 指向便携副本（`<notes_dir>/<标题>/`）。
+- **`action="status"`（默认）**：轻量快照轮询。只有 `result.json` 与最终 manifest 持久化成功后才发布 SUCCESS。返回 `{status, stage, elapsed_secs, message, task_id, result?}`；`stage` 是中文阶段（如「转写中」），`elapsed_secs` 是任务已耗时——轮询汇报可用「转写中，已 3 分钟」。`SUCCESS` 时 `result` 含 `markdown`（或 material 模式的 `frames`/`video_path`/`audio_path`）、`note_dir`、`title`。`note_dir` 指向 `note.md` 所在目录（默认 `{task_id}/gen/`）；生成时指定了 `notes_dir` 会另有 `portable_note_dir` 指向便携副本（`<notes_dir>/<标题>/`）。
   - **默认剥转写**——转写可能数万 token，一次工具调用就会撑爆 context。note 任务要全文走 `task(task_id, action="transcript", segment_range="all")`；material 任务的转写是主产物，默认直接返回。
 - **`action="transcript"`**：读取已完成任务的**转写文本**（不耗 LLM），按需分段取。`segment_range` 空（默认）只返回前 50 段（`meta.truncated=true` 时用 `"50-"` 续取或 `"all"` 拿全文）；`"0-50"` / `"50-"` / `"150-200"` 按段切片。返回 `{task_id, ok, language, segments, full_text, meta:{total_segments, returned_segments, total_chars, returned_chars, truncated}}`。任务未成功/无转写时 `ok:false`。
   - **MCP Resource `videonote://task/{task_id}/transcript`**：转写全文按时间轴渲染的纯文本（含说话人标签），适合整篇直读；工具版用于切片/结构化。
-- **`action="cancel"`**：取消进行中/排队任务（协作式，下一阶段边界生效，LLM 总结时每 chunk 检查）；返回 `{ok, task_id, status, message?}`。
+- **`action="cancel"`**：取消进行中/排队任务（协作式，下一阶段边界生效，LLM 总结时每 chunk 检查）；取消事件沿字幕、下载、ASR、预处理、ffmpeg、抽帧、说话人分离、B 站弹幕/评论与后处理传播，可控 ffmpeg/下载子进程会尽快退出，但不能硬中断正在进行的第三方 HTTP。运行中通常先返回 `CANCELLING`，排队任务可直接写 `CANCELLED`。
 
 ## AGENT 直接生成（准备素材）
 
@@ -62,7 +62,7 @@
 ## 媒体加工（导出 / 合并 / 说话人分离）
 
 ### `process_media(action="export", task_id?, formats?, out_dir?, files?, audio_file?, num_speakers?, hf_token?)`
-- 媒体/转写加工（#138）：三个分支共用入口，参数按 action 分支生效（如 `formats` 仅 export 用）；分支缺参各自显式报错（export 缺 `task_id` / merge 缺 `files` / diarize 缺 `audio_file` → ValueError）。
+- 媒体/转写加工（#138）：三个分支共用入口，参数按 action 分支生效（如 `formats` 仅 export 用）；分支缺参各自显式报错（export 缺 `task_id` / merge 缺 `files` / diarize 缺 `audio_file` → ValueError）。**该工具保持同步执行，不进入任务注册表，不产生可由 `task(action="cancel")` 控制的 task_id；第三方阻塞调用不能硬中断。**
 - **`action="export"`（默认）**：把已完成任务的转写导出为**确定性格式**（srt/vtt/json），**不耗 LLM**。同步返回。
   - `formats` 缺省取 setup 配置的「导出格式默认」（任务成功后也会自动导出这些格式）。
   - `out_dir` 缺省 `{task_id}/gen/`；支持 `file://` URI。
@@ -83,6 +83,7 @@
 - 转写前先把音频归一化为 16kHz mono wav；超长音频（>1800s）自动分块转写并时间偏移拼接。
 - **默认关**（`enable_preprocess`）。开启后 `generate_note` / `prepare_note_material` 自动生效。
 - 零额外依赖（FFmpeg）；降噪（noisereduce）可选 extras，未装静默降级。
+- **时长探测区别**：VideoReader 的视频 ffprobe 有 120 秒硬超时，并拒绝无法解析、NaN、Inf、负数；`audio_preprocess.probe_duration` 是 best-effort，失败返回 0，`chunk_duration_guess` 会回退 1800 秒并 warning。
 
 ## 全自动 / 手动模式
 
@@ -117,13 +118,18 @@
 - **任务仍在运行（或排队中）时拒绝**（单任务返回 `{ok: false, error}`；全局返回 `{ok: false, running, running_task_ids, error}`）：先 `task(task_id, action="cancel")` 或等终态再清理。`include_models=True` 且仍有模型在后台下载时也拒绝（删 `models/` 会打断下载线程，#123 A1）。
 - 以任务文件夹为边界，`resolve()` 校验在数据目录内（防路径穿越）。返回 `{deleted, missing, errors, note_kept, notes_kept_outside}`——`notes_kept_outside` 列出数据目录**外**的便携笔记副本（用户指定 `notes_dir` 时常见）：沙箱红线不删，但路径会列出，不会成无人知晓的孤儿。
 
+### 提交回滚、索引与迁移边界（#149）
+
+- 普通任务的 admission、线程池 submit、Future/Event 登记在同一锁内；batch 明确绕过普通 admission，由线程池排队。若 admission、参数准备或 submit 失败，服务端回滚任务目录、manifest、内存注册表和 `video_tasks` 索引。
+- 回滚清理是尽力而为，但不会覆盖原始提交异常；清理失败通过 `errors`、`manifest_error`、`index_error`、`cleanup_error` 等诊断写入日志并附加到原始异常。
+- DAO 的索引插入/更新/删除失败会 rollback 后重新抛出；笔记完成阶段的索引写入失败会阻止伪造 `SUCCESS`。SQLite 兼容迁移只在 SQLite 上执行；缺失 `video_tasks` 表时迁移 helper 安全 no-op，迁移失败则 re-raise。
 ## 配置（只读）
 
-- `get_config(provider_id?)` —— **唯一**配置工具（只读）：`app_config` 默认值（默认供应商/模型、风格、开关，敏感项过滤）+ `providers`（key 掩码）+ `transcriber`（引擎/尺寸/就绪）+ `cookie_configured`（已配 Cookie 的平台名）+ `transcript_source`（固定 `platform_subtitles_first`：平台官方字幕优先，无字幕才转写引擎）。传 `provider_id` 附加该供应商连通性探测（用已存 key，不接受 key 参数）→ `{probe: {ok, models, error}}`。
+- `get_config(provider_id?)` —— **唯一**配置工具（只读）：`app_config` 默认值（默认供应商/模型、风格、开关，敏感项过滤）+ `providers`（key 掩码）+ `transcriber`（引擎/尺寸/就绪）+ `cookie_configured`（已配 Cookie 的平台名）+ `transcript_source`（固定 `platform_subtitles_first`：平台官方字幕优先，无字幕才转写引擎）+ `note_cache`（`ttl_days` / `max_mb` / `policy=sliding-lru`）。传 `provider_id` 附加该供应商连通性探测（用已存 key，不接受 key 参数）→ `{probe: {ok, models, error}}`。
 - **转写素材来源（自动，无需配置）**：`generate_note` / `prepare_note_material` / `batch_generate_notes` 都优先用平台官方字幕（YouTube/B 站人工+自动字幕，小宇宙官方文稿；YouTube 走 youtube-transcript-api；小宇宙走 `episode-transcript/get`，需 `! videonote login xiaoyuzhou`）。有官方字幕就不下载音轨、不耗转写引擎；无字幕或获取失败才下载音频走转写引擎（fast-whisper/groq/funasr 等）。因此「有官方字幕」≠「需要转写引擎」。
 - **配置修改一律走 CLI**（MCP 面无写配置工具，凭证红线最干净）：
   - 填 key：`! videonote providers set <id> --api-key '...'`（隐藏输入）
-  - 新增/删供应商、模型：`! videonote providers add/delete`、`! videonote models ...`
+  - 新增供应商：`! videonote providers add ...`；探测模型并设置默认模型：`! videonote providers test <id> --default <model>`（没有独立的 `models` CLI）
   - 转写引擎/模型下载：`! videonote transcriber set/download`（funasr 中文最优，可选重依赖）
 
 ## 体检（提交前）
@@ -141,7 +147,7 @@
 | 配置入口（首次使用） | 用户在 Claude Code 跑 `/videonote-setup`（体检 → 填 key → 转写 → 默认值 → B站扫码 → 数据管理） |
 | 给内置供应商填 key | 用户在本会话 `! videonote providers set <id> --api-key 'sk-...'`（隐藏输入、agent 不碰 key） |
 | 查看配置 / 供应商 / 模型 / 转写器 | `get_config()`（只读汇总）；传 `provider_id` 可附加连通性探测 |
-| 自建/新增/删除供应商或模型 | `! videonote providers add/delete`、`! videonote models ...`（配置修改一律走 CLI） |
+| 自建/新增供应商或设置默认模型 | `! videonote providers add --name ... --base-url ...`（key 缺省隐藏输入） / `! videonote providers test <id> --default <model>`；当前 CLI 不提供删除供应商/模型命令 |
 | 切本地转写 | `! videonote transcriber set --engine fast-whisper --size small` + `! videonote transcriber download small` |
 | 切云端转写 | `! videonote transcriber set --engine groq`（groq key 用 CLI 填） |
 | B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA） |
@@ -154,6 +160,6 @@
 | 导出格式默认（setup ③ 新增） | `default_export_formats`（srt/vtt/json，默认空）；任务成功后自动导出这些格式，`process_media(action="export")` 不传 formats 时也套用它 |
 | 音频预处理（setup ②） | `transcriber preprocess on/off` 或 setup ② 勾选；16kHz 归一 + 超长分块（默认关，零依赖） |
 | 说话人分离（setup ②） | `transcriber diarization on/off` 或 setup ② 勾选；pyannote 可选重依赖 + HF_TOKEN + 模型授权 |
-| 切中文转写（funasr） | `set_transcriber("funasr")`；需 `uvx --with funasr --with torch`（重依赖可选），模型自动下载 |
+| 切中文转写（funasr） | `! videonote transcriber set funasr`；需 `uvx --with funasr --with torch`（重依赖可选），模型自动下载 |
 | 其他平台（非内置平台） | `inspect_video` 返回 `platform:"generic"` → 自动走 yt-dlp 通用提取（覆盖 1800+ 站点） |
 | AGENT 直接生成 | `prepare_note_material(video_url, ...)` → 轮询 SUCCESS → 读素材包 → **AGENT 自己写笔记**（不调用配置 LLM） |

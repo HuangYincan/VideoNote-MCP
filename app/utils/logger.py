@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 from functools import lru_cache
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
@@ -42,7 +43,17 @@ def _ensure_root_file_handler() -> logging.Handler:
     global _file_handler, _root_file_handler_installed
     root = logging.getLogger()
     if _file_handler is None:
-        _file_handler = logging.FileHandler(_log_dir() / "app.log", encoding="utf-8")
+        try:
+            max_mb = int(os.getenv("VIDEONOTE_APP_LOG_MAX_MB") or os.getenv("VIDEONOTE_STDERR_LOG_MAX_MB") or "50")
+            max_bytes = max(1, max_mb) * 1024 * 1024
+        except (TypeError, ValueError):
+            max_bytes = 50 * 1024 * 1024
+        _file_handler = RotatingFileHandler(
+            _log_dir() / "app.log",
+            maxBytes=max_bytes,
+            backupCount=1,
+            encoding="utf-8",
+        )
         _file_handler.setFormatter(formatter)
     if not _root_file_handler_installed:
         if not any(h is _file_handler for h in root.handlers):

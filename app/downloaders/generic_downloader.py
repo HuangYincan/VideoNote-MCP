@@ -18,10 +18,11 @@ import yt_dlp
 from app.downloaders.base import Downloader, DownloadQuality
 from app.downloaders.common import ytdlp_cancel_hook, ytdlp_retry
 from app.downloaders.youtube_downloader import _apply_browser_headers, _apply_proxy
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.notes_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.path_helper import get_data_dir
-from app.utils.url_safety import assert_public_http_url
+from app.utils.url_safety import assert_public_http_url, sanitize_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class GenericDownloader(Downloader, ABC):
         skip_download: bool = False,
         cancel_event: Optional[threading.Event] = None,
     ) -> AudioDownloadResult:
+        check_cancel(cancel_event)
         # SSRF 防护（docs/05 第 16 轮 A1）：generic 是任意 URL 进入 yt-dlp 的入口
         assert_public_http_url(video_url)
         if output_dir is None:
@@ -80,16 +82,25 @@ class GenericDownloader(Downloader, ABC):
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ytdlp_retry(ydl.extract_info, video_url, download=not skip_download)
+                info = ytdlp_retry(
+                    ydl.extract_info,
+                    video_url,
+                    download=not skip_download,
+                    cancel_event=cancel_event,
+                )
+                check_cancel(cancel_event)
                 video_id = info.get("id")
                 title = info.get("title")
                 duration = info.get("duration", 0)
                 cover_url = info.get("thumbnail")
                 ext = info.get("ext", "m4a")
                 audio_path = os.path.join(output_dir, f"{video_id}.{ext}")
+        except TaskCancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001 —— yt-dlp 提取失败，交给上层 handoff
-            logger.warning(f"generic 下载失败: {exc}")
-            raise ValueError(f"无法用 yt-dlp 解析该链接（可能需登录/JS 渲染）: {exc}")
+            safe_error = sanitize_error_text(exc)
+            logger.warning("generic 下载失败: %s", safe_error)
+            raise ValueError(f"无法用 yt-dlp 解析该链接（可能需登录/JS 渲染）: {safe_error}") from exc
 
         return AudioDownloadResult(
             file_path=audio_path,
@@ -109,6 +120,7 @@ class GenericDownloader(Downloader, ABC):
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """通用视频下载：尽量合并 mp4。generic 场景主要用于音频，视频下载尽力而为。"""
+        check_cancel(cancel_event)
         assert_public_http_url(video_url)
         if output_dir is None:
             output_dir = get_data_dir()
@@ -128,7 +140,13 @@ class GenericDownloader(Downloader, ABC):
         _apply_proxy(ydl_opts)
         _apply_browser_headers(ydl_opts)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ytdlp_retry(ydl.extract_info, video_url, download=True)
+            info = ytdlp_retry(
+                ydl.extract_info,
+                video_url,
+                download=True,
+                cancel_event=cancel_event,
+            )
+            check_cancel(cancel_event)
         output_path = os.path.join(output_dir, f"{info.get('id')}.mp4")
         if not os.path.exists(output_path):
             raise RuntimeError(f"下载完成但未找到视频文件: {output_path}")

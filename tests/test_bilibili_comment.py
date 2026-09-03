@@ -9,6 +9,7 @@ BilibiliCommentFetcher 测试（mock requests.get，不碰真实网络）。
 import json
 import os
 import sys
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ os.environ.setdefault("VIDEONOTE_DATA_DIR", "/tmp/bn_test_data")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.downloaders.bilibili_comment import BilibiliCommentFetcher  # noqa: E402
+from app.exceptions.task import TaskCancelledError  # noqa: E402
 
 VIDEO_URL = "https://www.bilibili.com/video/BV1xx411c7mD"
 VIDEO_URL_P2 = "https://www.bilibili.com/video/BV1xx411c7mD?p=2"
@@ -112,7 +114,7 @@ def _make_fake_get(reply_pages=None, dm_content=DANMAKU_XML):
     reply_pages = reply_pages if reply_pages is not None else {0: REPLY_PAGE0, 1: REPLY_PAGE1}
     calls = []
 
-    def fake_get(url, params=None, headers=None, timeout=None):
+    def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
         params = params or {}
         headers = headers or {}
         calls.append({"url": url, "params": params, "headers": headers})
@@ -157,7 +159,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
 
     def test_fetch_danmaku_ok(self):
         fake_get, calls = _make_fake_get()
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=fake_get):
             res = self.fetcher.fetch_danmaku(VIDEO_URL)
         self.assertTrue(res["ok"], res)
         self.assertEqual(res["source"], "bilibili")
@@ -173,7 +175,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
     def test_fetch_danmaku_p2(self):
         """分 P 视频：?p=2 应取第 2 集的 cid。"""
         fake_get, calls = _make_fake_get()
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=fake_get):
             res = self.fetcher.fetch_danmaku(VIDEO_URL_P2)
         self.assertTrue(res["ok"], res)
         self.assertEqual(res["cid"], 67891)
@@ -184,7 +186,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
 
     def test_fetch_danmaku_empty(self):
         fake_get, _ = _make_fake_get(dm_content=EMPTY_XML)
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=fake_get):
             res = self.fetcher.fetch_danmaku(VIDEO_URL)
         self.assertTrue(res["ok"], res)
         self.assertEqual(res["danmaku_summary"], "")
@@ -192,7 +194,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
     def test_fetch_danmaku_corrupt_xml(self):
         for bad in (CORRUPT_XML, CORRUPT_XML2):
             fake_get, _ = _make_fake_get(dm_content=bad)
-            with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get):
+            with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=fake_get):
                 res = self.fetcher.fetch_danmaku(VIDEO_URL)
             self.assertFalse(res["ok"], res)
             self.assertIn("弹幕 XML 解析失败", res["error"])
@@ -225,7 +227,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
 
         oversize = b"x" * (DANMAKU_MAX_XML_BYTES + 1)
         fake_get, _ = _make_fake_get(dm_content=oversize)
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=fake_get):
             res = self.fetcher.fetch_danmaku(VIDEO_URL)
         self.assertFalse(res["ok"], res)
         self.assertIn("过大", res["error"])
@@ -235,7 +237,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
 
     def test_fetch_comments_ok_dedup_sort(self):
         fake_get, calls = _make_fake_get()
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=fake_get):
             res = self.fetcher.fetch_comments(VIDEO_URL, limit=100)
         self.assertTrue(res["ok"], res)
         self.assertEqual(res["source"], "bilibili")
@@ -258,7 +260,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
 
     def test_fetch_comments_limit(self):
         fake_get, _ = _make_fake_get()
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=fake_get):
             res = self.fetcher.fetch_comments(VIDEO_URL, limit=5)
         self.assertTrue(res["ok"], res)
         self.assertEqual(len(res["comments"]), 5)
@@ -268,14 +270,14 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
 
     def test_fetch_comments_empty(self):
         fake_get, _ = _make_fake_get(reply_pages={0: REPLY_EMPTY})
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=fake_get):
             res = self.fetcher.fetch_comments(VIDEO_URL)
         self.assertTrue(res["ok"], res)
         self.assertEqual(res["comments"], [])
 
     def test_fetch_comments_api_error(self):
         fake_get, _ = _make_fake_get(reply_pages={0: REPLY_ERROR})
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=fake_get):
             res = self.fetcher.fetch_comments(VIDEO_URL)
         self.assertFalse(res["ok"], res)
         self.assertEqual(res["comments"], [])
@@ -284,7 +286,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
     # ---------- 通用 ----------
 
     def test_bad_url(self):
-        with patch("app.downloaders.bilibili_comment.requests.get") as m:
+        with patch("app.downloaders.bilibili_comment.public_get_retry") as m:
             res = self.fetcher.fetch_danmaku("https://example.com/not-a-bili-video")
         self.assertFalse(res["ok"])
         self.assertIn("无法从 URL 提取 BV id", res["error"])
@@ -293,7 +295,7 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
     def test_no_cookie_no_crash_and_no_cookie_header(self):
         """无 cookie 时请求正常，且所有请求头都不带 Cookie。"""
         fake_get, calls = _make_fake_get()
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=fake_get) as m:
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=fake_get) as m:
             d = self.fetcher.fetch_danmaku(VIDEO_URL)
             c = self.fetcher.fetch_comments(VIDEO_URL)
         self.assertTrue(d["ok"], d)
@@ -304,21 +306,21 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
 
     def test_network_exception(self):
         # view 请求断网 → _get_meta 兜底返回 None，error 为通用提示
-        def boom_view(url, params=None, headers=None, timeout=None):
+        def boom_view(url, params=None, headers=None, timeout=None, **kwargs):
             raise ConnectionError("network down")
 
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=boom_view):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=boom_view):
             d = self.fetcher.fetch_danmaku(VIDEO_URL)
         self.assertFalse(d["ok"])
         self.assertIn("获取视频元信息失败", d["error"])
 
         # view 正常、dm/reply 断网 → error 透传异常信息
-        def boom_dm(url, params=None, headers=None, timeout=None):
+        def boom_dm(url, params=None, headers=None, timeout=None, **kwargs):
             if "x/web-interface/view" in url:
                 return FakeResponse(VIEW_JSON)
             raise ConnectionError("network down")
 
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=boom_dm):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=boom_dm):
             d = self.fetcher.fetch_danmaku(VIDEO_URL)
             c = self.fetcher.fetch_comments(VIDEO_URL)
         self.assertFalse(d["ok"])
@@ -330,14 +332,24 @@ class BilibiliCommentFetcherTest(unittest.TestCase):
     def test_p_out_of_range_returns_none(self):
         # 显式 p 越界（VIEW_JSON 只有 2 集）：返回 None 而非静默取第 1 集——
         # 调用方以为拿到了第 p 集的评论，实际是第 1 集内容（#121 B4）
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=_make_fake_get()[0]):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=_make_fake_get()[0]):
             meta = self.fetcher._get_meta("BV1xx411c7mD", p=3)
         self.assertIsNone(meta)
 
     def test_p_within_range_resolves(self):
-        with patch("app.downloaders.bilibili_comment.requests.get", side_effect=_make_fake_get()[0]):
+        with patch("app.downloaders.bilibili_comment.public_get_retry", side_effect=_make_fake_get()[0]):
             meta = self.fetcher._get_meta("BV1xx411c7mD", p=2)
         self.assertEqual(meta, (12345, 67891))  # pages[1] 的 cid
+
+    def test_cancel_skips_network(self):
+        event = threading.Event()
+        event.set()
+        with patch("app.downloaders.bilibili_comment.public_get_retry") as m:
+            with self.assertRaises(TaskCancelledError):
+                self.fetcher.fetch_danmaku(VIDEO_URL, cancel_event=event)
+            with self.assertRaises(TaskCancelledError):
+                self.fetcher.fetch_comments(VIDEO_URL, cancel_event=event)
+        m.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -14,9 +14,15 @@
 from __future__ import annotations
 
 import re
+import threading
 import uuid
 from typing import List, Optional
 
+from app.exceptions.task import (
+    OfficialTranscriptFetchError,
+    TaskCancelledError,
+    check_cancel,
+)
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
@@ -119,14 +125,22 @@ class XiaoyuzhouTranscriptFetcher:
             ),
         )
 
-    def _refresh(self, tokens: dict) -> bool:
+    def _refresh(
+        self,
+        tokens: dict,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> bool:
         refresh = tokens.get("refresh")
         if not refresh:
             return False
         headers = _app_headers(device_id=tokens.get("device"))
         headers["x-jike-refresh-token"] = refresh
         try:
+            check_cancel(cancel_event)
             resp = public_post(f"{API_BASE}/app_auth_tokens.refresh", headers=headers, timeout=15)
+            check_cancel(cancel_event)
+        except TaskCancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("小宇宙 refresh token 续期失败: %s", exc)
             return False
@@ -149,6 +163,15 @@ class XiaoyuzhouTranscriptFetcher:
         self._persist(tokens)
         return True
 
+    def _send(self, method: str, url: str, headers: dict, payload, params, cancel_event=None):
+        check_cancel(cancel_event)
+        if method.upper() == "GET":
+            response = public_get(url, headers=headers, params=params, timeout=15)
+        else:
+            response = public_post(url, headers=headers, json=payload, timeout=15)
+        check_cancel(cancel_event)
+        return response
+
     def _request(
         self,
         method: str,
@@ -158,19 +181,34 @@ class XiaoyuzhouTranscriptFetcher:
         payload: Optional[dict] = None,
         params: Optional[dict] = None,
         allow_refresh: bool = True,
+        cancel_event: Optional[threading.Event] = None,
     ):
         url = f"{API_BASE}{path}"
         headers = _app_headers(tokens.get("access"), tokens.get("device"))
-        try:
-            if method.upper() == "GET":
-                resp = public_get(url, headers=headers, params=params, timeout=15)
-            else:
-                resp = public_post(url, headers=headers, json=payload, timeout=15)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("小宇宙 API %s %s 失败: %s", method, path, exc)
-            return None
+        last_exc: Optional[Exception] = None
+        resp = None
+        for attempt in range(2):
+            check_cancel(cancel_event)
+            try:
+                resp = self._send(method, url, headers, payload, params, cancel_event)
+            except TaskCancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                logger.warning("小宇宙 API %s %s 失败: %s", method, path, exc)
+                continue
+            if resp.status_code >= 500 and attempt == 0:
+                logger.warning("小宇宙 API %s %s HTTP %s，将重试", method, path, resp.status_code)
+                if cancel_event is not None and cancel_event.wait(0.2):
+                    check_cancel(cancel_event)
+                continue
+            break
+        else:
+            raise OfficialTranscriptFetchError(
+                f"小宇宙官方文稿请求失败: {method} {path}。已登录时不会回退本地转写。{_LOGIN_HINT}"
+            ) from last_exc
         if resp.status_code == 401 and allow_refresh and tokens.get("refresh"):
-            if self._refresh(tokens):
+            if self._refresh(tokens, cancel_event=cancel_event):
                 return self._request(
                     method,
                     path,
@@ -178,6 +216,7 @@ class XiaoyuzhouTranscriptFetcher:
                     payload=payload,
                     params=params,
                     allow_refresh=False,
+                    cancel_event=cancel_event,
                 )
             logger.info("小宇宙登录已过期，请重新 %s", _LOGIN_HINT)
         return resp
@@ -196,7 +235,12 @@ class XiaoyuzhouTranscriptFetcher:
                 mid = media.get("id")
         return mid or None
 
-    def fetch_subtitles(self, video_url: str) -> Optional[TranscriptResult]:
+    def fetch_subtitles(
+        self,
+        video_url: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[TranscriptResult]:
+        check_cancel(cancel_event)
         eid = extract_video_id(video_url, "xiaoyuzhou")
         if not eid:
             logger.info("无法从小宇宙 URL 提取 episode id")
@@ -207,20 +251,21 @@ class XiaoyuzhouTranscriptFetcher:
             logger.info("未配置小宇宙登录态：官方文稿拿不到，将走语音识别。%s", _LOGIN_HINT)
             return None
 
-        ep_resp = self._request("GET", "/v1/episode/get", tokens, params={"eid": eid})
-        if ep_resp is None:
-            return None
+        ep_resp = self._request(
+            "GET", "/v1/episode/get", tokens, params={"eid": eid}, cancel_event=cancel_event
+        )
         if ep_resp.status_code == 401:
-            logger.info("小宇宙官方文稿 401：登录态无效。%s", _LOGIN_HINT)
-            return None
+            raise OfficialTranscriptFetchError(
+                f"小宇宙官方文稿 401：登录态无效。{_LOGIN_HINT}"
+            )
         if ep_resp.status_code != 200:
-            logger.warning("小宇宙 episode/get HTTP %s", ep_resp.status_code)
-            return None
+            raise OfficialTranscriptFetchError(
+                f"小宇宙 episode/get HTTP {ep_resp.status_code}。已登录时不会回退本地转写。"
+            )
         try:
             ep_json = ep_resp.json()
-        except ValueError:
-            logger.warning("小宇宙 episode/get 返回非 JSON")
-            return None
+        except ValueError as exc:
+            raise OfficialTranscriptFetchError("小宇宙 episode/get 返回非 JSON") from exc
         episode = ep_json.get("data") if isinstance(ep_json, dict) else None
         if not isinstance(episode, dict):
             logger.info("小宇宙 episode/get 无 data：eid=%s", eid)
@@ -236,20 +281,22 @@ class XiaoyuzhouTranscriptFetcher:
             "/v1/episode-transcript/get",
             tokens,
             payload={"eid": eid, "mediaId": media_id},
+            cancel_event=cancel_event,
         )
-        if tr_resp is None:
-            return None
         if tr_resp.status_code == 401:
-            logger.info("小宇宙文稿接口 401：登录态无效。%s", _LOGIN_HINT)
-            return None
+            raise OfficialTranscriptFetchError(
+                f"小宇宙文稿接口 401：登录态无效。{_LOGIN_HINT}"
+            )
         if tr_resp.status_code != 200:
-            logger.warning("小宇宙 episode-transcript/get HTTP %s", tr_resp.status_code)
-            return None
+            raise OfficialTranscriptFetchError(
+                f"小宇宙 episode-transcript/get HTTP {tr_resp.status_code}。已登录时不会回退本地转写。"
+            )
         try:
             tr_json = tr_resp.json()
-        except ValueError:
-            logger.warning("小宇宙 episode-transcript/get 返回非 JSON")
-            return None
+        except ValueError as exc:
+            raise OfficialTranscriptFetchError(
+                "小宇宙 episode-transcript/get 返回非 JSON"
+            ) from exc
 
         inner = tr_json.get("data") if isinstance(tr_json, dict) else None
         if isinstance(inner, dict) and isinstance(inner.get("data"), dict):
@@ -259,26 +306,41 @@ class XiaoyuzhouTranscriptFetcher:
             logger.info("该期官方文稿不可用（no_subtitle）：eid=%s", eid)
             return None
 
-        try:
-            body_resp = public_get(
-                transcript_url,
-                headers={"User-Agent": APP_UA},
-                timeout=30,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("下载小宇宙文稿 CDN 失败: %s", exc)
-            return None
+        body_resp = None
+        last_exc: Optional[Exception] = None
+        for attempt in range(2):
+            check_cancel(cancel_event)
+            try:
+                body_resp = public_get(
+                    transcript_url,
+                    headers={"User-Agent": APP_UA},
+                    timeout=30,
+                )
+                check_cancel(cancel_event)
+            except TaskCancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                logger.warning("下载小宇宙文稿 CDN 失败: %s", exc)
+                continue
+            if body_resp.status_code >= 500 and attempt == 0:
+                logger.warning("小宇宙文稿 CDN HTTP %s，将重试", body_resp.status_code)
+                if cancel_event is not None and cancel_event.wait(0.2):
+                    check_cancel(cancel_event)
+                continue
+            break
+        else:
+            raise OfficialTranscriptFetchError(
+                "下载小宇宙文稿 CDN 失败。已登录时不会回退本地转写。"
+            ) from last_exc
         if body_resp.status_code != 200:
-            logger.warning(
-                "小宇宙文稿 CDN HTTP %s（403 通常是 UA 白名单变化）",
-                body_resp.status_code,
+            raise OfficialTranscriptFetchError(
+                f"小宇宙文稿 CDN HTTP {body_resp.status_code}（403 通常是 UA 白名单变化）"
             )
-            return None
         try:
             raw_segs = body_resp.json()
-        except ValueError:
-            logger.warning("小宇宙文稿 CDN 返回非 JSON")
-            return None
+        except ValueError as exc:
+            raise OfficialTranscriptFetchError("小宇宙文稿 CDN 返回非 JSON") from exc
         if not isinstance(raw_segs, list):
             logger.warning("小宇宙文稿形状异常：%s", type(raw_segs).__name__)
             return None
@@ -291,6 +353,7 @@ class XiaoyuzhouTranscriptFetcher:
 
         parsed: List[tuple] = []
         for item in raw_segs:
+            check_cancel(cancel_event)
             if not isinstance(item, dict):
                 continue
             text = (item.get("text") or "").strip()
@@ -309,6 +372,7 @@ class XiaoyuzhouTranscriptFetcher:
 
         segments: List[TranscriptSegment] = []
         for i, (start, end_s, text) in enumerate(parsed):
+            check_cancel(cancel_event)
             if end_s is not None:
                 end = end_s
             elif i + 1 < len(parsed):
@@ -342,13 +406,14 @@ def verify_xiaoyuzhou_login() -> str:
     tokens = fetcher._load_tokens()
     if not tokens.get("access"):
         return "未配置 x-jike-access-token"
-    resp = fetcher._request(
-        "POST",
-        "/v1/subscription/list",
-        tokens,
-        payload={"limit": "1", "sortOrder": "desc", "sortBy": "subscribedAt"},
-    )
-    if resp is None:
+    try:
+        resp = fetcher._request(
+            "POST",
+            "/v1/subscription/list",
+            tokens,
+            payload={"limit": "1", "sortOrder": "desc", "sortBy": "subscribedAt"},
+        )
+    except OfficialTranscriptFetchError:
         return "请求失败（网络？检查 `videonote proxy list`）"
     if resp.status_code == 200:
         return ""

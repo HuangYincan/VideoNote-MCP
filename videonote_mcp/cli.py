@@ -98,6 +98,21 @@ def _tqdm_bar():
     return _Bar
 
 
+def _with_model_download_state(key: str, work) -> None:
+    """CLI 下载接线进程内下载态，供 health_check / cleanup 看见 downloading（#145 C2）。"""
+    from app.transcriber import model_download_state as dl
+
+    if not dl.try_mark(key):
+        raise RuntimeError(f"模型 {key} 正在下载中，请稍候再试")
+    try:
+        work()
+    except Exception as exc:
+        dl.mark_failed(key, str(exc))
+        raise
+    else:
+        dl.mark_done(key)
+
+
 def _download_whisper(size: str) -> None:
     """在终端下载 fast-whisper 模型（阻塞，带进度条）。"""
     from huggingface_hub import snapshot_download
@@ -118,20 +133,23 @@ def _download_whisper(size: str) -> None:
     # 否则 CLI 下 main、运行时下 main 变化快照，cache 内出现两份且加载取到新内容
     revision = resolve_whisper_revision(size)
     print(f"正在下载 whisper-{size}（{target}）…", file=sys.stdout)
-    snapshot_download(
-        repo_id=target, revision=revision, cache_dir=model_dir, tqdm_class=_tqdm_bar()
-    )
-    # 让 faster-whisper 真正加载（确认模型可用）
-    from faster_whisper import WhisperModel
 
-    WhisperModel(
-        model_size_or_path=target,
-        device="cpu",
-        compute_type="int8",
-        download_root=model_dir,
-        revision=revision,
-    )
-    print(f"✓ whisper-{size} 下载完成", file=sys.stdout)
+    def _work() -> None:
+        snapshot_download(
+            repo_id=target, revision=revision, cache_dir=model_dir, tqdm_class=_tqdm_bar()
+        )
+        from faster_whisper import WhisperModel
+
+        WhisperModel(
+            model_size_or_path=target,
+            device="cpu",
+            compute_type="int8",
+            download_root=model_dir,
+            revision=revision,
+        )
+        print(f"✓ whisper-{size} 下载完成", file=sys.stdout)
+
+    _with_model_download_state(size, _work)
 
 
 def _download_mlx_model(size: str) -> None:
@@ -149,14 +167,18 @@ def _download_mlx_model(size: str) -> None:
     if not repo_id:
         raise ValueError(f"未找到 mlx 模型映射: {size}（可选: {', '.join(MLX_REPO_MAP.keys())}）")
     print(f"正在下载 mlx-whisper-{size}（{repo_id}）…", file=sys.stdout)
-    snapshot_download(
-        repo_id=repo_id,
-        # 固定 revision（#142 A2）：与 MLXWhisperTranscriber 下载同一快照，见 model_status
-        revision=MLX_REPO_REVISIONS.get(size),
-        local_dir=os.path.join(get_model_dir("mlx-whisper"), repo_id),
-        tqdm_class=_tqdm_bar(),
-    )
-    print(f"✓ mlx-whisper-{size} 下载完成", file=sys.stdout)
+
+    def _work() -> None:
+        snapshot_download(
+            repo_id=repo_id,
+            # 固定 revision（#142 A2）：与 MLXWhisperTranscriber 下载同一快照，见 model_status
+            revision=MLX_REPO_REVISIONS.get(size),
+            local_dir=os.path.join(get_model_dir("mlx-whisper"), repo_id),
+            tqdm_class=_tqdm_bar(),
+        )
+        print(f"✓ mlx-whisper-{size} 下载完成", file=sys.stdout)
+
+    _with_model_download_state(f"mlx-{size}", _work)
 
 
 def _model_dir(engine: str, size: str) -> "str | None":
@@ -1693,8 +1715,6 @@ def _login_xiaoyuzhou_qr(exit_on_fail: bool = True) -> None:
     """官网统一登录扫码：create → 终端 ASCII 二维码 → 轮询 login。"""
     import time
 
-    import requests
-
     try:
         import qrcode  # noqa: F401
     except ImportError:
@@ -1703,7 +1723,9 @@ def _login_xiaoyuzhou_qr(exit_on_fail: bool = True) -> None:
             sys.exit(1)
         return
 
-    session = requests.Session()
+    from app.utils.url_safety import PublicOnlySession, host_matches
+
+    session = PublicOnlySession()
     session.headers.update(_xiaoyuzhou_web_headers())
     try:
         created = session.post(
@@ -1716,6 +1738,11 @@ def _login_xiaoyuzhou_qr(exit_on_fail: bool = True) -> None:
         qr_url = payload.get("url")
         if created.status_code != 200 or not qr_id or not qr_url:
             print(f"生成二维码失败: {payload.get('toast') or payload.get('message') or created.status_code}", file=sys.stderr)
+            if exit_on_fail:
+                sys.exit(1)
+            return
+        if not host_matches(qr_url, "xiaoyuzhoufm.com", "xiaoyuzhou.fm"):
+            print("生成二维码失败：返回的二维码地址不是官方域名", file=sys.stderr)
             if exit_on_fail:
                 sys.exit(1)
             return
@@ -1854,6 +1881,7 @@ def _login_xiaohongshu_qr(exit_on_fail: bool = True) -> None:
         QR_SCANNED,
         QR_SUCCESS,
         XiaohongshuAuth,
+        is_xiaohongshu_qr_url,
     )
     from app.downloaders.xiaohongshu_browser import BrowserQrUnavailable
 
@@ -1883,6 +1911,11 @@ def _login_xiaohongshu_qr(exit_on_fail: bool = True) -> None:
     code = created.get("code") or ""
     if not qr_url:
         print("生成二维码失败：接口未返回 url", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    if not is_xiaohongshu_qr_url(qr_url):
+        print("生成二维码失败：返回的二维码地址不是官方域名", file=sys.stderr)
         if exit_on_fail:
             sys.exit(1)
         return
@@ -1955,6 +1988,31 @@ def _login_xiaohongshu(args, exit_on_fail: bool = True) -> None:
     _login_xiaohongshu_qr(exit_on_fail)
 
 
+def _bilibili_sessdata_from_login_url(login_url: str, headers: dict) -> str:
+    """从扫码成功 URL 取 SESSDATA：官方 host 钉死 + PublicOnlySession 跟随（#145 A1）。
+
+    poll 的 data.url 可能直接带 SESSDATA，也可能是 passport.biligame.com 的
+    crossDomain ticket。非 ``bilibili.com`` / ``biligame.com`` 后缀一律拒绝跟随。
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from app.utils.url_safety import PublicOnlySession, host_matches
+
+    if not host_matches(login_url, "bilibili.com", "biligame.com"):
+        raise ValueError(f"登录回调域名不是 B 站官方（{urlparse(login_url).netloc or '未知域名'}）")
+    qs = parse_qs(urlparse(login_url).query)
+    sess = (qs.get("SESSDATA") or [""])[0]
+    if sess:
+        return sess
+    with PublicOnlySession() as session:
+        session.headers.update(headers)
+        session.get(login_url, timeout=10)
+        sess = next((c.value for c in session.cookies if c.name == "SESSDATA"), "")
+    if not sess:
+        raise ValueError(f"登录成功但未取到 SESSDATA（{urlparse(login_url).netloc or '未知域名'}）")
+    return sess
+
+
 def _login_cli(argv, exit_on_fail: bool = True) -> None:
     """`videonote login [bilibili|youtube|xiaoyuzhou|xiaohongshu]`：平台登录配置。
 
@@ -1979,9 +2037,8 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
         print(f"未知平台: {argv[0]}（支持 bilibili / youtube / xiaoyuzhou / xiaohongshu）", file=sys.stderr)
         sys.exit(2)
     import time
-    import urllib.parse
 
-    import requests
+    from app.utils.url_safety import PublicOnlySession, sanitize_error_text
 
     try:
         import qrcode
@@ -1999,10 +2056,12 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
         "Referer": "https://www.bilibili.com",
     }
     try:
-        resp = requests.get(
-            "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
-            headers=_UA, timeout=10,
-        ).json()
+        with PublicOnlySession() as session:
+            session.headers.update(_UA)
+            resp = session.get(
+                "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
+                timeout=10,
+            ).json()
         if resp.get("code") != 0:
             print(f"生成二维码失败: {resp}", file=sys.stderr)
             if exit_on_fail:
@@ -2011,7 +2070,7 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
         qr_url = resp["data"]["url"]
         qrcode_key = resp["data"]["qrcode_key"]
     except Exception as e:
-        print(f"生成二维码失败（网络？）: {e}", file=sys.stderr)
+        print(f"生成二维码失败（网络？）: {sanitize_error_text(e)}", file=sys.stderr)
         if exit_on_fail:
             sys.exit(1)
         return
@@ -2032,36 +2091,23 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
         while True:
             time.sleep(2)
             try:
-                poll = requests.get(
-                    "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
-                    params={"qrcode_key": qrcode_key},
-                    headers=_UA, timeout=10,
-                ).json()
+                with PublicOnlySession() as session:
+                    session.headers.update(_UA)
+                    poll = session.get(
+                        "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
+                        params={"qrcode_key": qrcode_key},
+                        timeout=10,
+                    ).json()
             except Exception as e:
-                print(f"轮询失败（网络？）: {e}", file=sys.stderr)
+                print(f"轮询失败（网络？）: {sanitize_error_text(e)}", file=sys.stderr)
                 continue
             data = poll.get("data") or {}
             st = data.get("code", 0)
             if st == 0 and data.get("url"):
-                # 登录成功。url 可能直接带 SESSDATA，也可能是 crossDomain ticket（需跟随拿 Set-Cookie）
-                sess = ""
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(data["url"]).query)
-                sess = qs.get("SESSDATA", [""])[0]
-                if not sess:
-                    try:
-                        s = requests.Session()
-                        s.headers.update(_UA)
-                        s.get(data["url"], timeout=10)
-                        # SESSDATA 可能有多条（不同 domain/path），requests 的 .get() 会抛
-                        # CookieConflictError；手动遍历取第一条
-                        sess = next((c.value for c in s.cookies if c.name == "SESSDATA"), "")
-                    except Exception as e:
-                        print(f"跟随登录 URL 拿 cookie 失败: {e}", file=sys.stderr)
-                if not sess:
-                    # 不打印完整 URL：crossDomain ticket 含敏感参数（#71）
-                    from urllib.parse import urlparse
-
-                    print(f"登录成功但未取到 SESSDATA（{urlparse(data['url']).netloc or '未知域名'}）", file=sys.stderr)
+                try:
+                    sess = _bilibili_sessdata_from_login_url(data["url"], _UA)
+                except Exception as e:
+                    print(sanitize_error_text(e), file=sys.stderr)
                     if exit_on_fail:
                         sys.exit(1)
                     return
@@ -2110,7 +2156,7 @@ def _export_cli(argv) -> None:
     p_run = sub.add_parser("export", help="导出指定任务（<task_id> 必填）")
     p_run.add_argument("task_id", help="已完成任务的 task_id（generate_note 返回）")
     p_run.add_argument("--format", default=None, help="逗号分隔的格式（srt,vtt,json），缺省取 setup 默认")
-    p_run.add_argument("--out-dir", default=None, help="输出目录（缺省 note_results/{task_id}/gen/）")
+    p_run.add_argument("--out-dir", default=None, help="输出目录（缺省该任务 note_results/{task_id}/gen/；可指定桌面等任意目录）")
 
     opts = parser.parse_args(argv)
     if opts.cmd == "list":

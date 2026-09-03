@@ -99,7 +99,7 @@ from app.enmus.note_enums import DownloadQuality
 from app.enmus.task_status_enums import TaskStatus
 from app.exceptions.task import TaskCancelledError
 from app.exceptions.task import check_cancel as _check_cancel
-from app.services import pipeline
+from app.services import note_cache, pipeline
 from app.services.cookie_manager import CookieConfigManager
 from app.services.note import NOTE_OUTPUT_DIR, NoteGenerator
 from app.services.provider import ProviderService
@@ -115,7 +115,12 @@ from app.utils.task_manifest import (
     list_task_files,
     record_task_paths,
 )
-from app.utils.url_safety import assert_public_http_url, sanitize_url
+from app.utils.url_safety import (
+    assert_public_http_url,
+    sanitize_error_text,
+    sanitize_error_url,
+    sanitize_url,
+)
 from videonote_mcp.provider_probe import probe_models
 
 logger = get_logger(__name__)
@@ -218,6 +223,11 @@ _pool = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
 _tasks_lock = threading.Lock()
 _task_futures: Dict[str, Future] = {}
 _task_events: Dict[str, threading.Event] = {}
+# 普通任务在提交锁内预占并发名额；标记挂在 Future 上，避免额外注册表与
+# 旧测试/清理代码仅移除 _task_futures 时产生残留 reservation。batch 任务显式旁路，
+# 只由 ThreadPoolExecutor 排队，不占普通任务的预占名额。
+_CONCURRENCY_RESERVED_ATTR = "_videonote_concurrency_reserved"
+_CONCURRENCY_BATCH_ATTR = "_videonote_batch_kind"
 _batch_ctx = threading.local()  # batch_generate_notes 内部批量提交的旁路标志（#121 C1）
 # 最近一次 _write_status 的写盘快照（写盘失败/文件损坏时状态查询回退，
 # 避免把运行中/已完成任务误报成 PENDING，见 #118）
@@ -256,8 +266,20 @@ def _exit_summary() -> None:
 atexit.register(_exit_summary)
 
 
-def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
-    """写入 {task_dir}/status.json（与上游 NoteGenerator._update_status 兼容）。"""
+def _write_status(
+    task_id: str,
+    status,
+    message: Optional[str] = None,
+    *,
+    strict: bool = False,
+) -> bool:
+    """写入 ``{task_dir}/status.json`` 并同步任务索引。
+
+    文件是任务状态的发布源：只有状态文件成功落盘后才同步 SQLite，避免
+    ``video_tasks.status`` 领先于磁盘状态。普通模式保留历史「尽力而为、不裸抛」
+    契约；``strict=True`` 用于发布 SUCCESS 前的关键状态，任一持久化步骤失败都会
+    重新抛出，由 worker 把任务收敛到 FAILED（而不是暴露一个不可信的 SUCCESS）。
+    """
     task_dir = NOTE_OUTPUT_DIR / str(task_id)
     f = task_dir / "status.json"
     # 保留旧 started_at（elapsed_secs 从首次提交起算）——每次重打会让成功任务的
@@ -268,8 +290,9 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
     except Exception:
         started = None
     data = {"status": status.value if isinstance(status, TaskStatus) else str(status)}
-    if message:
-        data["message"] = message
+    safe_message = sanitize_error_text(message) if message else ""
+    if safe_message:
+        data["message"] = safe_message
     data["started_at"] = started if started is not None else time.time()
     # 写盘前更新内存快照：磁盘满/权限故障时状态查询可回退（见 #118）
     with _tasks_lock:
@@ -277,6 +300,7 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
         # 上限防无界（#123 A9）：dict 保插入序，超限淘汰最旧快照
         if len(_status_memory) > _STATUS_MEMORY_MAX:
             _status_memory.pop(next(iter(_status_memory)), None)
+    file_written = False
     try:
         task_dir.mkdir(parents=True, exist_ok=True)
         # tmp 唯一后缀（docs/05 第 16 轮 B9）：与 note 侧 _update_status 双写者
@@ -288,6 +312,7 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
             tmp, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), 0o600
         )
         tmp.replace(f)
+        file_written = True
         # 终态已落盘且不再变化：弹内存快照，防长生命周期 server 无界增长
         # （写盘失败时保留——快照是读盘损坏时的唯一回退，#121 C9）
         if data["status"] in {"SUCCESS", "FAILED", "CANCELLED"}:
@@ -295,14 +320,27 @@ def _write_status(task_id: str, status, message: Optional[str] = None) -> None:
                 _status_memory.pop(task_id, None)
     except Exception as exc:  # noqa: BLE001 —— 环境故障（磁盘满/只读）：不裸抛
         # （裸抛会进后台线程被吞，且 FAILED 重写循环同样失败），内存快照已可查
-        logger.error(f"写状态文件失败 task_id={task_id}: {exc}")
-    # 同步全局索引（尽力而为）
+        logger.error(f"写状态文件失败 task_id={task_id}: {sanitize_error_text(exc)}")
+        if strict:
+            raise
+        return False
+
+    # 同步全局索引（文件成功后才执行，避免 DB 领先于文件）
     try:
         from app.db.video_task_dao import update_task_status
 
-        update_task_status(str(task_id), data["status"], message=message or "")
-    except Exception:
-        pass
+        update_task_status(str(task_id), data["status"], message=safe_message)
+    except Exception as exc:
+        logger.warning(
+            "同步任务索引失败 task_id=%s status=%s: %s",
+            task_id,
+            data.get("status"),
+            sanitize_error_text(exc),
+        )
+        if strict:
+            raise
+        return False
+    return file_written
 
 
 def _atomic_write_json(path: Path, payload) -> None:
@@ -327,7 +365,7 @@ def _status_is_terminal(task_id: str) -> bool:
         data = json.loads(
             (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
         )
-        return data.get("status") in ("SUCCESS", "FAILED", "CANCELLED")
+        return isinstance(data, dict) and data.get("status") in ("SUCCESS", "FAILED", "CANCELLED")
     except Exception:
         return False
 
@@ -342,9 +380,29 @@ def _read_task_status(task_id: str) -> str:
         st = json.loads(
             (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
         )
-        return st.get("status", "UNKNOWN")
+        if not isinstance(st, dict):
+            return "UNKNOWN"
+        status = st.get("status")
+        return status if isinstance(status, str) and status.strip() else "UNKNOWN"
     except Exception:
         return "UNKNOWN"
+
+
+def _valid_status_data(data) -> Optional[dict]:
+    """只接受形如 ``{"status": "..."}`` 的状态 JSON 根对象。"""
+    if not isinstance(data, dict):
+        return None
+    status = data.get("status")
+    if not isinstance(status, str) or not status.strip():
+        return None
+    return data
+
+
+def _memory_status_snapshot(task_id: str) -> Optional[dict]:
+    """读取一个有效的内存状态快照，返回副本避免调用方意外修改全局状态。"""
+    with _tasks_lock:
+        snapshot = _valid_status_data(_status_memory.get(task_id))
+        return dict(snapshot) if snapshot is not None else None
 
 
 def _transcript_unavailable_reason(task_id: str) -> str:
@@ -400,16 +458,46 @@ def _absolutize_images(markdown: Optional[str], base_dir: Optional[str] = None) 
     return out
 
 
+def _public_audio_meta(audio_meta) -> Optional[dict]:
+    """Project downloader metadata to fields safe to return through MCP.
+
+    ``AudioDownloadResult.raw_info`` is an internal pipeline/cache detail.  yt-dlp
+    may put signed media URLs, request headers, or cookie material in it, so it
+    must never cross the task-result boundary (including results written by older
+    versions, which are projected again when read).
+    """
+    if audio_meta is None:
+        return None
+    if isinstance(audio_meta, dict):
+        return {
+            key: audio_meta[key]
+            for key in ("file_path", "title", "duration", "platform", "video_id", "video_path")
+            if key in audio_meta
+        }
+    return {
+        key: getattr(audio_meta, key, None)
+        for key in ("file_path", "title", "duration", "platform", "video_id", "video_path")
+    }
+
+
 def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None, **params) -> None:
     """在后台线程执行 NoteGenerator.generate，并落盘最终结果。"""
     try:
         _check_cancel(cancel_event)  # 排队期间被取消 → 直接 CANCELLED，不写 INITIALIZING
         _write_status(task_id, "INITIALIZING", message="正在准备…")
         generator = NoteGenerator()
-        result = generator.generate(task_id=task_id, cancel_event=cancel_event, **params)
+        # MCP 的 SUCCESS 必须在 result.json 和 manifest 都落盘后发布，避免
+        # 轮询看到 SUCCESS 却拿不到结果；直接调用 NoteGenerator 仍保留默认行为。
+        result = generator.generate(
+            task_id=task_id,
+            cancel_event=cancel_event,
+            publish_success=False,
+            **params,
+        )
         if result is None:
             # generate() 内部已写 FAILED 状态
             return
+        _check_cancel(cancel_event)
         material = getattr(result, "material", None)
         if material:
             # material_only 模式：不产 markdown，payload 写素材包各字段
@@ -427,7 +515,7 @@ def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None,
             payload = {
                 "markdown": result.markdown,
                 "transcript": asdict(result.transcript) if result.transcript else None,
-                "audio_meta": asdict(result.audio_meta) if result.audio_meta else None,
+                "audio_meta": _public_audio_meta(result.audio_meta),
             }
         # 每任务文件夹统一根；payload 补语义标题（所有任务形态暴露统一 title）
         task_dir = NOTE_OUTPUT_DIR / task_id
@@ -450,75 +538,223 @@ def _run_note_task(task_id: str, cancel_event: Optional[threading.Event] = None,
                 payload["portable_note_dir"] = str(Path(_portable[0]).parent)
         except Exception:  # noqa: BLE001 —— manifest 读取失败不影响主结果
             pass
-        # result.json 写进任务文件夹（替代扁平 {task_id}.json）—— 原子写：
-        # generate() 内部先写 SUCCESS，若轮询在 result 落盘前读到会看到半截 JSON
+        # result.json 写进任务文件夹（替代扁平 {task_id}.json）—— 原子写；
+        # SUCCESS 延迟到 result.json 和 manifest 都落盘后，轮询不会看到半成品任务。
         _atomic_write_json(task_dir / "result.json", payload)
-        # result.json 落盘完成后再补写一次 SUCCESS，把「SUCCESS 可见但结果未就绪」
-        # 的窗口压缩到毫秒级（generate() 的 SUCCESS 在 result 写盘之前，见 #54）
-        _write_status(task_id, TaskStatus.SUCCESS, message="完成")
-        # 记录结果/状态/任务夹到 manifest（尽力而为，失败不阻断）
-        record_task_paths(task_id, [
-            task_dir,
-            task_dir / "result.json",
-            task_dir / "status.json",
-        ])
-        # 按「导出格式默认」自动导出纯格式（srt/vtt/json，确定性渲染）——尽力而为，失败不阻断
-        _auto_export_transcript(task_id, payload.get("transcript"))
+        # 按「导出格式默认」自动导出纯格式（srt/vtt/json，确定性渲染）——尽力而为，失败不阻断。
+        # 导出产物会追加 manifest，因此必须先完成导出，再做一次严格清单持久化。
+        exported = _auto_export_transcript(task_id, payload.get("transcript"))
+        auto_export_paths = []
+        if isinstance(exported, dict):
+            for fmt, uri in exported.items():
+                if fmt == "_errors" or not isinstance(uri, str) or not uri.startswith("file://"):
+                    continue
+                path = _coerce_local_path(uri)
+                if path.is_file():
+                    auto_export_paths.append(path)
+        record_task_paths(
+            task_id,
+            [
+                task_dir,
+                task_dir / "result.json",
+                task_dir / "status.json",
+                *auto_export_paths,
+            ],
+            strict=True,
+        )
+        # 最后发布 SUCCESS：此后 result.json/manifest 不再由本流程写入。
+        _write_status(task_id, TaskStatus.SUCCESS, message="完成", strict=True)
         logger.info(f"笔记生成成功 task_id={task_id}")
     except TaskCancelledError:
         logger.info(f"任务已取消 task_id={task_id}")
         _write_status(task_id, TaskStatus.CANCELLED, message="任务已取消")
     except Exception as e:
-        logger.error(f"任务异常 task_id={task_id}: {e}", exc_info=True)
-        _write_status(task_id, TaskStatus.FAILED, message=str(e))
+        safe_error = sanitize_error_text(e)
+        logger.error("任务异常 task_id=%s: %s", task_id, safe_error)
+        _write_status(task_id, TaskStatus.FAILED, message=safe_error)
     finally:
         with _tasks_lock:
-            _task_futures.pop(task_id, None)
+            future = _task_futures.pop(task_id, None)
+            # 普通任务的 admission reservation 生命周期覆盖整个 worker；
+            # worker 退出前释放，随后才从注册表移除。batch Future 没有 reservation，
+            # discard 语义由 False 标记自然覆盖。
+            if future is not None:
+                try:
+                    setattr(future, _CONCURRENCY_RESERVED_ATTR, False)
+                except Exception:
+                    pass
             _task_events.pop(task_id, None)
 
 
-def _auto_export_transcript(task_id: str, transcript) -> None:
+def _auto_export_transcript(task_id: str, transcript) -> Dict[str, Any]:
     """笔记任务成功后按 `default_export_formats` 自动导出纯格式（srt/vtt/json）。
 
     尽力而为：任何失败只记日志，不阻断主任务成功状态。只导出确定性机械格式，
-    不涉及 LLM/网络；导出文件自动记入 manifest（供 cleanup 清理）。
+    不涉及 LLM/网络；导出文件自动记入 manifest（供 cleanup 清理）。返回 exporter
+    的映射，供 worker 在最终 strict manifest 中再次登记实际写出的文件。
     """
     try:
         from videonote_mcp.export import export_transcript
 
         default_formats = resolve_default_export_formats()
         if not default_formats or not transcript:
-            return
-        export_transcript(
+            return {}
+        exported = export_transcript(
             transcript,
             formats=default_formats,
             out_dir=NOTE_OUTPUT_DIR / task_id / "gen",
             task_id=task_id,
         )
+        return exported if isinstance(exported, dict) else {}
     except Exception as exc:
-        logger.warning(f"自动导出失败 task_id={task_id}: {exc}")
+        logger.warning(f"自动导出失败 task_id={task_id}: {sanitize_error_text(exc)}")
+        return {}
+
+
+def _future_is_reserved(future: Future) -> bool:
+    """返回 Future 是否持有普通任务的并发预占名额。"""
+    # 用 `is True` 而不是 truthiness：unittest.mock.Mock 的任意未知属性本身
+    # 也是真值，不能让测试替身被误算成 reservation。
+    return getattr(future, _CONCURRENCY_RESERVED_ATTR, None) is True
+
+
+def _future_is_running(future: Future) -> bool:
+    """安全读取 Future.running()，避免测试替身的 Mock 属性污染计数。"""
+    try:
+        return future.running() is True
+    except Exception:
+        return False
+
+
+def _future_is_batch(future: Future) -> bool:
+    """返回 Future 是否明确属于 batch 提交。"""
+    # 只把明确写入的 True 当成 batch；旧 Future/测试替身没有该属性时
+    # 继续走 running() 兜底，避免悄悄放过旧式普通任务。
+    return getattr(future, _CONCURRENCY_BATCH_ATTR, None) is True
+
+
+def _active_task_count_locked() -> int:
+    """在 `_tasks_lock` 已持有时计算并发容量占用。"""
+    active = 0
+    for future in _task_futures.values():
+        # Batch Future 明确由线程池排队，不占普通任务的 admission 名额，
+        # 即使它已经 running 也不能阻塞 ordinary admission。
+        if _future_is_batch(future):
+            continue
+        # 普通任务由 reservation 覆盖排队及执行全生命周期；旧式未标记
+        # Future/测试 fake 没有 reservation 时，按 running() 兼容计数。
+        if _future_is_reserved(future) or _future_is_running(future):
+            active += 1
+    return active
+
+
+def _concurrency_error(active: int) -> ValueError:
+    return ValueError(
+        f"已有 {active} 个任务在同时执行（上限 {_MAX_WORKERS}）：请先等其中一些完成"
+        f"（或 task(action='cancel') 取消）再提交。"
+    )
 
 
 def _guard_concurrency() -> None:
-    """并发门禁：**正在执行**的任务数达到 VIDEONOTE_MAX_WORKERS（默认 3）时拒绝新提交。
+    """并发门禁：普通提交达到 `VIDEONOTE_MAX_WORKERS` 时拒绝新任务。
 
-    只统计 `future.running()`（已开始执行），排队的 future 不占名额 ——
-    batch_generate_notes 的「超出 worker 数则排队等待」语义依赖此判定
-    （docs 审计 F7；此前 `not f.done()` 把刚提交还在排队的任务也计入，
-    批量 >3 条时第 4 条起全部被拒）。
+    该函数保留给调用方/回归测试做只读检查；真正的提交必须使用
+    `_submit_registered_task`，在同一把 `_tasks_lock` 内完成检查、reservation、
+    `_pool.submit()` 与 Future/Event 登记，避免 check-then-act 竞态。普通任务
+    reservation 覆盖排队和执行整个生命周期；batch_generate_notes 仍显式旁路，
+    让超出 worker 数的批量条目由线程池排队。
     """
     if getattr(_batch_ctx, "bypass_guard", False):
-        # batch_generate_notes 内部批量提交（#121 C1）：worker 毫秒级把任务置
-        # running，第 4 条起逐条被拒——批量调用不适用「运行中上限」语义；
-        # 队列由线程池承担（batch 已 max_entries ≤ 50 封顶），直接放行
         return
     with _tasks_lock:
-        active = [tid for tid, f in _task_futures.items() if f.running()]
-    if len(active) >= _MAX_WORKERS:
-        raise ValueError(
-            f"已有 {len(active)} 个任务在同时执行（上限 {_MAX_WORKERS}）：请先等其中一些完成"
-            f"（或 task(action='cancel') 取消）再提交。"
-        )
+        active = _active_task_count_locked()
+    if active >= _MAX_WORKERS:
+        raise _concurrency_error(active)
+
+
+def _submit_registered_task(task_id: str, cancel_event: threading.Event, **params) -> Future:
+    """原子完成任务 admission、线程池提交和注册表登记。
+
+    普通任务在锁内预占名额，防止两个调用线程同时通过门禁；batch 任务由
+    thread-local 旁路标志控制，不预占并发名额，以保留「提交全部、由线程池排队」
+    的批量语义。
+    """
+    bypass_guard = bool(getattr(_batch_ctx, "bypass_guard", False))
+    with _tasks_lock:
+        if not bypass_guard:
+            active = _active_task_count_locked()
+            if active >= _MAX_WORKERS:
+                raise _concurrency_error(active)
+
+        _task_events[task_id] = cancel_event
+        try:
+            future = _pool.submit(_run_note_task, task_id, cancel_event, **params)
+        except Exception:
+            _task_events.pop(task_id, None)
+            raise
+
+        try:
+            setattr(future, _CONCURRENCY_BATCH_ATTR, bypass_guard)
+            setattr(future, _CONCURRENCY_RESERVED_ATTR, not bypass_guard)
+            # 自定义/测试 executor 可能同步返回已完成 Future；此时没有 worker
+            # finally 可负责释放 reservation，直接视为已释放。真实线程池 Future
+            # 在 callable 的 finally 完成前不会 done。
+            if future.done() is True:
+                setattr(future, _CONCURRENCY_RESERVED_ATTR, False)
+        except Exception:
+            # Future 是 concurrent.futures.Future（带 __dict__）；若第三方替身
+            # 禁止属性写入，仍不阻断任务提交，running() 兼容计数会兜底。
+            pass
+        _task_futures[task_id] = future
+        return future
+
+
+def _rollback_unsubmitted_task(task_id: str, original_error: Optional[BaseException] = None) -> Dict[str, Any]:
+    """撤销已创建但尚未可靠提交到线程池的任务。
+
+    ``generate_note`` / ``prepare_note_material`` 会先创建任务目录、状态文件和
+    全局索引，再提交后台 Future。若 admission、参数准备或线程池提交失败，不能
+    把这些半成品留给 ``list_tasks`` / ``task``，否则会形成永远排队的幽灵任务。
+    清理本身必须是尽力而为，绝不能覆盖触发回滚的原始异常；返回并记录结构化
+    清理诊断，必要时附加到原始异常的 notes。
+    """
+    with _tasks_lock:
+        future = _task_futures.pop(task_id, None)
+        event = _task_events.pop(task_id, None)
+        _status_memory.pop(task_id, None)
+
+    if event is not None:
+        try:
+            event.set()
+        except Exception:
+            pass
+    if future is not None:
+        try:
+            future.cancel()
+        except Exception:
+            pass
+
+    try:
+        diagnostics = cleanup_task_files(task_id, include_note=True)
+        if not isinstance(diagnostics, dict):
+            diagnostics = {
+                "cleanup_error": f"清理返回了非字典诊断: {type(diagnostics).__name__}"
+            }
+    except Exception as exc:  # noqa: BLE001 —— 回滚不能覆盖原始异常
+        diagnostics = {"cleanup_error": str(exc)}
+
+    failures = bool(diagnostics.get("errors")) or any(
+        diagnostics.get(key) for key in ("manifest_error", "index_error", "cleanup_error")
+    )
+    if failures:
+        detail = json.dumps(diagnostics, ensure_ascii=False, default=str)
+        logger.error("回滚未提交任务的清理不完整 task_id=%s: %s", task_id, detail)
+        if original_error is not None:
+            try:
+                original_error.add_note(f"任务回滚清理诊断: {detail}")
+            except Exception:
+                pass
+    return diagnostics
 
 
 def _index_step_task(task_id: str, kind: str, title: str = "") -> None:
@@ -537,8 +773,9 @@ def _index_step_task(task_id: str, kind: str, title: str = "") -> None:
             status="PENDING",
             note_dir=str(NOTE_OUTPUT_DIR / task_id),
         )
-    except Exception as exc:  # noqa: BLE001 —— 索引失败不阻断提交，但留痕（list_tasks 会缺任务）
-        logger.warning(f"任务入索引失败 task_id={task_id}: {exc}")
+    except Exception as exc:  # noqa: BLE001 —— 必需的生命周期索引失败时交给提交回滚处理
+        logger.warning(f"任务入索引失败 task_id={task_id}: {sanitize_error_text(exc)}")
+        raise
 
 
 def _coerce_local_path(p: str) -> Path:
@@ -712,7 +949,7 @@ def generate_note(
 ) -> str:
     """提交一个视频链接/本地文件，异步生成 AI Markdown 笔记。
 
-    - video_url: 必填，B 站/YouTube/抖音/快手链接或本地文件路径；
+    - video_url: 必填，B 站/YouTube/抖音/快手/小宇宙/小红书链接或本地文件路径；
     - platform: 可省略，自动识别；
     - quality: fast / medium / slow；
     - provider_id: LLM 供应商 id；省略时取 setup 已配默认模型的供应商，或唯一一个已填 key 的供应商；
@@ -727,9 +964,10 @@ def generate_note(
       安全边界：数据目录内的笔记/本地视频路径始终允许；数据目录外默认拒绝（报错注明放行方式），
       设 VIDEONOTE_ALLOW_EXTERNAL_PATHS=1（或插件设置 allow_external_paths）后放行并只提示。
 
-    转写素材来源（无需配置，自动优先）：平台官方字幕（YouTube/B 站人工+自动字幕）总是
-    先用——官方字幕准、快、不耗转写引擎；无字幕或获取失败才下载音轨走转写引擎
-    （fast-whisper/groq 等）。因此 YouTube 有官方字幕的视频不会走本地 Whisper。
+    转写素材来源（无需配置，自动优先）：平台官方字幕（YouTube/B 站人工+自动字幕、
+    小宇宙官方文稿——需先 `! videonote login xiaoyuzhou`）总是先用；无字幕或获取失败才
+    下载音轨走转写引擎（fast-whisper/groq 等）。小红书无官方字幕，走转写引擎，登录墙请先
+    `! videonote login xiaohongshu`。因此 YouTube/小宇宙有官方字幕的内容不会走本地 Whisper。
 
     返回 {task_id, status, platform}。之后用 task(task_id) 轮询。SUCCESS 时 result.note_dir 指向 note.md 所在目录（{task_id}/gen/，
     指定 notes_dir 时另有 result.portable_note_dir 指向便携副本）。
@@ -775,8 +1013,8 @@ def generate_note(
     if _explicit_provider:
         try:
             _prow = ProviderService.get_provider_by_id(provider_id)
-        except Exception:
-            _prow = None
+        except Exception as exc:
+            raise ValueError(f"读取供应商失败: {sanitize_error_text(exc)}") from exc
         if not _prow:
             raise ValueError(f"供应商不存在: {provider_id}")
         _pkey = (_prow.get("api_key") or "").strip()
@@ -794,7 +1032,8 @@ def generate_note(
             model_name = models[0]["model_name"]
     if not model_name:
         raise ValueError(
-            f"供应商 {provider_id} 还没有可用模型：请先 list_models 查看，或 add_model 添加模型名"
+            f"供应商 {provider_id} 还没有可用模型：请先 `! videonote providers test {provider_id}` 探测模型；"
+            f"如需指定默认模型，追加 `--default <model>`"
         )
 
     # 视频理解默认：参数没传（None）时用 setup ③ 配置的默认（默认关 / 0→6s）；
@@ -819,53 +1058,53 @@ def generate_note(
     if screenshot is None:
         screenshot = _resolve_bool_config("default_screenshot", "VIDEONOTE_DEFAULT_SCREENSHOT", False)
 
-    # 并发上限：最多 VIDEONOTE_MAX_WORKERS 个进行中任务（默认 3）
-    _guard_concurrency()
+    # 并发检查、预占和提交在 _submit_registered_task 的同一把锁内完成。
 
     task_id = uuid.uuid4().hex
-    # 提交时先入全局索引（#127 A1）：note 任务运行期/失败后 list_tasks 可见，
-    # 不再每次 _write_status 刷「不在全局索引」warning；SUCCESS 时 _save_metadata 再更新 title
-    _index_step_task(task_id, platform or "generic")
-    _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
-    notes_dir_out = notes_dir or get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or None
-    # 输出目录与输入文件同口径：file:// URI 先规整，否则 Path("file:///…") 会在 CWD 下建字面 `file:` 目录
-    if notes_dir_out is not None:
-        notes_dir_out = str(_coerce_local_path(notes_dir_out))
-        # 输出目录边界（#142 A1）：数据目录外默认拒绝（原 #99 只告警，扫描判定不够）
-        _guard_data_boundary(Path(notes_dir_out), "便携笔记输出目录（notes_dir）")
-    # 开关放行后：便携笔记可写数据目录外（用户显式意图），只提示不拦截（docs/05 #45）
-    if notes_dir_out and not Path(notes_dir_out).resolve().is_relative_to(DATA_DIR.resolve()):
-        logger.warning("generate_note 便携笔记输出到数据目录外: %s", notes_dir_out)
-    # 布尔开关并入 format 列表：screenshot/link=True 时自动追加对应 format 项
-    # （否则 prompt 不注入标记指令 → LLM 不输出标记 → 视频白下载但笔记无图，#120）
-    _format = list(format or [])
-    if screenshot and "screenshot" not in _format:
-        _format.append("screenshot")
-    if link and "link" not in _format:
-        _format.append("link")
-    params = dict(
-        video_url=video_url,
-        platform=platform,
-        quality=q,
-        model_name=model_name,
-        provider_id=provider_id,
-        link=link,
-        screenshot=screenshot,
-        _format=_format,
-        style=style,
-        extras=extras,
-        include_comments=include_comments,
-        comments_limit=comments_limit,
-        video_understanding=video_understanding,
-        video_interval=video_interval,
-        grid_size=grid_size or [],
-        notes_dir=notes_dir_out,
-    )
-    cancel_event = threading.Event()
-    future = _pool.submit(_run_note_task, task_id, cancel_event, **params)
-    with _tasks_lock:
-        _task_futures[task_id] = future
-        _task_events[task_id] = cancel_event
+    try:
+        # 提交时先入全局索引（#127 A1）：note 任务运行期/失败后 list_tasks 可见，
+        # 不再每次 _write_status 刷「不在全局索引」warning；SUCCESS 时 _save_metadata 再更新 title
+        _index_step_task(task_id, platform or "generic")
+        _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
+        notes_dir_out = notes_dir or get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or None
+        # 输出目录与输入文件同口径：file:// URI 先规整，否则 Path("file:///…") 会在 CWD 下建字面 `file:` 目录
+        if notes_dir_out is not None:
+            notes_dir_out = str(_coerce_local_path(notes_dir_out))
+            # 输出目录边界（#142 A1）：数据目录外默认拒绝（原 #99 只告警，扫描判定不够）
+            _guard_data_boundary(Path(notes_dir_out), "便携笔记输出目录（notes_dir）")
+        # 开关放行后：便携笔记可写数据目录外（用户显式意图），只提示不拦截（docs/05 #45）
+        if notes_dir_out and not Path(notes_dir_out).resolve().is_relative_to(DATA_DIR.resolve()):
+            logger.warning("generate_note 便携笔记输出到数据目录外: %s", notes_dir_out)
+        # 布尔开关并入 format 列表：screenshot/link=True 时自动追加对应 format 项
+        # （否则 prompt 不注入标记指令 → LLM 不输出标记 → 视频白下载但笔记无图，#120）
+        _format = list(format or [])
+        if screenshot and "screenshot" not in _format:
+            _format.append("screenshot")
+        if link and "link" not in _format:
+            _format.append("link")
+        params = dict(
+            video_url=video_url,
+            platform=platform,
+            quality=q,
+            model_name=model_name,
+            provider_id=provider_id,
+            link=link,
+            screenshot=screenshot,
+            _format=_format,
+            style=style,
+            extras=extras,
+            include_comments=include_comments,
+            comments_limit=comments_limit,
+            video_understanding=video_understanding,
+            video_interval=video_interval,
+            grid_size=grid_size or [],
+            notes_dir=notes_dir_out,
+        )
+        cancel_event = threading.Event()
+        _submit_registered_task(task_id, cancel_event, **params)
+    except Exception as exc:
+        _rollback_unsubmitted_task(task_id, original_error=exc)
+        raise
     logger.info(f"已提交任务 task_id={task_id} platform={platform} model={model_name}")
     return json.dumps(
         {"task_id": task_id, "status": "PENDING", "platform": platform, "model_name": model_name},
@@ -886,7 +1125,7 @@ def prepare_note_material(
     """提交一个视频链接/本地文件，异步产出「素材包」：转写全文+分段、可选视频帧（file:// 图片）、
     可选 B 站弹幕/评论、音视频本地路径。不调用 LLM 总结，供 AGENT（Claude Code）读取素材自行写笔记。
 
-    - video_url: 必填，B 站/YouTube/抖音/快手链接或本地文件路径；
+    - video_url: 必填，B 站/YouTube/抖音/快手/小宇宙/小红书链接或本地文件路径；
     - platform: 可省略，自动识别；
     - video_understanding / video_interval / grid_size: 是否抽帧 + 截帧间隔（秒）+ 网格大小
       （如 [3,3]）；默认关（不抽帧）。开启后 result.frames 是持久化帧图片的 file:// 绝对路径；
@@ -895,7 +1134,7 @@ def prepare_note_material(
     不需要配置 LLM 供应商/模型。返回 {task_id, status: PENDING, kind: material}。
     之后用 task(task_id) 轮询；SUCCESS 时 result 含
     {kind: material, title, transcript, frames, comments_danmaku, video_path, audio_path}。
-    transcript 优先来自平台官方字幕（YouTube/B 站人工+自动字幕），无字幕才走转写引擎。
+    transcript 优先来自平台官方字幕（YouTube/B 站人工+自动字幕、小宇宙官方文稿），无字幕才走转写引擎。
     需要 AI 生成结构化 Markdown 笔记请用 generate_note。
     """
     if platform is None:
@@ -928,29 +1167,29 @@ def prepare_note_material(
     # 显式 comments_limit=0 不能被 `or 20` 吞掉（#130 A2）
     comments_limit = _coerce_int(comments_limit if comments_limit is not None else 20, 20, clamp_min=1)  # 下限钳制
 
-    # 并发上限：与 generate_note 一致
+    # 并发检查、预占和提交在 _submit_registered_task 的同一把锁内完成。
     _check_grid_size(grid_size)
-    _guard_concurrency()
 
     task_id = uuid.uuid4().hex
-    # 提交时先入全局索引（#127 A1）：material 任务运行期/失败后 list_tasks 可见
-    _index_step_task(task_id, platform or "generic")
-    _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
-    params = dict(
-        video_url=video_url,
-        platform=platform,
-        material_only=True,
-        include_comments=include_comments,
-        comments_limit=comments_limit,
-        video_understanding=video_understanding,
-        video_interval=video_interval,
-        grid_size=grid_size or [],
-    )
-    cancel_event = threading.Event()
-    future = _pool.submit(_run_note_task, task_id, cancel_event, **params)
-    with _tasks_lock:
-        _task_futures[task_id] = future
-        _task_events[task_id] = cancel_event
+    try:
+        # 提交时先入全局索引（#127 A1）：material 任务运行期/失败后 list_tasks 可见
+        _index_step_task(task_id, platform or "generic")
+        _write_status(task_id, TaskStatus.PENDING, message="任务排队中")
+        params = dict(
+            video_url=video_url,
+            platform=platform,
+            material_only=True,
+            include_comments=include_comments,
+            comments_limit=comments_limit,
+            video_understanding=video_understanding,
+            video_interval=video_interval,
+            grid_size=grid_size or [],
+        )
+        cancel_event = threading.Event()
+        _submit_registered_task(task_id, cancel_event, **params)
+    except Exception as exc:
+        _rollback_unsubmitted_task(task_id, original_error=exc)
+        raise
     logger.info(f"已提交素材任务 task_id={task_id} platform={platform}")
     return json.dumps(
         {"task_id": task_id, "status": "PENDING", "kind": "material", "platform": platform},
@@ -970,11 +1209,13 @@ def _stage_label(status: str) -> str:
         "DOWNLOADING": "下载中",
         "TRANSCRIBING": "转写中",
         "SUMMARIZING": "总结中",
+        "FORMATTING": "格式化中",
         "SAVING": "保存中",
         "SUCCESS": "已完成",
         "FAILED": "失败",
         "CANCELLED": "已取消",
         "NOT_FOUND": "不存在",
+        "UNKNOWN": "状态未知",
     }.get(status, status)
 
 
@@ -988,21 +1229,25 @@ def _task_status(task_id: str) -> str:
     task_dir = NOTE_OUTPUT_DIR / str(task_id)
     status_file = task_dir / "status.json"
     data = None
-    if status_file.exists():
+    status_file_exists = status_file.exists()
+    if status_file_exists:
         try:
-            data = json.loads(status_file.read_text(encoding="utf-8"))
+            data = _valid_status_data(json.loads(status_file.read_text(encoding="utf-8")))
         except Exception:
-            # 读盘损坏（写一半/磁盘故障）时回退最近一次写盘快照——「状态文件读取失败」
-            # 曾把运行中/已完成任务误报成 PENDING（#118）；快照也没有才是真未知
-            with _tasks_lock:
-                data = _status_memory.get(task_id) or {"status": "PENDING", "message": "状态文件读取失败"}
+            data = None
+        if data is None:
+            # 终态快照在成功落盘后会主动弹出（#123 C9），此时无法安全推断任务是否
+            # PENDING；优先回退有效内存快照，否则明确返回 UNKNOWN，而不是让 list/string
+            # 等合法 JSON 根类型在下方调用 .get() 抛异常（#148）。
+            data = _memory_status_snapshot(task_id)
+            if data is None:
+                data = {"status": "UNKNOWN", "message": "状态文件无效，无法确认任务终态"}
     else:
         # 缺失文件也先查快照（#127 A5）：_write_status 先写内存快照再写盘，若提交时
         # 首写就失败（磁盘满/只读）任务在跑但 status.json 不存在——直接报 NOT_FOUND
         # 会与 list_tasks 显示的 PENDING 矛盾。快照命中 → 任务在跑，返回快照内容。
-        with _tasks_lock:
-            snap = _status_memory.get(task_id)
-        if snap is None:
+        data = _memory_status_snapshot(task_id)
+        if data is None:
             return json.dumps(
                 {
                     "status": "NOT_FOUND",
@@ -1014,9 +1259,8 @@ def _task_status(task_id: str) -> str:
                 },
                 ensure_ascii=False,
             )
-        data = snap
 
-    status = data.get("status", "PENDING")
+    status = data["status"]
     started = data.get("started_at")
     try:
         elapsed = round(time.time() - float(started), 1) if started else None
@@ -1030,6 +1274,10 @@ def _task_status(task_id: str) -> str:
     if status == "SUCCESS" and result_file.exists():
         try:
             result = json.loads(result_file.read_text(encoding="utf-8"))
+            if isinstance(result, dict) and isinstance(result.get("audio_meta"), dict):
+                # 兼容旧任务：历史 result.json 可能含完整 yt-dlp raw_info。
+                # 读取时投影而不改写磁盘，避免旧签名 URL 再经 MCP 返回。
+                result["audio_meta"] = _public_audio_meta(result["audio_meta"])
             if result:
                 # 轻量结果：默认剥掉完整转写/评论，避免一次工具调用灌入数十万 token
                 # （prepare_note_material 的转写就是主产物，剥掉后状态查询对它只剩空壳；
@@ -1054,8 +1302,8 @@ def _task_status(task_id: str) -> str:
             # result.json 损坏（写盘中断/磁盘故障）：status 是 SUCCESS 但内容不可读。
             # 与 status.json 的 #118 快照回退不同，result 无法重建——显式标 result_error，
             # 让 Agent 能区分「成功但内容不可读」与「任务不存在」（#124 A10）
-            logger.error(f"读取结果文件失败 task_id={task_id}: {e}")
-            result_error = f"结果文件读取失败（可能写盘中断）: {e}"
+            logger.error(f"读取结果文件失败 task_id={task_id}: {sanitize_error_text(e)}")
+            result_error = f"结果文件读取失败（可能写盘中断）: {sanitize_error_text(e)}"
     elif status == "SUCCESS":
         # SUCCESS 但 result.json 不存在（结果尚未落盘/被手动删/旧版本任务）：
         # 不静默 result:null——Agent 无法区分「无结果」与「任务失败」（#125 C3）
@@ -1065,7 +1313,7 @@ def _task_status(task_id: str) -> str:
         "status": status,
         "stage": _stage_label(status),
         "elapsed_secs": elapsed,
-        "message": data.get("message", ""),
+        "message": sanitize_error_text(data.get("message", "")),
         "task_id": task_id,
         "result": result,
     }
@@ -1074,7 +1322,6 @@ def _task_status(task_id: str) -> str:
     if result_pending:
         payload["result_pending"] = True
     return json.dumps(payload, ensure_ascii=False)
-
 
 
 
@@ -1127,7 +1374,7 @@ def _load_task_transcript(task_id: str) -> Optional[dict]:
         try:
             return json.loads(cache.read_text(encoding="utf-8"))
         except Exception as e:
-            logger.warning(f"读取转写缓存失败 task_id={task_id}: {e}")
+            logger.warning(f"读取转写缓存失败 task_id={task_id}: {sanitize_error_text(e)}")
     result_file = task_dir / "result.json"
     if result_file.exists():
         try:
@@ -1204,7 +1451,7 @@ def _task_transcript(task_id: str, segment_range: str = "") -> str:
         lo, hi = _parse_segment_range(segment_range, total)
     except ValueError as e:
         return json.dumps(
-            {"task_id": task_id, "ok": False, "status": _read_task_status(task_id), "message": str(e)},
+            {"task_id": task_id, "ok": False, "status": _read_task_status(task_id), "message": sanitize_error_text(e)},
             ensure_ascii=False,
         )
     if (lo, hi) == (0, total):
@@ -1346,7 +1593,10 @@ def list_tasks(limit: Optional[int] = None, offset: int = 0) -> str:
     if limit == 0:
         return json.dumps([], ensure_ascii=False)
     limit = _coerce_int(limit, 1, clamp_min=1) if limit is not None else None
-    tasks = _list(limit=limit, offset=offset)
+    try:
+        tasks = _list(limit=limit, offset=offset)
+    except Exception as exc:
+        raise ValueError(f"读取任务索引失败: {sanitize_error_text(exc)}") from exc
     return json.dumps(tasks, ensure_ascii=False)
 
 
@@ -1566,12 +1816,12 @@ def health_check(
         with get_engine().connect():
             pass
     except Exception as e:
-        db_ok, db_err = False, str(e)
+        db_ok, db_err = False, sanitize_error_text(e)
     checks.append(
         {"name": "db", "ok": db_ok, "detail": "" if db_ok else f"error: {db_err}"}
     )
 
-    # 加密状态（#140 复扫 A4）：key 创建/加密失败会回退明文——如实暴露，防误以为已加密
+    # 加密状态（#140 复扫 A4）：Fernet 不可用时拒绝敏感值写入——如实暴露，便于排障
     from videonote_mcp.crypto import encrypt_status as _crypto_status
 
     _crypto = _crypto_status()
@@ -1582,8 +1832,7 @@ def health_check(
             "detail": (
                 "Fernet 加密正常"
                 if _crypto == "fernet"
-                else "Fernet key 创建/加密失败，已回退明文——敏感字段（API key / HF token）"
-                "当前明文落盘；检查 config/ 目录可写性后重启"
+                else "Fernet key 创建/加密失败，已拒绝敏感值写入——检查 config/ 目录可写性后重试"
             ),
         }
     )
@@ -1599,7 +1848,7 @@ def health_check(
             }
         )
     except OSError as e:
-        checks.append({"name": "disk", "ok": False, "detail": f"无法读取磁盘信息: {e}"})
+        checks.append({"name": "disk", "ok": False, "detail": f"无法读取磁盘信息: {sanitize_error_text(e)}"})
 
     ready = TranscriberConfigManager().is_model_ready()
     checks.append(
@@ -1669,7 +1918,7 @@ def health_check(
                 {
                     "name": "duration",
                     "ok": True,
-                    "detail": f"无法预解析时长（{e}）；提交后任务内会重试",
+                    "detail": f"无法预解析时长（{sanitize_error_text(e)}）；提交后任务内会重试",
                 }
             )
 
@@ -1782,8 +2031,8 @@ def _preflight_provider(provider_id: Optional[str]) -> "tuple[bool, str]":
         return False, "无已填 key 的供应商：先 add_provider 再 `! videonote providers set <id> --api-key '...'`，或跑 /videonote-setup"
     try:
         row = ProviderService.get_provider_by_id(pid)
-    except Exception:
-        row = None
+    except Exception as exc:
+        return False, f"读取供应商失败: {sanitize_error_text(exc)}"
     if not row:
         return False, f"供应商不存在: {pid}"
     key = (row.get("api_key") or "").strip()
@@ -1795,7 +2044,10 @@ def _preflight_provider(provider_id: Optional[str]) -> "tuple[bool, str]":
         if rows:
             model = rows[0]["model_name"]
     if not model:
-        return False, f"供应商 {pid} 没有可用模型：先 list_models(provider_id) 或 add_model"
+        return False, (
+            f"供应商 {pid} 没有可用模型：先 `! videonote providers test {pid}` 探测模型；"
+            "如需指定默认模型，追加 `--default <model>`"
+        )
     return True, f"{pid}（key 已填，默认模型 {model}）"
 
 
@@ -1834,8 +2086,9 @@ def get_config(provider_id: str = "") -> str:
     - transcriber: 转写引擎配置与模型就绪状态；
     - cookie_configured: 已配置 Cookie 的平台名列表（只给布尔状态，不给值）；
     - transcript_source: 转写素材来源（固定 platform_subtitles_first——平台官方字幕优先，
-      YouTube/B 站人工+自动字幕可用时直接用官方字幕，无字幕/获取失败才下载音轨走转写引擎；
-      官方字幕通常比本地 Whisper 更准，且不耗转写引擎资源）。
+      YouTube/B 站人工+自动字幕、小宇宙官方文稿可用时直接用官方字幕，无字幕/获取失败才下载音轨走转写引擎；
+      小宇宙文稿需 `! videonote login xiaoyuzhou`；官方字幕通常比本地 Whisper 更准，且不耗转写引擎资源）；
+    - note_cache: 跨任务转写缓存策略（ttl_days / max_mb / policy=sliding-lru）。
 
     传 provider_id 时额外对该供应商做连通性探测（用已保存的 key 请求
     /v1/models，15s 超时；**不接受 key 参数**），返回 {probe: {ok, models, error}}。
@@ -1873,6 +2126,11 @@ def get_config(provider_id: str = "") -> str:
         # 转写素材来源优先级：平台官方字幕（YouTube/B 站人工+自动字幕）总是优先，
         # 无字幕/获取失败才下载音轨走转写引擎（#C3 让 Agent 知道有官方字幕可用）。
         "transcript_source": "platform_subtitles_first",
+        "note_cache": {
+            "ttl_days": note_cache.cache_ttl_days(),
+            "max_mb": note_cache.cache_max_mb(),
+            "policy": "sliding-lru",
+        },
     }
     if provider_id:
         provider = ProviderService.get_provider_by_id(provider_id)
@@ -1889,7 +2147,7 @@ def get_config(provider_id: str = "") -> str:
         if r["ok"]:
             result["probe"]["models"] = sorted(set(r["models"]))[:50]
         else:
-            result["probe"]["error"] = r.get("error", "连接失败")
+            result["probe"]["error"] = sanitize_error_text(r.get("error", "连接失败"))
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -1913,7 +2171,7 @@ def batch_generate_notes(
     comments_limit: Optional[int] = None,
     notes_dir: Optional[str] = None,
 ) -> str:
-    """对播放列表/合集/分 P 链接批量提交笔记任务（服务端逐个排队，遵守并发门禁）。
+    """对播放列表/合集/分 P 链接批量提交笔记任务（服务端逐个排队）。
 
     参数策略：除 video_url 外全部可选——不传即套 setup ③ 配置的默认
     （与 generate_note 同款；仅需覆盖时显式传）。每条任务同样优先用平台官方字幕
@@ -1926,8 +2184,9 @@ def batch_generate_notes(
       comments_limit/notes_dir），批量共享同一套风格与格式设置；单集链接退化为单个
       generate_note 任务。
 
-    内部先 inspect_video 展开条目再逐条提交（同一并发门禁，超出 worker 数的排队等待；
-    与 SKILL「多集用 subagent 逐个提交」纪律不同——本工具把展开+排队收敛到服务端）。
+    内部先 inspect_video 展开条目再逐条提交（单次最多 50 条；batch 显式绕过普通
+    admission，由线程池负责排队；不要并发调用多个 batch）。与 SKILL「多集用 subagent
+    逐个提交」纪律不同——本工具把展开+排队收敛到服务端）。
     返回 {ok, total, submitted, truncated?, errors:[{p, title, url, error}],
     tasks:[{p, title, duration, url, task_id, status}]}。
     单条失败不阻断其余；全部失败时 ok=false。之后逐个 task(task_id) 轮询。
@@ -1949,7 +2208,7 @@ def batch_generate_notes(
                 "ok": False,
                 "total": 0,
                 "submitted": 0,
-                "errors": [{"p": None, "title": None, "url": video_url, "error": parsed.get("error") or "解析视频失败"}],
+                "errors": [{"p": None, "title": None, "url": sanitize_error_url(video_url), "error": sanitize_error_text(parsed.get("error") or "解析视频失败")}],
                 "tasks": [],
                 "platform": parsed.get("platform"),
                 "kind": parsed.get("kind"),
@@ -1982,6 +2241,24 @@ def batch_generate_notes(
         return {**entry, "task_id": r.get("task_id"), "status": r.get("status")}
 
     if parsed.get("kind") == "single" or not entries:
+        # 显式 max_entries=0 与多集路径同口径：只完成解析，不提交任务。
+        # 单集退化也不能绕过「最多 0 条」契约（#146 B4）。
+        if max_entries == 0:
+            total = int(parsed.get("total") or 1)
+            return json.dumps(
+                {
+                    "ok": False,
+                    "total": total,
+                    "submitted": 0,
+                    "truncated": total > 0,
+                    "remaining": total,
+                    "platform": parsed.get("platform"),
+                    "kind": parsed.get("kind"),
+                    "errors": [],
+                    "tasks": [],
+                },
+                ensure_ascii=False,
+            )
         # 单集链接：退化为单任务，不引入条目语义；失败与多条目同形状（#109：
         # 此前 raise 裸传，Agent 拿不到结构化 errors）
         try:
@@ -2002,7 +2279,7 @@ def batch_generate_notes(
                     "remaining": 0,
                     "platform": parsed.get("platform"),
                     "kind": parsed.get("kind"),
-                    "errors": [{"p": 1, "title": parsed.get("title"), "url": video_url, "error": str(exc)}],
+                    "errors": [{"p": 1, "title": parsed.get("title"), "url": sanitize_error_url(video_url), "error": sanitize_error_text(exc)}],
                     "tasks": [],
                 },
                 ensure_ascii=False,
@@ -2026,7 +2303,12 @@ def batch_generate_notes(
                 submitted += 1
             except Exception as exc:  # noqa: BLE001 —— 单条失败收集继续
                 errors.append(
-                    {"p": e.get("p"), "title": e.get("title"), "url": e.get("url"), "error": str(exc)}
+                    {
+                        "p": e.get("p"),
+                        "title": e.get("title"),
+                        "url": sanitize_error_url(e.get("url")),
+                        "error": sanitize_error_text(exc),
+                    }
                 )
     finally:
         _batch_ctx.bypass_guard = False
@@ -2161,7 +2443,7 @@ def _merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
             # 输出目录同输入文件：file:// URI 先规整，否则 Path("file:///…") 建字面 `file:` 目录（#107）
             out_dir = str(_coerce_local_path(out_dir))
         out = out_dir or str(NOTE_OUTPUT_DIR / "merged")
-        # 与 transcribe_media/extract_frames 同口径：file:// URI 先规整（app 层只认普通路径，
+        # 与 process_media 的本地路径处理同口径：file:// URI 先规整（app 层只认普通路径，
         # 直接传 file:// 会误报「文件不存在」）
         paths = [_coerce_local_path(f) for f in files]
         # 目录输入穿透（merge.py 用 os.path.exists 对目录为 True）会到 ffmpeg 深处才炸
@@ -2183,8 +2465,8 @@ def _merge_audio(files: List[str], out_dir: Optional[str] = None) -> str:
         merged = _merge([str(p) for p in paths], out_dir=out)
         return json.dumps({"ok": True, "path": Path(merged).as_uri()}, ensure_ascii=False)
     except Exception as exc:
-        logger.warning(f"merge_audio 失败: {exc}")
-        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        logger.warning(f"merge_audio 失败: {sanitize_error_text(exc)}")
+        return json.dumps({"ok": False, "error": sanitize_error_text(exc)}, ensure_ascii=False)
 
 
 def _diarize_media(audio_file: str, num_speakers: Optional[int] = None) -> str:
@@ -2209,20 +2491,22 @@ def _diarize_media(audio_file: str, num_speakers: Optional[int] = None) -> str:
             raise FileNotFoundError(f"本地文件不存在: {audio_file}")
         # 输入文件边界（#142 A1）：默认只允许数据目录内文件
         _guard_data_boundary(p, "说话人分离输入文件")
-        wav = normalize_to_wav(str(p))
+        wav = None
         try:
+            # normalize 也进 try/finally：ffmpeg 失败会留下半成品 <原名>_16k.wav（#133 B4）
+            wav = normalize_to_wav(str(p))
             turns = diarize_audio(wav, hf_token=None, num_speakers=num_speakers)
         finally:
             # 归一化产物写在源文件旁（audio_preprocess 缺省路径），用完即清——
             # 否则每次调用在用户目录永久残留 <原名>_16k.wav（小时级视频数百 MB，#121 C2）
-            cleanup_preprocess_files(wav)
+            cleanup_preprocess_files(str(wav or p))
         return json.dumps(
             {"ok": True, "turns": turns, "num_speakers": len({t["speaker"] for t in turns})},
             ensure_ascii=False,
         )
     except Exception as exc:
-        logger.warning(f"diarize 分支失败: {exc}")
-        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        logger.warning(f"diarize 分支失败: {sanitize_error_text(exc)}")
+        return json.dumps({"ok": False, "error": sanitize_error_text(exc)}, ensure_ascii=False)
 
 
 @mcp.tool()

@@ -51,7 +51,7 @@ class YoutubeEmbedTest(unittest.TestCase):
 class DouyinShortUrlTest(unittest.TestCase):
     """v.douyin.com 短链先解真实链接再提 id（#125 B1）。
 
-    旧实现只匹配 /video/(\d+)——App 分享默认短链解析不出 → 缓存身份 douyin:None
+    旧实现只匹配 /video/(\\d+)——App 分享默认短链解析不出 → 缓存身份 douyin:None
     永不命中，同一视频每次都重下重转写。
     """
 

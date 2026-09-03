@@ -56,6 +56,11 @@ if DATABASE_URL.startswith("sqlite"):
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA busy_timeout=30000")
         cur.execute("PRAGMA synchronous=NORMAL")
+        # 外键约束默认是每个 SQLite 连接关闭的；SQLAlchemy 会创建多个
+        # Session/连接，必须在 connect listener 中逐连接开启，否则
+        # models.provider_id 的外键只停留在 schema 声明层，删除 provider
+        # 或插入孤儿 model 时仍可能悄悄破坏一致性。
+        cur.execute("PRAGMA foreign_keys=ON")
         cur.close()
 
 

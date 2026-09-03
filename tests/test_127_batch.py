@@ -269,7 +269,7 @@ class LocalMp3DefaultDirTest(unittest.TestCase):
             # convert_to_mp3 内 `from app.utils.path_helper import get_data_dir`——
             # 需 patch path_helper 而非 local_downloader 模块属性
             with mock.patch("app.utils.path_helper.get_data_dir", return_value=data_dir):
-                with mock.patch("app.downloaders.local_downloader.subprocess.run"):
+                with mock.patch("app.downloaders.local_downloader.run_ffmpeg_cancellable"):
                     with mock.patch(
                         "app.downloaders.local_downloader.os.path.exists",
                         side_effect=lambda p: p == src or p == out,

@@ -17,6 +17,7 @@ import logging
 import threading
 from typing import List
 
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.path_helper import get_model_dir
@@ -81,11 +82,21 @@ class FunASRTranscriber(Transcriber):
         )
         return self._model
 
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        cancel_event: threading.Event = None,
+    ) -> TranscriptResult:
+        check_cancel(cancel_event)
         with self._lock:
+            check_cancel(cancel_event)
             model = self._ensure_model()
+            check_cancel(cancel_event)
             try:
                 results = model.generate(input=file_path, batch_size_s=300)
+                check_cancel(cancel_event)
+            except TaskCancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001 —— funasr 内部异常透传
                 raise RuntimeError(f"FunASR 转写失败: {exc}")
 
@@ -101,6 +112,7 @@ class FunASRTranscriber(Transcriber):
             segments: List[TranscriptSegment] = []
             if sentence_info:
                 for seg in sentence_info:
+                    check_cancel(cancel_event)
                     start_ms = int(seg.get("start") or 0)
                     end_ms = int(seg.get("end") or start_ms)
                     seg_text = (seg.get("text") or "").strip()

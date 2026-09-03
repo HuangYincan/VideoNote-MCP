@@ -1,8 +1,10 @@
 import os
+import threading
 
 import requests
 
 from app.decorators.timeit import timeit
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
@@ -17,8 +19,9 @@ class KuaishouTranscriber(Transcriber):
     def __init__(self):
         pass
 
-    def _submit(self, file_path: str) -> dict:
+    def _submit(self, file_path: str, cancel_event: threading.Event = None) -> dict:
         """提交识别请求"""
+        check_cancel(cancel_event)
         try:
             # 流式上传文件对象（#127 B4）：不再 _load_file 整文件 read() 进内存
             #（长音频峰值 ~2× 文件大小），requests 内部按块读取 multipart
@@ -33,6 +36,7 @@ class KuaishouTranscriber(Transcriber):
             with open(file_path, 'rb') as f:
                 files = [('file', (file_name, f, 'audio/mpeg'))]
                 response = requests.post(self.API_URL, data=payload, files=files, timeout=300)
+            check_cancel(cancel_event)
             response.raise_for_status()  # 检查HTTP错误
 
             result = response.json()
@@ -55,14 +59,20 @@ class KuaishouTranscriber(Transcriber):
             raise
 
     @timeit
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        cancel_event: threading.Event = None,
+    ) -> TranscriptResult:
         """执行转录过程，符合 Transcriber 接口"""
+        check_cancel(cancel_event)
         try:
             logger.info(f"开始处理文件: {file_path}")
             
             # 提交请求并获取结果
             logger.info("向快手API提交识别请求...")
-            result_data = self._submit(file_path)
+            result_data = self._submit(file_path, cancel_event=cancel_event)
+            check_cancel(cancel_event)
             
             logger.info("请求成功，处理结果...")
             
@@ -73,6 +83,7 @@ class KuaishouTranscriber(Transcriber):
             # 时兜底，null 时 None.get 裸崩（#129 B6；#126 B5 已防段内 null）
             texts = (result_data.get('data') or {}).get('text', [])
             for u in texts:
+                check_cancel(cancel_event)
                 text = (u.get('text') or '').strip()  # API 返回 null 不裸崩（#126 B5）
                 start_time = float(u.get('start_time', 0))
                 end_time = float(u.get('end_time', 0))
@@ -93,6 +104,8 @@ full_text=" ".join(seg.text for seg in segments).strip(),
 
             return result
 
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.error(f"快手ASR处理失败: {str(e)}")
             raise

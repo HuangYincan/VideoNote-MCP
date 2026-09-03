@@ -521,7 +521,7 @@ class PreflightTest(unittest.TestCase):
                 with mock.patch.object(server, "get_models_by_provider", return_value=[]):
                     ok, detail = server._preflight_provider("p1")
         self.assertFalse(ok)
-        self.assertIn("list_models", detail)
+        self.assertIn("providers test", detail)
 
     def test_duration_best_effort(self):
         # 解析失败不拦（info ok=false → duration 检查仍 ok）
@@ -1574,12 +1574,12 @@ class InspectVideoSsrfTest(unittest.TestCase):
         self.assertEqual(resp["kind"], "single")
 
     def test_local_existing_file_accepted(self):
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-            path = f.name
+        path = server.DATA_DIR / "inspect_ssrf_local.mp4"
+        path.write_bytes(b"x")
         try:
-            resp = json.loads(server.inspect_video(f"file://{path}"))
+            resp = json.loads(server.inspect_video(path.as_uri()))
         finally:
-            Path(path).unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
         self.assertTrue(resp["ok"])
         self.assertEqual(resp["platform"], "local")
         self.assertEqual(resp["kind"], "single")
@@ -1628,6 +1628,9 @@ class GetConfigTest(unittest.TestCase):
         self.assertTrue(resp["transcriber"]["ready"])
         self.assertEqual(resp["cookie_configured"], ["bilibili"])   # 只给平台名
         self.assertEqual(resp["transcript_source"], "platform_subtitles_first")  # #C3 字幕优先
+        self.assertEqual(resp["note_cache"]["policy"], "sliding-lru")
+        self.assertIn("ttl_days", resp["note_cache"])
+        self.assertIn("max_mb", resp["note_cache"])
         self.assertNotIn("probe", resp)
         # cookie 值绝不出现在返回里（凭证红线）
         self.assertNotIn("SESSDATA", json.dumps(resp))
@@ -1807,16 +1810,19 @@ class InspectLocalFileUriTest(unittest.TestCase):
     """
 
     def test_inspect_accepts_file_uri_with_space(self):
-        with tempfile.TemporaryDirectory() as td:
-            f = Path(td) / "我的 视频.mp4"
-            f.write_bytes(b"x")
+        f = server.DATA_DIR / "我的 视频.mp4"
+        f.write_bytes(b"x")
+        try:
             out = json.loads(server.inspect_video(f.as_uri()))  # %20/非 ASCII 编码
+        finally:
+            f.unlink(missing_ok=True)
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["platform"], "local")
         self.assertEqual(out["entries"][0]["url"], str(f))
 
     def test_inspect_missing_file_uri_reports_not_found(self):
-        out = json.loads(server.inspect_video("file:///tmp/videonote_never_exists_133.mp4"))
+        missing = (server.DATA_DIR / "videonote_never_exists_133.mp4").as_uri()
+        out = json.loads(server.inspect_video(missing))
         self.assertFalse(out["ok"])
         self.assertIn("本地文件不存在", out["error"])
 

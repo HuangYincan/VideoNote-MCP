@@ -6,7 +6,6 @@ from enum import Enum
 from app.transcriber.bcut import BcutTranscriber
 from app.transcriber.groq import GroqTranscriber
 from app.transcriber.kuaishou import KuaishouTranscriber
-from app.transcriber.whisper import WhisperTranscriber
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -63,7 +62,9 @@ def _get_or_build_transcriber(key: TranscriberType, cls, *args, **kwargs):
             if need_build:
                 logger.info(f'创建 {cls.__name__} 实例: {key} (model_size={want_size})')
                 try:
-                    # 替换旧实例前防御性释放（whisper 大模型约 3GB，双驻留会撑爆内存）
+                    # 先构造新实例，只有成功后才关闭旧实例；否则新模型加载失败时
+                    # 旧实例仍可复用，不会把缓存留在 model=None 的失效状态（#146 B1）。
+                    new_transcriber = cls(*args, **kwargs)
                     old = _transcribers.get(key)
                     if old is not None:
                         close = getattr(old, "close", None)
@@ -80,7 +81,7 @@ def _get_or_build_transcriber(key: TranscriberType, cls, *args, **kwargs):
                                     close()
                             except Exception as exc:
                                 logger.warning(f'释放旧 {cls.__name__} 实例失败: {exc}')
-                    _transcribers[key] = cls(*args, **kwargs)
+                    _transcribers[key] = new_transcriber
                     logger.info(f'{cls.__name__} 创建成功')
                 except Exception as e:
                     logger.error(f"{cls.__name__} 创建失败: {e}")
@@ -92,6 +93,7 @@ def get_groq_transcriber():
     return _get_or_build_transcriber(TranscriberType.GROQ, GroqTranscriber)
 
 def get_whisper_transcriber(model_size="small", device="cuda"):
+    from app.transcriber.whisper import WhisperTranscriber
     return _get_or_build_transcriber(TranscriberType.FAST_WHISPER, WhisperTranscriber, model_size=model_size, device=device)
 
 def get_bcut_transcriber():

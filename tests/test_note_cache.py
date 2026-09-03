@@ -13,9 +13,11 @@ note_cache 按 `platform:video_id` 缓存上次转写，命中时把缓存 trans
    不下载媒体、不初始化转写器；miss 路径则完整下载 + 转写 + promote 进缓存。
 """
 import json
+import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -580,6 +582,131 @@ class StatusFallbackTest(unittest.TestCase):
             g._update_status("stf002", "FAILED", message="新错误")
         self.assertTrue(status_file.exists())
         self.assertIn("Error writing status", status_file.read_text(encoding="utf-8"))
+
+
+class CacheLimitsTest(unittest.TestCase):
+    """#150：滑动 TTL + 总量 LRU。"""
+
+    def setUp(self):
+        self.root = note_cache.cache_root()
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _dest(self, tid: str) -> Path:
+        p = NOTE_OUTPUT_DIR / tid / "gen" / "transcript.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def test_garbage_env_falls_back_to_defaults(self):
+        with mock.patch.dict(
+            os.environ,
+            {"VIDEONOTE_CACHE_TTL_DAYS": "abc", "VIDEONOTE_CACHE_MAX_MB": "nope"},
+            clear=False,
+        ):
+            self.assertEqual(note_cache.cache_ttl_days(), 30)
+            self.assertEqual(note_cache.cache_max_mb(), 2048)
+
+    def test_zero_disables_ttl_and_max(self):
+        with mock.patch.dict(
+            os.environ,
+            {"VIDEONOTE_CACHE_TTL_DAYS": "0", "VIDEONOTE_CACHE_MAX_MB": "0"},
+            clear=False,
+        ):
+            self.assertIsNone(note_cache.cache_ttl_seconds())
+            self.assertIsNone(note_cache.cache_max_bytes())
+
+    def test_expired_transcript_misses_and_is_deleted(self):
+        src = _cache_entry(
+            "youtube-abcDEF12345",
+            "fast-whisper-small",
+            '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}',
+        )
+        old = time.time() - 3 * 86400
+        os.utime(src, (old, old))
+        dest = self._dest("ttl1")
+        with mock.patch.dict(os.environ, {"VIDEONOTE_CACHE_TTL_DAYS": "1"}, clear=False):
+            self.assertIsNone(
+                note_cache.lookup_transcript(
+                    "https://www.youtube.com/watch?v=abcDEF12345",
+                    "youtube",
+                    "fast-whisper",
+                    "small",
+                    dest,
+                )
+            )
+        self.assertFalse(src.exists())
+        self.assertFalse(dest.exists())
+
+    def test_ttl_zero_keeps_old_entry(self):
+        src = _cache_entry(
+            "youtube-abcDEF12345",
+            "fast-whisper-small",
+            '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}',
+        )
+        old = time.time() - 90 * 86400
+        os.utime(src, (old, old))
+        dest = self._dest("ttl0")
+        with mock.patch.dict(os.environ, {"VIDEONOTE_CACHE_TTL_DAYS": "0"}, clear=False):
+            self.assertIsNotNone(
+                note_cache.lookup_transcript(
+                    "https://www.youtube.com/watch?v=abcDEF12345",
+                    "youtube",
+                    "fast-whisper",
+                    "small",
+                    dest,
+                )
+            )
+        self.assertTrue(src.exists())
+
+    def test_hit_refreshes_mtime(self):
+        src = _cache_entry(
+            "youtube-abcDEF12345",
+            "fast-whisper-small",
+            '{"full_text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}',
+        )
+        old = time.time() - 10
+        os.utime(src, (old, old))
+        dest = self._dest("touch")
+        note_cache.lookup_transcript(
+            "https://www.youtube.com/watch?v=abcDEF12345",
+            "youtube",
+            "fast-whisper",
+            "small",
+            dest,
+        )
+        self.assertGreater(src.stat().st_mtime, old + 1)
+
+    def test_capacity_evicts_oldest_ident(self):
+        payload = b"x" * 700_000
+        with tempfile.TemporaryDirectory() as td:
+            a = Path(td) / "a.mp3"
+            b = Path(td) / "b.mp3"
+            a.write_bytes(payload)
+            b.write_bytes(payload)
+            env = {"VIDEONOTE_CACHE_MAX_MB": "1", "VIDEONOTE_CACHE_TTL_DAYS": "0"}
+            with mock.patch.dict(os.environ, env, clear=False):
+                note_cache.promote_media(
+                    "youtube",
+                    "https://www.youtube.com/watch?v=abcDEF12345",
+                    "abcDEF12345",
+                    str(a),
+                )
+                first = self.root / "youtube-abcDEF12345"
+                self.assertTrue(first.exists())
+                old = time.time() - 60
+                for p in first.rglob("*"):
+                    if p.is_file():
+                        os.utime(p, (old, old))
+                note_cache.promote_media(
+                    "youtube",
+                    "https://www.youtube.com/watch?v=dQw4w9wgXcQ",
+                    "dQw4w9wgXcQ",
+                    str(b),
+                )
+            self.assertFalse(first.exists())
+            self.assertTrue((self.root / "youtube-dQw4w9wgXcQ" / "media" / "b.mp3").exists())
 
 
 if __name__ == "__main__":

@@ -6,7 +6,9 @@ from abc import ABC
 from typing import Optional
 
 from app.downloaders.base import Downloader
+from app.downloaders.common import run_ffmpeg_cancellable
 from app.enmus.note_enums import DownloadQuality
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.audio_model import AudioDownloadResult
 from app.utils.logger import get_logger
 from app.utils.video_helper import save_cover_to_static
@@ -20,7 +22,12 @@ class LocalDownloader(Downloader, ABC):
         super().__init__()
 
 
-    def extract_cover(self, input_path: str, output_dir: Optional[str] = None) -> str:
+    def extract_cover(
+        self,
+        input_path: str,
+        output_dir: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
         """
         从本地视频文件中提取一张封面图（默认取第一帧）
         :param input_path: 输入视频路径
@@ -29,6 +36,7 @@ class LocalDownloader(Downloader, ABC):
         """
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"输入文件不存在: {input_path}")
+        check_cancel(cancel_event)
 
         if output_dir is None:
             # 封面是中间产物，写数据目录而非用户媒体目录（避免源目录污染）
@@ -56,25 +64,35 @@ class LocalDownloader(Downloader, ABC):
                 '-y',  # 覆盖
                 output_path
             ]
-            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=600)
-
-            if not os.path.exists(output_path):
-                raise RuntimeError(f"封面图片生成失败: {output_path}")
-
+            run_ffmpeg_cancellable(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                output_path=output_path,
+                cancel_event=cancel_event,
+            )
+            check_cancel(cancel_event)
             return output_path
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        except (RuntimeError, OSError) as e:
             raise RuntimeError(f"提取封面失败: {output_path}") from e
 
-    def convert_to_mp3(self,input_path: str, output_path: str = None) -> str:
+    def convert_to_mp3(
+        self,
+        input_path: str,
+        output_path: str = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
         """
         将本地视频文件转为 MP3 音频文件
         :param input_path: 输入文件路径（如 .mp4）
         :param output_path: 输出文件路径（可选，默认同目录同名 .mp3）
+        :param cancel_event: 任务取消事件（#133 B5：转码响应取消，不等 600s）
         :return: 生成的 mp3 文件路径
         """
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"输入文件不存在: {input_path}")
 
+        check_cancel(cancel_event)
         if output_path is None:
             # 缺省落数据目录而非源文件同目录（#127 B9）：源目录不污染、归 cleanup 管；
             # note.py 主路径总传 output_dir，此分支仅外部直接调用时生效
@@ -83,7 +101,6 @@ class LocalDownloader(Downloader, ABC):
             base_name = os.path.splitext(os.path.basename(input_path))[0]
             output_path = os.path.join(get_data_dir(), f"{base_name}.mp3")
         try:
-        # 调用 ffmpeg 转换
             command = [
                 'ffmpeg',
                 '-i', input_path,
@@ -92,20 +109,22 @@ class LocalDownloader(Downloader, ABC):
                 '-y',  # 覆盖输出文件
                 output_path
             ]
-
-            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=600)
-
-            if not os.path.exists(output_path):
-                raise RuntimeError(f"mp3 文件生成失败: {output_path}")
-
+            run_ffmpeg_cancellable(
+                command,
+                cancel_event=cancel_event,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                output_path=output_path,
+            )
             return output_path
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        except (RuntimeError, OSError) as e:
             raise RuntimeError(f"mp3 文件生成失败: {output_path}") from e
     def download_video(self, video_url: str, output_dir: str = None,
                        cancel_event: Optional[threading.Event] = None) -> str:
         """
         处理本地文件路径，返回视频文件路径
         """
+        check_cancel(cancel_event)
         if video_url.startswith('/uploads'):
             project_root = os.getcwd()
             video_url = os.path.join(project_root, video_url.lstrip('/'))
@@ -157,12 +176,15 @@ class LocalDownloader(Downloader, ABC):
                 raw_info={'path': video_url},
                 video_path=video_url,
             )
-        file_path = self.convert_to_mp3(video_url, mp3_out)
+        file_path = self.convert_to_mp3(video_url, mp3_out, cancel_event=cancel_event)
+        check_cancel(cancel_event)
         # 封面提取对纯音频文件（mp3/wav 等）不适用；失败不阻断笔记生成
         cover_url = ""
         try:
-            cover_path = self.extract_cover(video_url)
+            cover_path = self.extract_cover(video_url, cancel_event=cancel_event)
             cover_url = save_cover_to_static(cover_path)
+        except TaskCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"提取封面失败（忽略）: {e}")
 

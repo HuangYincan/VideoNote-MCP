@@ -156,9 +156,6 @@ class UniversalGPT(GPT):
 
         return messages
 
-    def list_models(self):
-        return self.client.models.list()
-
     def _estimate_messages_bytes(self, messages: list) -> int:
         import json
         return len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))

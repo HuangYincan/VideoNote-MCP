@@ -107,6 +107,18 @@ class FetchSubtitlesTest(unittest.TestCase):
             result = pipeline.fetch_subtitles("https://youtu.be/abc", "youtube")
         self.assertIsNone(result)
 
+    def test_official_transcript_error_propagates(self):
+        from app.exceptions.task import OfficialTranscriptFetchError
+
+        fake = mock.Mock()
+        fake.download_subtitles.side_effect = OfficialTranscriptFetchError("cdn")
+        with mock.patch.object(pipeline, "get_downloader", return_value=fake):
+            with self.assertRaises(OfficialTranscriptFetchError):
+                pipeline.fetch_subtitles(
+                    "https://www.xiaoyuzhoufm.com/episode/69b3b675772ac2295bfc01d0",
+                    "xiaoyuzhou",
+                )
+
 
 class TranscribeAudioTest(unittest.TestCase):
     def test_missing_file_raises(self):
@@ -218,6 +230,19 @@ class FetchCommentsDanmakuTest(unittest.TestCase):
         with self._patch_fetcher(danmaku_ok=False, comments_ok=False):
             result = pipeline.fetch_comments_danmaku("https://www.bilibili.com/video/BV1xx")
         self.assertIsNone(result)
+
+    def test_cancel_before_fetch_raises(self):
+        import threading
+
+        from app.exceptions.task import TaskCancelledError
+
+        event = threading.Event()
+        event.set()
+        with self._patch_fetcher():
+            with self.assertRaises(TaskCancelledError):
+                pipeline.fetch_comments_danmaku(
+                    "https://www.bilibili.com/video/BV1xx", cancel_event=event
+                )
 
 
 class SummarizeMaterialTest(unittest.TestCase):

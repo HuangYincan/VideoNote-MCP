@@ -146,12 +146,6 @@ class ProviderService:
         return ProviderService.serialize_provider(row)
 
     @staticmethod
-    def get_provider_by_id_safe(id: str):  # 已改为 str 类型
-        row = get_provider_by_id(id)
-        return ProviderService.serialize_provider_safe(row)
-            # all_models.extend(provider['models'])
-
-    @staticmethod
     def update_provider(id: str, data: dict) -> Optional[dict]:
         try:
             # 过滤掉空值

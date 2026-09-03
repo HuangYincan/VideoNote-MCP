@@ -41,13 +41,15 @@ class Downloader(ABC):
         pass
 
     def download_subtitles(self, video_url: str, output_dir: str = None,
-                           langs: list = None) -> Optional[TranscriptResult]:
+                           langs: list = None,
+                           cancel_event: Optional[threading.Event] = None) -> Optional[TranscriptResult]:
         '''
         尝试获取平台字幕（人工字幕或自动生成字幕）
 
         :param video_url: 视频链接
         :param output_dir: 输出路径
         :param langs: 优先语言列表，如 ['zh-Hans', 'zh', 'en']
+        :param cancel_event: 可选取消事件
         :return: TranscriptResult 或 None（无字幕时）
         '''
         return None

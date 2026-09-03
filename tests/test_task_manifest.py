@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -122,6 +123,20 @@ class TaskManifestTest(unittest.TestCase):
     def test_record_empty_task_id_noop(self):
         record_task_paths("", [str(self.note_dir / "x.json")])
         self.assertFalse((self.note_dir / ".manifest.json").exists())
+
+    def test_record_strict_persists_and_verifies(self):
+        tid = "strict-task"
+        path = self.note_dir / tid / "result.json"
+        self.assertTrue(record_task_paths(tid, [path], strict=True))
+        self.assertIn(str(path), get_task_paths(tid))
+
+    def test_record_strict_propagates_write_failure(self):
+        tid = "strict-failure"
+        with mock.patch(
+            "app.utils.json_store._write_bytes_with_mode",
+            side_effect=OSError("disk full"),
+        ), self.assertRaises(OSError):
+            record_task_paths(tid, [self.note_dir / tid / "result.json"], strict=True)
 
     # ---------- get_task_files（先查后清） ----------
 

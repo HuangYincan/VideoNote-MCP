@@ -75,11 +75,6 @@ MLX_REPO_REVISIONS: Dict[str, str] = {
 }
 
 
-def mlx_repo_revision(size: str) -> "str | None":
-    """size → 固定 revision；未登记尺寸（未知/自定义）返回 None（按默认 main）。"""
-    return MLX_REPO_REVISIONS.get(size)
-
-
 def check_mlx_whisper_model_exists(model_size: str) -> bool:
     """检查指定 mlx-whisper 模型是否已下载完整（以 config.json 为判据）。"""
     repo_id = MLX_REPO_MAP.get(model_size)

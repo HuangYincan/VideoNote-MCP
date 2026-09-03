@@ -5,6 +5,7 @@ from pathlib import Path
 from faster_whisper import WhisperModel
 
 from app.decorators.timeit import timeit
+from app.exceptions.task import TaskCancelledError, check_cancel
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.transcriber.whisper_models import (
@@ -60,11 +61,13 @@ class WhisperTranscriber(Transcriber):
                 # 自愈：损坏 / 截断 / 半成品 cache → 删掉对应 HF cache 重下一次
                 logger.warning(f"加载 whisper-{model_size} 失败（cache 损坏）：{e}；清理 cache 后重新下载")
                 WhisperTranscriber._purge_cache(model_dir, model_size)
+                self.model = self._build_model(model_size, model_dir)
             else:
-                # 网络瞬时故障/404/参数错误不 purge：删掉只会丢失可断点续传的
-                # 半截下载，等再次加载时自然重试（#124 B18）
+                # 网络瞬时故障/404/参数错误不 purge、也不立刻再下一次（#145 B6）：
+                # 旧代码注释写「等再次加载时自然重试」，实现却无条件 _build_model，
+                # 把 HF 404/超时放大一倍。
                 logger.warning(f"加载 whisper-{model_size} 失败（非 cache 损坏，不清理）: {e}")
-            self.model = self._build_model(model_size, model_dir)
+                raise
 
     def _build_model(self, model_size: str, model_dir: str) -> WhisperModel:
         # resolve 把模型名映射成可加载标识：内置 size→Systran repo_id、自定义映射、
@@ -148,17 +151,24 @@ class WhisperTranscriber(Transcriber):
             return False
 
     @timeit
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        cancel_event: threading.Event = None,
+    ) -> TranscriptResult:
         # fast-whisper 模型非线程安全：共享单例上串行化转写（正确性优先于该步骤并行度）。
         # 锁须覆盖 transcribe 调用和 segments 生成器迭代（生成器同样读取共享模型）。
         with self._lock:
+            check_cancel(cancel_event)
             try:
 
                 segments_raw, info = self.model.transcribe(file_path)
+                check_cancel(cancel_event)
 
                 segments = []
 
                 for seg in segments_raw:
+                    check_cancel(cancel_event)
                     text = seg.text.strip()
                     segments.append(TranscriptSegment(
                         start=seg.start,
@@ -173,6 +183,8 @@ full_text=" ".join(seg.text for seg in segments).strip(),
                     raw=info
                 )
                 return result
+            except TaskCancelledError:
+                raise
             except Exception as e:
                 # 抛给调用方（note._transcribe_audio 捕获并写入 FAILED 状态）；不要返回 None，
                 # 否则上层 asdict(None) 会报误导性的 TypeError

@@ -21,7 +21,6 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -434,7 +433,7 @@ class TestLoginXiaoyuzhou:
             },
         )
         session = _FakeXyzSession([create, wait, scanned, confirmed])
-        monkeypatch.setattr(requests, "Session", lambda: session)
+        monkeypatch.setattr("app.utils.url_safety.PublicOnlySession", lambda: session)
         monkeypatch.setattr(time, "sleep", lambda *_: None)
         monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: print(f"QR:{data}", file=sys.stdout))
         monkeypatch.setattr(
@@ -463,7 +462,7 @@ class TestLoginXiaoyuzhou:
         )
         expired = _FakeXyzResp(401, {"code": 21, "toast": "二维码已失效"})
         session = _FakeXyzSession([create, expired])
-        monkeypatch.setattr(requests, "Session", lambda: session)
+        monkeypatch.setattr("app.utils.url_safety.PublicOnlySession", lambda: session)
         monkeypatch.setattr(time, "sleep", lambda *_: None)
         monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: None)
         cli._login_xiaoyuzhou([])
@@ -471,7 +470,7 @@ class TestLoginXiaoyuzhou:
 
     def test_qr_create_failure_exits(self, capsys, monkeypatch):
         session = _FakeXyzSession([_FakeXyzResp(400, {"toast": "参数错误"})])
-        monkeypatch.setattr(requests, "Session", lambda: session)
+        monkeypatch.setattr("app.utils.url_safety.PublicOnlySession", lambda: session)
         with pytest.raises(SystemExit) as ei:
             cli._login_xiaoyuzhou([])
         assert ei.value.code == 1

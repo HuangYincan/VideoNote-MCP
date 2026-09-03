@@ -19,6 +19,8 @@ import os
 import threading
 from typing import List, Optional
 
+from app.exceptions.task import TaskCancelledError, check_cancel
+
 logger = logging.getLogger(__name__)
 
 # 模块级单例（#125 B14）：Pipeline.from_pretrained 每次重载要下载/加载多 GB 权重，
@@ -43,6 +45,7 @@ def diarize_audio(
     wav_path: str,
     hf_token: Optional[str] = None,
     num_speakers: Optional[int] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> List[dict]:
     """对 16kHz mono wav 做说话人分离，返回 [{start, end, speaker}] turns。
 
@@ -51,6 +54,7 @@ def diarize_audio(
     - num_speakers: 说话人数提示（可选，缺省自动检测）。
     未安装 pyannote → RuntimeError 带安装指引。
     """
+    check_cancel(cancel_event)
     if not os.path.exists(wav_path):
         raise FileNotFoundError(f"文件不存在: {wav_path}")
 
@@ -72,11 +76,17 @@ def diarize_audio(
         logger.warning(f"num_speakers={num_speakers!r} 无效（需 ≥1 的整数），回退自动检测")
         num_speakers = None
     kwargs = {"num_speakers": num_speakers} if num_speakers else {}
+    check_cancel(cancel_event)
     with _pipeline_lock:
-        diarization = _get_pipeline(token)(wav_path, **kwargs)
+        if cancel_event is None:
+            diarization = _get_pipeline(token)(wav_path, **kwargs)
+        else:
+            diarization = _get_pipeline(token, cancel_event=cancel_event)(wav_path, **kwargs)
+    check_cancel(cancel_event)
 
     turns: List[dict] = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
+        check_cancel(cancel_event)
         turns.append(
             {
                 "start": round(float(turn.start), 3),
@@ -87,10 +97,11 @@ def diarize_audio(
     return turns
 
 
-def _get_pipeline(token: str):
+def _get_pipeline(token: str, cancel_event: Optional[threading.Event] = None):
     """加载（或复用）pyannote pipeline；token 变化时重新加载。失败不缓存。"""
     global _pipeline_cache, _pipeline_token
     # 调用方已持 _pipeline_lock；此处不再加锁（加载与推理同一把锁内）
+    check_cancel(cancel_event)
     if _pipeline_cache is not None and _pipeline_token == token:
         return _pipeline_cache
     try:
@@ -99,6 +110,9 @@ def _get_pipeline(token: str):
         raise RuntimeError(_INSTALL_HINT)
     try:
         pipeline = Pipeline.from_pretrained(_DIARIZATION_MODEL, token=token)
+        check_cancel(cancel_event)
+    except TaskCancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001 —— 模型加载/授权失败
         raise RuntimeError(
             f"pyannote 模型加载失败（可能需要先在 huggingface.co 同意模型授权）: {exc}"
@@ -111,6 +125,7 @@ def _get_pipeline(token: str):
 def assign_speakers(
     segments: List,
     turns: List[dict],
+    cancel_event: Optional[threading.Event] = None,
 ) -> List:
     """把说话人 turns 与转写段按时间重叠对齐，给每段填 speaker 字段。
 
@@ -118,7 +133,9 @@ def assign_speakers(
     无重叠时 speaker 保持 None。
     """
     result = []
+    check_cancel(cancel_event)
     for seg in segments:
+        check_cancel(cancel_event)
         speaker = _best_speaker(seg.start, seg.end, turns)
         result.append(_with_speaker(seg, speaker))
     return result

@@ -9,8 +9,14 @@ import logging
 from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
+from app.downloaders.common import public_get_retry
 from app.services.pipeline import detect_platform
-from app.utils.url_safety import assert_public_http_url
+from app.utils.url_safety import (
+    assert_public_http_url,
+    public_replay_url,
+    sanitize_error_text,
+    sanitize_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +40,7 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
     try:
         plat = platform or detect_platform(raw)
     except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": sanitize_error_text(exc)}
 
     # SSRF 入口守卫（#133 A1）：本地路径已在上面分流；其余平台（bilibili/
     # kuaishou/douyin 的短链解析、yt-dlp generic 展开）统一校验，防显式
@@ -43,7 +49,7 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
         try:
             assert_public_http_url(raw)
         except ValueError as exc:
-            return {"ok": False, "platform": plat, "error": str(exc)}
+            return {"ok": False, "platform": plat, "error": sanitize_error_text(exc)}
 
     try:
         if plat == "bilibili":
@@ -55,15 +61,25 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
             # inspect 曾是全工具面唯一不认 file:// 的本地入口（#105/#107 系列输入
             # 规整的漏网点），同一文件 generate_note 可用、inspect
             # 却报「本地文件不存在」。entries[].url 透传规整后的路径。
-            from videonote_mcp.server import _coerce_local_path
+            # #145 A6：与 generate_note 同数据目录门禁，避免用 ok:true 做目录外存在性探测。
+            from videonote_mcp.server import _coerce_local_path, _guard_data_boundary
 
             local_path = _coerce_local_path(raw)
+            try:
+                _guard_data_boundary(local_path, "本地视频路径")
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "platform": "local",
+                    "kind": "single",
+                    "error": str(exc),
+                }
             if not local_path.is_file():
                 return {
                     "ok": False,
                     "platform": "local",
                     "kind": "single",
-                    "error": f"本地文件不存在: {raw}",
+                    "error": f"本地文件不存在: {sanitize_error_text(raw)}",
                 }
             return {
                 "ok": True,
@@ -77,8 +93,9 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
             }
         return _inspect_ytdlp(raw, plat)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"inspect_video 失败: {exc}")
-        return {"ok": False, "platform": plat, "error": str(exc)}
+        safe_error = sanitize_error_text(exc)
+        logger.warning("inspect_video 失败: %s", safe_error)
+        return {"ok": False, "platform": plat, "error": safe_error}
 
 
 def _bili_headers() -> dict:
@@ -95,8 +112,6 @@ def _bili_headers() -> dict:
 
 
 def _inspect_bilibili(url: str) -> dict:
-    import requests
-
     from app.utils.url_parser import (
         extract_bilibili_p_number,
         extract_video_id,
@@ -111,7 +126,7 @@ def _inspect_bilibili(url: str) -> dict:
         return {"ok": False, "platform": "bilibili", "error": "无法从链接提取 BV 号"}
     current_p = extract_bilibili_p_number(resolved)
 
-    resp = requests.get(
+    resp = public_get_retry(
         "https://api.bilibili.com/x/web-interface/view",
         params={"bvid": bvid},
         headers=_bili_headers(),
@@ -122,7 +137,7 @@ def _inspect_bilibili(url: str) -> dict:
         return {
             "ok": False,
             "platform": "bilibili",
-            "error": f"view API: code={data.get('code')} {data.get('message')}",
+            "error": sanitize_error_text(f"view API: code={data.get('code')} {data.get('message')}"),
         }
     d = data.get("data") or {}
     pages = d.get("pages") or []
@@ -168,10 +183,10 @@ def _inspect_xiaohongshu(url: str) -> dict:
     try:
         note = auth.fetch_note(url)
     except ValueError as exc:
-        return {"ok": False, "platform": "xiaohongshu", "error": str(exc)}
+        return {"ok": False, "platform": "xiaohongshu", "error": sanitize_error_text(exc)}
     except Exception as exc:  # noqa: BLE001
         logger.warning("inspect 小红书失败: %s", exc)
-        return {"ok": False, "platform": "xiaohongshu", "error": str(exc)}
+        return {"ok": False, "platform": "xiaohongshu", "error": sanitize_error_text(exc)}
     finally:
         auth.close()
 
@@ -199,7 +214,7 @@ def _inspect_xiaohongshu(url: str) -> dict:
                 "p": 1,
                 "title": note.title,
                 "duration": note.duration or None,
-                "url": page_url,
+                "url": public_replay_url(page_url) or sanitize_url(page_url),
                 "video_id": vid,
             }
         ],
@@ -270,7 +285,7 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
                     "p": i,
                     "title": e.get("title") or "",
                     "duration": e.get("duration"),
-                    "url": page_url,
+                    "url": public_replay_url(page_url) or page_url,
                     "video_id": vid,
                 }
             )
@@ -290,6 +305,7 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
 
     vid = info.get("id")
     page_url = info.get("webpage_url") or url
+    replay = public_replay_url(page_url) or page_url
     return {
         "ok": True,
         "platform": platform,
@@ -303,7 +319,7 @@ def _inspect_ytdlp(url: str, platform: str) -> dict:
                 "p": 1,
                 "title": info.get("title") or "",
                 "duration": info.get("duration"),
-                "url": page_url,
+                "url": replay,
                 "video_id": vid,
             }
         ],

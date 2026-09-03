@@ -1,12 +1,15 @@
 """下载器共享工具：yt-dlp 调用带退避重试 + 取消钩子。"""
 
+import os
+import subprocess
 import threading
 import time
 from typing import Any, Callable, Optional
 
 import requests
 
-from app.utils.url_safety import assert_public_http_url
+from app.exceptions.task import TaskCancelledError, check_cancel
+from app.utils.url_safety import assert_public_http_url, pin_public_host, public_get
 
 
 def ytdlp_cancel_hook(cancel_event: Optional[threading.Event]) -> Callable[[dict], None]:
@@ -24,6 +27,131 @@ def ytdlp_cancel_hook(cancel_event: Optional[threading.Event]) -> Callable[[dict
             raise TaskCancelledError("任务已取消")
 
     return _hook
+
+
+def run_ffmpeg_cancellable(
+    command: list,
+    *,
+    cancel_event: Optional[threading.Event] = None,
+    timeout: float = 600,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    output_path: Optional[str] = None,
+    require_nonzero: bool = False,
+) -> None:
+    """跑 ffmpeg 并轮询取消事件（#133 B5 / 小红书 `_to_mp3` 同款）。
+
+    ``subprocess.run(timeout=600)`` 在 cancel 后仍会占满 worker 最多 10 分钟。
+    改为 Popen + 0.2s poll：事件置位即 terminate，超时 kill。
+    """
+    check_cancel(cancel_event)
+    try:
+        proc = subprocess.Popen(command, stdout=stdout, stderr=stderr)
+    except OSError as exc:
+        raise RuntimeError("启动 ffmpeg 失败") from exc
+    deadline = time.monotonic() + timeout
+
+    def _remove_partial_output() -> None:
+        if output_path is None:
+            return
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
+
+    while proc.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            _remove_partial_output()
+            raise TaskCancelledError("任务已取消")
+        if time.monotonic() > deadline:
+            proc.kill()
+            proc.wait()
+            raise RuntimeError("ffmpeg 转换超时")
+        if cancel_event is not None and cancel_event.wait(0.2):
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            _remove_partial_output()
+            raise TaskCancelledError("任务已取消")
+        elif cancel_event is None:
+            time.sleep(0.2)
+    check_cancel(cancel_event)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg 转换失败（退出码 {proc.returncode}）")
+    if output_path is not None:
+        if not os.path.exists(output_path):
+            raise RuntimeError(f"ffmpeg 未写出文件: {output_path}")
+        if require_nonzero and os.path.getsize(output_path) <= 0:
+            raise RuntimeError(f"ffmpeg 未写出有效文件: {output_path}")
+
+
+def public_get_retry(
+    url: str,
+    *,
+    attempts: int = 3,
+    base_delay: float = 0.5,
+    deadline: float = 30.0,
+    cancel_event: Optional[threading.Event] = None,
+    **kwargs,
+) -> requests.Response:
+    """GET a public URL with bounded retries for transient network responses.
+
+    Each attempt goes through ``public_get`` so the initial URL and every redirect
+    hop retain the SSRF guard.  Only connection/timeout failures, HTTP 429, and
+    HTTP 5xx responses are retried; the final response is returned unchanged so
+    existing callers keep their current JSON/business-error handling.
+    """
+    from app.exceptions.task import check_cancel
+
+    check_cancel(cancel_event)
+    if attempts <= 0:
+        raise ValueError(f"attempts 必须为正整数，收到: {attempts}")
+    if deadline <= 0:
+        raise ValueError(f"deadline 必须为正数，收到: {deadline}")
+    deadline_at = time.monotonic() + deadline
+    last_error = None
+
+    for i in range(attempts):
+        check_cancel(cancel_event)
+        try:
+            response = public_get(url, **kwargs)
+            check_cancel(cancel_event)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            last_error = exc
+            if i == attempts - 1:
+                raise
+        else:
+            status = getattr(response, "status_code", 200)
+            if status not in (429,) and not 500 <= status < 600:
+                return response
+            if i == attempts - 1 or time.monotonic() >= deadline_at:
+                return response
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            break
+        if cancel_event is not None:
+            if cancel_event.wait(min(base_delay * (2**i), remaining)):
+                check_cancel(cancel_event)
+        else:
+            time.sleep(min(base_delay * (2**i), remaining))
+
+    check_cancel(cancel_event)
+    if last_error is not None:
+        raise last_error
+    raise requests.exceptions.Timeout("GET 重试达到总 deadline")
 
 
 def stream_download(
@@ -51,20 +179,37 @@ def stream_download(
     """
     if attempts <= 0:
         raise ValueError(f"attempts 必须为正整数，收到: {attempts}")
+    check_cancel(cancel_event)
     assert_public_http_url(url)
+
+    output_started = False
+
+    def _remove_partial_output() -> None:
+        if not output_started:
+            return
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
+
     for i in range(attempts):
+        check_cancel(cancel_event)
         try:
             resp = _follow_redirects_public(url, headers=headers, timeout=timeout)
+            check_cancel(cancel_event)
             with resp:
                 resp.raise_for_status()
+                output_started = True
                 with open(output_path, "wb") as f:
                     for chunk in resp.iter_content(1024 * 1024):
                         if cancel_event is not None and cancel_event.is_set():
-                            from app.exceptions.task import TaskCancelledError
-
                             raise TaskCancelledError("任务已取消")
                         f.write(chunk)
+            check_cancel(cancel_event)
             return
+        except TaskCancelledError:
+            _remove_partial_output()
+            raise
         except requests.exceptions.RequestException as exc:
             retriable = isinstance(
                 exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
@@ -76,7 +221,12 @@ def stream_download(
             # 业务错误（404/403）重试无意义，立即抛出
             if not retriable or i == attempts - 1:
                 raise
-        time.sleep(base_delay * (2**i))
+        if cancel_event is not None:
+            if cancel_event.wait(base_delay * (2**i)):
+                _remove_partial_output()
+                check_cancel(cancel_event)
+        else:
+            time.sleep(base_delay * (2**i))
     # 循环内最后一次迭代必然 return 或 raise，正常流程到不了这里
     raise RuntimeError("stream_download 重试耗尽但未抛异常，属不可达分支")
 
@@ -97,7 +247,11 @@ def _follow_redirects_public(url: str, *, headers, timeout) -> "requests.Respons
     redirects = 0
     while True:
         assert_public_http_url(url)
-        resp = requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+        # 钉死本跳解析 IP，避免 requests.get 二次解析时 DNS rebinding（#146 A1）
+        with pin_public_host(url):
+            resp = requests.get(
+                url, headers=headers, timeout=timeout, stream=True, allow_redirects=False
+            )
         if resp.status_code in _REDIRECT_STATUSES:
             location = resp.headers.get("Location")
             redirects += 1
@@ -111,7 +265,14 @@ def _follow_redirects_public(url: str, *, headers, timeout) -> "requests.Respons
         return resp
 
 
-def ytdlp_retry(fn, *args, attempts: int = 3, base_delay: float = 1.5, **kwargs) -> Any:
+def ytdlp_retry(
+    fn,
+    *args,
+    attempts: int = 3,
+    base_delay: float = 1.5,
+    cancel_event: Optional[threading.Event] = None,
+    **kwargs,
+) -> Any:
     """执行 yt-dlp 调用，对瞬时网络错误做指数退避重试。
 
     只重试网络类错误（超时 / 连接失败 / 5xx / 429 / 断流），
@@ -124,9 +285,13 @@ def ytdlp_retry(fn, *args, attempts: int = 3, base_delay: float = 1.5, **kwargs)
     if attempts <= 0:
         raise ValueError(f"attempts 必须为正整数，收到: {attempts}")
 
+    check_cancel(cancel_event)
     for i in range(attempts):
+        check_cancel(cancel_event)
         try:
-            return fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            check_cancel(cancel_event)
+            return result
         except yt_dlp.utils.DownloadError as e:
             msg = str(e).lower()
             retriable = any(
@@ -162,6 +327,10 @@ def ytdlp_retry(fn, *args, attempts: int = 3, base_delay: float = 1.5, **kwargs)
                 raise
             if i == attempts - 1:
                 raise
-        time.sleep(base_delay * (2**i))
+        if cancel_event is not None:
+            if cancel_event.wait(base_delay * (2**i)):
+                check_cancel(cancel_event)
+        else:
+            time.sleep(base_delay * (2**i))
     # 循环内最后一次迭代必然 return 或 raise，正常流程到不了这里
     raise RuntimeError("ytdlp_retry 重试耗尽但未抛异常，属不可达分支")

@@ -1,12 +1,11 @@
 import os
 import re
 
-import requests
 from dotenv import load_dotenv
 
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
-from app.utils.url_safety import public_get
+from app.utils.url_safety import public_get, public_post, sanitize_url
 
 KUAISHOU_API_BASE = 'https://www.kuaishou.com/graphql'
 KUAISHOU_URL = "https://www.kuaishou.com/"
@@ -70,7 +69,7 @@ class KuaiShou:
         is_exist = _get_cfm().get('kuaishou')
         if is_exist:
             return is_exist
-        res = requests.get(url=KUAISHOU_URL, headers=self.header, allow_redirects=True, timeout=(5, 10))
+        res = public_get(url=KUAISHOU_URL, headers=self.header, allow_redirects=True, timeout=(5, 10))
         cookie_string = '; '.join([f"{k}={v}" for k, v in res.cookies.get_dict().items()])
         return cookie_string
 
@@ -80,7 +79,7 @@ class KuaiShou:
             "variables": {"photoId": photo_id, "page": "detail"},
             "query": "query visionVideoDetail($photoId: String, $type: String, $page: String, $webPageArea: String) {\n  visionVideoDetail(photoId: $photoId, type: $type, page: $page, webPageArea: $webPageArea) {\n    status\n    type\n    author {\n      id\n      name\n      following\n      headerUrl\n      __typename\n    }\n    photo {\n      id\n      duration\n      caption\n      likeCount\n      realLikeCount\n      coverUrl\n      photoUrl\n      liked\n      timestamp\n      expTag\n      llsid\n      viewCount\n      videoRatio\n      stereoType\n      croppedPhotoUrl\n      manifest {\n        mediaType\n        businessType\n        version\n        adaptationSet {\n          id\n          duration\n          representation {\n            id\n            defaultSelect\n            backupUrl\n            codecs\n            url\n            height\n            width\n            avgBitrate\n            maxBitrate\n            m3u8Slice\n            qualityType\n            qualityLabel\n            frameRate\n            featureP2sp\n            hidden\n            disableAdaptive\n            __typename\n          }\n          __typename\n        }\n        __typename\n      }\n      __typename\n    }\n    tags {\n      type\n      name\n      __typename\n    }\n    commentLimit {\n      canAddComment\n      __typename\n    }\n    llsid\n    danmakuSwitch\n    __typename\n  }\n}\n"
         }
-        response = requests.post(url=KUAISHOU_API_BASE, headers=self.header, json=json_data, timeout=(5, 10))
+        response = public_post(url=KUAISHOU_API_BASE, headers=self.header, json=json_data, timeout=(5, 10))
         # 旧实现 raise_for_status 写在 200 分支内永不触发——非 200 静默返回 None，
         # 外层只能报「详情解析失败」掩盖真实 HTTP 状态码（#124 B9）
         response.raise_for_status()
@@ -89,23 +88,23 @@ class KuaiShou:
     def run(self, url):
         real_url = KuaiShou._extract_kuaishou_link(url)
         if not real_url:
-            raise RuntimeError(f"快手视频 URL 解析失败 {url}")
+            raise RuntimeError(f"快手视频 URL 解析失败 {sanitize_url(url)}")
 
         cookies = self.get_temp_cookies()
         if not cookies:
-            raise RuntimeError(f"快手视频 cookies 解析失败 {url},请考虑设置环境变量 KUAISHOU_COOKIES")
+            raise RuntimeError(f"快手视频 cookies 解析失败 {sanitize_url(url)},请考虑设置环境变量 KUAISHOU_COOKIES")
 
         self.header['Cookie'] = cookies.strip()
         photo_id = self.get_photo_id(real_url)
         if photo_id is None:
-            raise RuntimeError(f"快手视频 ID 解析失败 {url}")
+            raise RuntimeError(f"快手视频 ID 解析失败 {sanitize_url(url)}")
         video_details = self.get_video_details(real_url, photo_id)
         logger.debug("快手视频详情已获取")
         if video_details is None:
-            raise RuntimeError(f"快手视频详情解析失败 {url}")
+            raise RuntimeError(f"快手视频详情解析失败 {sanitize_url(url)}")
         data = video_details.get('data')
         if data is None:
-            raise RuntimeError(f"快手视频详情响应无 data(接口可能变更): {url}")
+            raise RuntimeError(f"快手视频详情响应无 data(接口可能变更): {sanitize_url(url)}")
         return data
 
 
