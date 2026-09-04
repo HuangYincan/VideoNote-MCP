@@ -947,7 +947,10 @@ def generate_note(
     include_comments: Optional[bool] = None,
     comments_limit: Optional[int] = None,
 ) -> str:
-    """提交一个视频链接/本地文件，异步生成 AI Markdown 笔记。
+    """提交一个视频链接/本地文件，用配置 LLM 异步生成 AI Markdown 笔记。
+
+    后备路径：当前对话 Agent 无法看图，或用户明确要求配置 LLM 时才用。
+    默认路径是 prepare_note_material，由 Agent 自己写笔记。
 
     - video_url: 必填，B 站/YouTube/抖音/快手/小宇宙/小红书链接或本地文件路径；
     - platform: 可省略，自动识别；
@@ -971,8 +974,6 @@ def generate_note(
 
     返回 {task_id, status, platform}。之后用 task(task_id) 轮询。SUCCESS 时 result.note_dir 指向 note.md 所在目录（{task_id}/gen/，
     指定 notes_dir 时另有 result.portable_note_dir 指向便携副本）。
-
-    只需素材（转写/帧/评论，不调 LLM 总结）供自行写笔记时，用 prepare_note_material。
     """
     # 先做平台检测/handoff/本地校验——handoff 和「本地文件不存在」不需要 provider
     # （docs 审计 H 组：此前 provider 解析在前，unsupported 链接也会先撞 provider 报错）
@@ -1135,7 +1136,7 @@ def prepare_note_material(
     之后用 task(task_id) 轮询；SUCCESS 时 result 含
     {kind: material, title, transcript, frames, comments_danmaku, video_path, audio_path}。
     transcript 优先来自平台官方字幕（YouTube/B 站人工+自动字幕、小宇宙官方文稿），无字幕才走转写引擎。
-    需要 AI 生成结构化 Markdown 笔记请用 generate_note。
+    这是默认路径（当前对话 Agent 写笔记）。配置 LLM 后备请用 generate_note。
     """
     if platform is None:
         platform = _detect_platform(video_url)
@@ -1780,7 +1781,7 @@ def _installed_plugin_version() -> Optional[str]:
 
 @mcp.tool()
 def health_check(
-    need_provider: bool = True,
+    need_provider: bool = False,
     provider_id: Optional[str] = None,
     url: str = "",
     platform: Optional[str] = None,
@@ -1796,9 +1797,8 @@ def health_check(
     checks: [{name, ok, detail}], duration_secs?}。ok=false 时先解决 detail 里的问题
     再提交，避免长任务跑到半路才因模型未下载 / 磁盘满失败。
 
-    - need_provider: 默认为 True（generate_note 需要 LLM 供应商）。
-      只做素材包（prepare_note_material 不调 LLM）时传 False，跳过供应商检查——
-      否则会得到「无已填 key 的供应商」的误导结论（#124 A12）。
+    - need_provider: 默认 False（#151：默认路径是 Agent 写笔记，不需要配置 LLM）。
+      走 generate_note / batch_generate_notes 后备时传 True，才检查供应商 key/模型。
     """
     checks: List[Dict[str, Any]] = []
 
@@ -1898,7 +1898,7 @@ def health_check(
                         {
                             "name": "duration",
                             "ok": True,
-                            "detail": f"多集共 {info.get('total', len(entries))} 条（多集全出建议一条 batch_generate_notes 服务端逐个排队；只一集用对应 entries[].url）",
+                            "detail": f"多集共 {info.get('total', len(entries))} 条（默认每集 prepare_note_material 由当前 Agent 写；后备 LLM 才用 batch_generate_notes；只要一集用对应 entries[].url）",
                         }
                     )
                 else:
@@ -2062,9 +2062,10 @@ def inspect_video(url: str, platform: Optional[str] = None) -> str:
 
     单视频 {ok, platform, kind: single, title, video_id, total, entries}；
     多集（B 站分 P / YouTube 播放列表）kind: multi，entries[].url 可直接喂给
-    `generate_note` / `prepare_note_material`；一个链接内的多集（分 P/播放列表）
-    用一条 `batch_generate_notes` 全出笔记（#125 C4，与 #110 batch 口径一致）；
-    互相独立的链接才各自开 subagent。
+    `prepare_note_material`（默认：当前 Agent 写笔记）或 `generate_note`（后备 LLM）。
+    只要一集 → 用对应 `entries[].url`。要全出：默认每集 `prepare_note_material`；
+    仅当当前 Agent 无法看图或用户要求配置 LLM 时才一条 `batch_generate_notes`。
+    互相独立的链接各开 subagent。
 
     返回 {ok, platform, kind: single|multi, title, video_id, current_p?,
     total, truncated, entries:[{p, title, duration, url, video_id}]}。
@@ -2171,7 +2172,10 @@ def batch_generate_notes(
     comments_limit: Optional[int] = None,
     notes_dir: Optional[str] = None,
 ) -> str:
-    """对播放列表/合集/分 P 链接批量提交笔记任务（服务端逐个排队）。
+    """对播放列表/合集/分 P 链接批量提交「配置 LLM」笔记任务（服务端逐个排队）。
+
+    这是后备路径：当前对话 Agent 无法看图，或用户明确要求配置 LLM 时才用。
+    默认路径是每集 `prepare_note_material`，由 Agent 自己写笔记。
 
     参数策略：除 video_url 外全部可选——不传即套 setup ③ 配置的默认
     （与 generate_note 同款；仅需覆盖时显式传）。每条任务同样优先用平台官方字幕
@@ -2185,8 +2189,9 @@ def batch_generate_notes(
       generate_note 任务。
 
     内部先 inspect_video 展开条目再逐条提交（单次最多 50 条；batch 显式绕过普通
-    admission，由线程池负责排队；不要并发调用多个 batch）。与 SKILL「多集用 subagent
-    逐个提交」纪律不同——本工具把展开+排队收敛到服务端）。
+    admission，由线程池负责排队；不要并发调用多个 batch）。与默认路径「每集
+    prepare_note_material、Agent 自己写」不同——本工具把配置 LLM 的展开+排队
+    收敛到服务端。
     返回 {ok, total, submitted, truncated?, errors:[{p, title, url, error}],
     tasks:[{p, title, duration, url, task_id, status}]}。
     单条失败不阻断其余；全部失败时 ok=false。之后逐个 task(task_id) 轮询。

@@ -877,3 +877,10 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **导出**：CLI 缺省仍写任务 `gen/`，`--out-dir` 可指定桌面；MCP 导出仍受数据目录门禁。
 - **明确不做**：yt-dlp 内部 SSRF、跨进程 manifest TOCTOU、stderr no-follow、batch 全局背压（本机 Agent 模型 / 已接受的产品语义）。
 - **验证**：全量 `pytest` **973 passed, 1 skipped, 10 subtests passed**；Ruff F/I、`git diff --check` 通过。
+
+## Wave 批 42（2026-09-04 · #151 Skill 默认当前 Agent 写笔记，commit `f027229`）
+
+- **默认路径**：给链接 → `prepare_note_material` → 当前对话 Agent 读转写/帧写笔记。不需要配置 LLM key。
+- **后备**：仅当 Agent 无法看图，或用户明确要求配置 LLM → `generate_note` / 合集 `batch_generate_notes`。
+- **health_check**：`need_provider` 默认 False；合集预解析提示改为默认 prepare。
+- **验证**：全量 `pytest` **981 passed, 1 skipped, 10 subtests passed**；Ruff F/I、`git diff --check` 通过。

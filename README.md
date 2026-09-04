@@ -14,7 +14,7 @@
 
 ---
 
-VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 **MCP Server + Claude Code Skill**：给 agent 一个链接，自动完成 下载 → 语音转写 → 画面理解 → 弹幕/评论 → AI 总结，交回一篇带截图、可整体搬迁的便携笔记。
+VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 **MCP Server + Claude Code Skill**：给 agent 一个链接，自动完成 下载 → 语音转写 → 画面理解 → 弹幕/评论，**默认由当前对话里的 Agent 写笔记**（配置 LLM 仅当 Agent 无法看图时作为后备）。
 
 仓库：[HuangYincan/VideoNote-MCP](https://github.com/HuangYincan/VideoNote-MCP)。
 
@@ -42,7 +42,7 @@ claude plugin install videonote@videonote
 #    装完在会话里跑配置向导收尾：
 /videonote-setup
 
-# 3) （可选）LLM-Key/B 站扫码/CLI向导
+# 3) （可选）后备 LLM 的 Key / B 站扫码 / CLI 向导——默认路径不需要配置 LLM
 # ! videonote setup
 
 # 4) 重启会话，对 agent 说「帮我给这个视频做笔记」+ 链接
@@ -99,7 +99,7 @@ claude plugin install videonote@videonote
 
 <img src="assets/pipeline.svg" alt="VideoNote-Mcp 流水线地图" width="100%"/>
 
-实线为主流程：一条 `generate_note` 链接端到端跑通；虚线为可选能力（视频理解 / 弹幕评论 / Agent 生成），按需取用。各阶段细节（平台支持、引擎、参数）见 [docs/02-架构设计.md](docs/02-架构设计.md)。
+实线为主流程：一条 `prepare_note_material` 出素材，由当前对话 Agent 写笔记；`generate_note` 是后备（Agent 无法看图时走配置 LLM）。虚线为可选能力（视频理解 / 弹幕评论）。各阶段细节见 [docs/02-架构设计.md](docs/02-架构设计.md)。
 
 ## 任务管理
 
@@ -137,7 +137,7 @@ flowchart TB
 - **会议纪要**：`process_media(action="merge")` 合并分段录音 → `process_media(action="diarize")` 说话人分离 → `meeting_minutes` 风格。
 - **讲座精读**：端到端生成后，agent 基于完整字幕精修、按章节补齐细节。
 - **视频赏析**：开启弹幕 + 评论整合，笔记含「观众观点」章节。
-- **端到端**：一条链接用 `generate_note`（下载/转写/总结/评论全流程内部完成）；只准备素材用 `prepare_note_material`。
+- **默认路径**：一条链接用 `prepare_note_material`，由当前对话 Agent 写笔记；Agent 无法看图或用户要求配置 LLM 时才用 `generate_note`。只做媒体加工用 `process_media`。
 - **真实案例**：完整案例过程记录见 [`examples`](examples)。
 
 ## 如何贡献

@@ -26,11 +26,13 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 调用 **`health_check`**，看 FFmpeg / 数据库 / 转写引擎 / whisper 模型就绪状态。
 - FFmpeg 缺失 → 先让用户安装 FFmpeg（macOS `brew install ffmpeg`，其他平台见官方包源），装完重跑。
 
-## 2. LLM 供应商（API key）
+## 2. LLM 供应商（API key，可选）
+
+默认路径由当前对话 Agent 写笔记，**不需要**配置 LLM key。仅当 Agent 无法看图（走 `generate_note` 后备）时才需要。
 
 调用 **`get_config()`**，看 `providers` 列表（id / 名称 / key 掩码）与 `app_config.default_provider_id`。
 - 已有供应商填了 key → 跳过本步。
-- 没有已填 key 的供应商 → **让用户在本会话输入**：
+- 没有已填 key 的供应商 → **告诉用户这是后备 LLM 用的**，需要时在本会话输入：
   `! videonote providers list`（看供应商 id）
   `! videonote providers set <provider_id> --api-key '...'`（填 key）
   - API key 为**隐藏输入**，值不经过对话；这一步必须由用户亲手在终端完成，不要试图用其它方式获取 key。
@@ -66,4 +68,4 @@ description: 配置 VideoNote-MCP：体检 / LLM 供应商 / 转写引擎 / 默�
 
 ---
 
-配置完成后，让用户给一条视频链接验证：`generate_note` 或「AGENT 直接生成」的 `prepare_note_material`。
+配置完成后，让用户给一条视频链接验证：默认 `prepare_note_material`（当前 Agent 写笔记）；后备 LLM 才用 `generate_note`。

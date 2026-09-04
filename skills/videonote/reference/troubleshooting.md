@@ -26,15 +26,15 @@
 | 任务完成阶段报数据库/索引写入失败 | DAO 会 rollback 后重新抛出；`_save_metadata` 不再吞掉 `video_tasks` 插入失败，因此任务不会伪装成 SUCCESS。检查 SQLite 权限/锁与日志后重试 |
 | 转写输出异常（开预处理后） | 预处理默认关；若开了又出问题，`! videonote transcriber preprocess off` 关闭对比 |
 | 视频下载 403 / 需会员 | 让用户 `videonote setup` 向导里配「平台 Cookie」（MCP 工具不收 cookie，见安全红线） |
-| `generate_note` 报「已有 N 个进行中任务（上限 M）」 | 普通任务 admission 已达上限 —— 提交时已预占名额，覆盖排队与执行全生命周期；等其中一些完成（或 `task(task_id, action="cancel")` 取消）再提交。合集/多集用 `batch_generate_notes`（单次最多 50 条，绕过普通 admission，由线程池排队），不要并发调用多个 batch；互相独立的链接用 subagent 并行 |
+| `generate_note` 报「已有 N 个进行中任务（上限 M）」 | 普通任务 admission 已达上限 —— 提交时已预占名额，覆盖排队与执行全生命周期；等其中一些完成（或 `task(task_id, action="cancel")` 取消）再提交。默认路径合集逐条 `prepare_note_material`（先提交最多 3 个）；后备 LLM 的合集用 `batch_generate_notes`（单次最多 50 条，绕过普通 admission）；互相独立的链接用 subagent |
 | `task(action="cancel")` 后仍显示 `CANCELLING` | 这是协作式取消：事件会在字幕、下载、ASR、预处理、ffmpeg、抽帧、说话人分离、B 站弹幕/评论和后处理检查点传播；可控 ffmpeg/下载子进程会尽快退出，但正在进行的 HTTP/模型推理不能硬中断 |
 | 想取消 `process_media` | `process_media` 是同步工具，不登记任务注册表，没有可供 `task(action="cancel")` 控制的后台 task_id；只能等待当前 export/merge/diarize 调用自然返回 |
 
 ## 并发与多会话
 
 - 每个会话独立起一个 MCP server 进程，任务按 `task_id` 隔离 —— **多个会话可并行生成不同视频的笔记**。
-- **普通任务 admission**：本会话内 `generate_note` / `prepare_note_material` 受 `VIDEONOTE_MAX_WORKERS`（默认 3）限制，超出上限会**拒绝**（防止无界排队）。**合集 / 分 P / 播放列表**：一条 `batch_generate_notes` 单次最多 50 条，绕过普通 admission，由线程池逐个排队；不要并发调用多个 batch。**互相独立的多个链接**：每个 url 一个 **subagent**（generate_note → `task(task_id)` 轮询 → 汇报），主 agent 汇总。**主 agent 自己不要在同一回合连续调用多个 `generate_note`**。
-- **真正并行**：开多个会话。
+- **普通任务 admission**：本会话内 `generate_note` / `prepare_note_material` 受 `VIDEONOTE_MAX_WORKERS`（默认 3）限制，超出上限会**拒绝**（防止无界排队）。**默认路径**：合集/分 P 每集 `prepare_note_material`（先提交最多 3 个，完成再下一批）；互相独立的链接各一个 **subagent**（提交 → 轮询 → 读素材 → 写笔记 → 汇报）。**后备 LLM**：合集一条 `batch_generate_notes`（单次最多 50 条，绕过普通 admission，由线程池排队）；不要并发调用多个 batch。**主 agent 自己不要在同一回合并行多个 `generate_note` / `prepare_note_material`**。
+- **真正突破会话上限**：开多个会话。
 - **轮询**：用轻量 `task(task_id)`（默认 action="status"）快照轮询。
 - 提交前把计划告诉用户（如「我会依次提交 p10/p11/p12，每个完成后提交下一个」）。
 - 资源：whisper/MLX 转写吃 CPU/内存，太多会话并行会卡顿；所有会话共用同一 SQLite，极端并发偶发写冲突。

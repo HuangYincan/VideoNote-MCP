@@ -645,7 +645,7 @@ def _wizard_other(inq) -> None:
             cm_lim = resolve_int_config("comments_limit", "VIDEONOTE_COMMENTS_LIMIT", 20)
             st_style = get_app_config().get("default_style") or "detailed"
             ss_on = bool(get_app_config().get("default_screenshot", False))
-            ad_on = bool(get_app_config().get("agent_direct", False))
+            ad_on = True if get_app_config().get("agent_direct") is None else bool(get_app_config().get("agent_direct"))
             _show_header("③ 其他设置")
             pick = inq.select(
                 message="选择要配置的项（← 返回）",
@@ -767,9 +767,10 @@ def _wizard_other(inq) -> None:
                     keybindings=_KB,
                 ).execute()
                 set_app_config("default_screenshot", bool(ss))
+                _ad_cur = get_app_config().get("agent_direct")
                 ad = inq.confirm(
-                    message="默认用 AGENT 直接写笔记（不走配置 LLM）？",
-                    default=bool(get_app_config().get("agent_direct", False)),
+                    message="笔记由当前对话 Agent 写（推荐；仅当 Agent 无法看图才走配置 LLM）？",
+                    default=True if _ad_cur is None else bool(_ad_cur),
                     keybindings=_KB,
                 ).execute()
                 set_app_config("agent_direct", bool(ad))
@@ -1182,7 +1183,11 @@ def _setup_cli_fallback() -> None:
     cur_ss = bool(get_app_config().get("default_screenshot", False))
     ss = _ask(f"   默认开启截图？[y/N]（当前 {'开' if cur_ss else '关'}）", default="Y" if cur_ss else "N").lower() == "y"
     set_app_config("default_screenshot", bool(ss))
-    ad = _ask("   默认用 AGENT 直接写笔记（不走配置 LLM）？[y/N]", default="N").lower() == "y"
+    _ad_cur = get_app_config().get("agent_direct")
+    ad = _ask(
+        "   笔记由当前对话 Agent 写（仅当 Agent 无法看图才走配置 LLM）？[Y/n]",
+        default="Y" if _ad_cur is None or bool(_ad_cur) else "N",
+    ).lower() == "y"
     set_app_config("agent_direct", bool(ad))
     print(f"   ✓ 笔记默认：风格 {style} / 截图 {'开' if ss else '关'} / AGENT直接写 {'开' if ad else '关'}", file=sys.stdout)
     print("   导出格式默认：任务成功后自动把转写导出为纯格式（确定性渲染，不耗 LLM）", file=sys.stdout)

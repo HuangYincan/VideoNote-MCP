@@ -14,7 +14,7 @@
 
 ---
 
-VideoNote-Mcp packages the whole "video link → multi-format notes" pipeline into an **MCP Server + Claude Code Skill**: hand an agent a link and it automatically runs download → transcription → frame understanding → danmaku/comments → AI summary, returning a portable note with screenshots that you can move around.
+VideoNote-Mcp packages the whole "video link → multi-format notes" pipeline into an **MCP Server + Claude Code Skill**: hand an agent a link and it automatically runs download → transcription → frame understanding → danmaku/comments. **By default the current conversation agent writes the note**; the configured LLM is only a fallback when the agent cannot see images.
 
 Repository: [HuangYincan/VideoNote-MCP](https://github.com/HuangYincan/VideoNote-MCP).
 
@@ -42,7 +42,7 @@ claude plugin install videonote@videonote
 #    video-understanding / comments etc.); then run the guided config command:
 /videonote-setup
 
-# 3) (Optional) LLM key / Bilibili QR login / CLI wizard:
+# 3) (Optional) fallback LLM key / Bilibili QR login / CLI wizard — default path needs no LLM key
 # ! videonote setup
 
 # 4) Restart your session, tell the agent "make notes for this video" + link
@@ -98,7 +98,7 @@ Full run record: [`examples/note-generation-example/README.md`](examples/note-ge
 
 <img src="assets/pipeline-en.svg" alt="VideoNote-Mcp pipeline map" width="100%"/>
 
-Solid lines are the main flow: one `generate_note` link runs the whole pipeline end-to-end. Dashed lines are optional capabilities (video understanding / danmaku + comments / Agent-generated) you can opt into. Stage details (platform support, engines, parameters) live in [docs/02-架构设计.md](docs/02-架构设计.md).
+Solid lines are the main flow: `prepare_note_material` produces the pack, and the current conversation agent writes the note. `generate_note` is the fallback (configured LLM when the agent cannot see images). Dashed lines are optional capabilities (video understanding / danmaku + comments). Stage details live in [docs/02-架构设计.md](docs/02-架构设计.md).
 
 ## Task Management
 
@@ -136,7 +136,7 @@ flowchart TB
 - **Meeting minutes**: `process_media(action="merge")` to join recorded segments → `process_media(action="diarize")` for speakers → `meeting_minutes` style.
 - **Deep-reading a lecture**: after end-to-end generation, the agent refines from the full transcript, filling in section by section.
 - **Video appreciation**: enable danmaku + comment integration for an "Audience viewpoints" section.
-- **End-to-end vs decoupled**: use `generate_note` for a single link; use `prepare_note_material` for material-only and `process_media` for media operations (merge / diarize / export) when you only want part of the pipeline.
+- **Default path**: one link uses `prepare_note_material`, and the current conversation agent writes the note; use `generate_note` only when the agent cannot see images or the user asks for the configured LLM. Use `process_media` for media operations (merge / diarize / export).
 - **Real example**: full run records for both cases live in [`examples`](examples).
 
 ## How to Contribute

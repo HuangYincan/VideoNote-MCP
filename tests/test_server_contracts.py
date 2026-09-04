@@ -404,10 +404,20 @@ class PreflightNeedProviderTest(unittest.TestCase):
             },
         )
 
-    def test_default_includes_provider_check(self):
-        with mock.patch.object(server, "_preflight_provider", return_value=(False, "无已填 key 的供应商")) as m_p:
+    def test_default_skips_provider_check(self):
+        """#151：health_check 默认 need_provider=False（Agent 写笔记不需要供应商）。"""
+        with mock.patch.object(server, "_preflight_provider") as m_p:
             with self._mock_base_checks()[0], self._mock_base_checks()[1], self._mock_base_checks()[2]:
                 data = json.loads(server.health_check())
+        m_p.assert_not_called()
+        names = {c["name"] for c in data["checks"]}
+        self.assertNotIn("provider", names)
+        self.assertTrue(data["ok"])
+
+    def test_need_provider_true_includes_provider_check(self):
+        with mock.patch.object(server, "_preflight_provider", return_value=(False, "无已填 key 的供应商")) as m_p:
+            with self._mock_base_checks()[0], self._mock_base_checks()[1], self._mock_base_checks()[2]:
+                data = json.loads(server.health_check(need_provider=True))
         m_p.assert_called_once()
         names = {c["name"] for c in data["checks"]}
         self.assertIn("provider", names)
@@ -445,7 +455,7 @@ class PreflightTest(unittest.TestCase):
                     server.TranscriberConfigManager, "is_model_ready", return_value=self._ready()
                 ):
                     with mock.patch.object(server, "_preflight_provider", return_value=(True, "openai（key 已填，默认模型 gpt-4o）")):
-                        data = json.loads(server.health_check())
+                        data = json.loads(server.health_check(need_provider=True))
         self.assertTrue(data["ok"])
         by_name = {c["name"]: c for c in data["checks"]}
         self.assertTrue(by_name["ffmpeg"]["ok"])
