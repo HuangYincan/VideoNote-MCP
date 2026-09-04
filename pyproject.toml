@@ -1,6 +1,6 @@
 [project]
 name = "videonote"
-version = "0.1.24"
+version = "0.1.25"
 description = "VideoNote 能力 MCP 封装：视频链接 → AI Markdown 笔记（内嵌下载/转写/LLM 流水线，无需启动 FastAPI 后端）"
 readme = "README.md"
 # 上界 3.14：faster-whisper(ctranslate2) 等目前尚未提供 3.14 wheel
