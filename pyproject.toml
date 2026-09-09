@@ -39,7 +39,8 @@ dependencies = [
     "InquirerPy>=0.3.4",
     # B 站 / 小红书扫码登录（终端 ASCII 二维码）
     "qrcode>=8.0",
-    # 小红书扫码：edith 已拒旧版 x-s（406），需本机 Chrome 跑官网 JS 出码
+    # 小红书 / 抖音扫码：需本机 Chrome 跑官网 JS 出码
+    # （edith 拒旧 x-s 406；抖音 SSO get_qrcode 被风控成 HTML）
     "playwright>=1.48.0",
 ]
 

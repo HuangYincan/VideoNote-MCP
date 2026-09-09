@@ -2033,14 +2033,14 @@ def _login_douyin_cookie(exit_on_fail: bool = True) -> None:
 
 
 def _open_douyin_qr_session():
-    """SSO 扫码会话。测试可 patch 此工厂。"""
-    from app.downloaders.douyin_auth import DouyinAuth
+    """官网 Chrome 扫码会话。测试可 patch 此工厂。"""
+    from app.downloaders.douyin_browser import DouyinBrowserQr
 
-    return DouyinAuth()
+    return DouyinBrowserQr()
 
 
 def _login_douyin_qr(exit_on_fail: bool = True) -> None:
-    """官网 SSO 扫码：get_qrcode → 终端 ASCII 二维码 → 轮询 check_qrconnect。"""
+    """官网扫码：本机 Chrome 拦 passport get_qrcode → 终端 ASCII 二维码。"""
     import time
 
     try:
@@ -2055,15 +2055,29 @@ def _login_douyin_qr(exit_on_fail: bool = True) -> None:
         QR_EXPIRED,
         QR_SCANNED,
         QR_SUCCESS,
+        DouyinAuth,
         is_douyin_qr_url,
     )
+    from app.downloaders.douyin_browser import BrowserQrUnavailable
 
     session = _open_douyin_qr_session()
     try:
         created = session.create_qr()
+    except BrowserQrUnavailable as e:
+        print(f"浏览器扫码不可用: {e}", file=sys.stderr)
+        print("改走直连接口（多半已被抖音风控）…", file=sys.stderr)
+        session = DouyinAuth()
+        try:
+            created = session.create_qr()
+        except Exception as e:
+            print(f"生成二维码失败: {e}", file=sys.stderr)
+            print("请安装 Google Chrome 后重试，或 `videonote login douyin --cookie`", file=sys.stderr)
+            if exit_on_fail:
+                sys.exit(1)
+            return
     except Exception as e:
         print(f"生成二维码失败: {e}", file=sys.stderr)
-        print("扫不了可改用 `videonote login douyin --cookie` 粘贴 Cookie", file=sys.stderr)
+        print("请安装 Google Chrome 后重试，或 `videonote login douyin --cookie`", file=sys.stderr)
         if exit_on_fail:
             sys.exit(1)
         return
@@ -2085,10 +2099,12 @@ def _login_douyin_qr(exit_on_fail: bool = True) -> None:
     print("扫不了可改用 `videonote login douyin --cookie` 粘贴 Cookie", file=sys.stdout)
     _print_ascii_qr(qr_url)
 
+    pumps = bool(getattr(session, "pumps_events", False))
     last_status = None
     try:
         for _ in range(90):
-            time.sleep(2)
+            if not pumps:
+                time.sleep(2)
             try:
                 poll = session.poll_qr(token)
             except Exception as e:
@@ -2143,7 +2159,7 @@ def _login_douyin(args, exit_on_fail: bool = True) -> None:
     """`videonote login douyin`：默认扫码；`--cookie` 粘贴浏览器 Cookie。"""
     parser = argparse.ArgumentParser(
         prog="videonote login douyin",
-        description="抖音登录：默认扫码；--cookie 改粘贴浏览器 Cookie",
+        description="抖音登录：本机 Chrome 出码；--cookie 改粘贴浏览器 Cookie",
     )
     parser.add_argument("--cookie", action="store_true", help="粘贴 Cookie 而不是扫码")
     opts = parser.parse_args(args)
