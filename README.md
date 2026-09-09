@@ -147,4 +147,6 @@ flowchart TB
 
 ## 致谢
 
-感谢社区与所有贡献者，感谢 [Glama](https://glama.ai) 对 MCP server 的收录，以及所有开源依赖与上游流水线项目的启发。
+* [Glama](https://glama.ai) ：对 MCP server 的收录
+* [LINUX DO](https://linux.do/)：新的理想型社区
+* 所有开源依赖与上游流水线项目的启发
