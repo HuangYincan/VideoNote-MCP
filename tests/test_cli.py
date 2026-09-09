@@ -348,6 +348,7 @@ class TestLoginYoutube:
         assert "未知平台" in err
         assert "xiaoyuzhou" in err
         assert "xiaohongshu" in err
+        assert "douyin" in err
 
 
 class _FakeXyzResp:
@@ -576,6 +577,191 @@ class TestLoginXiaohongshu:
             cli._login_xiaohongshu([])
         assert ei.value.code == 1
         assert "生成二维码失败" in capsys.readouterr().err
+
+
+class TestLoginDouyin:
+    def test_cookie_flag_saves_without_printing(self, capsys, monkeypatch):
+        import InquirerPy.inquirer as inq_mod
+
+        def _secret(message="", **kwargs):
+            box = mock.Mock()
+            box.execute.return_value = "sessionid=sess-tok; ttwid=aaa"
+            return box
+
+        monkeypatch.setattr(inq_mod, "secret", _secret)
+        monkeypatch.setattr(
+            "app.downloaders.douyin_auth.verify_douyin_login",
+            lambda: "",
+        )
+        cli._login_douyin(["--cookie"])
+        out = _cli_out(capsys)
+        assert "登录态有效" in out
+        assert "sess-tok" not in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        listed = _cli_out(capsys)
+        assert "douyin" in listed
+        assert "sess-tok" not in listed
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "douyin"])
+
+    def test_cookie_empty_cancels(self, capsys, monkeypatch):
+        import InquirerPy.inquirer as inq_mod
+
+        def _secret(message="", **kwargs):
+            box = mock.Mock()
+            box.execute.return_value = ""
+            return box
+
+        monkeypatch.setattr(inq_mod, "secret", _secret)
+        cli._login_douyin(["--cookie"])
+        assert "已取消" in _cli_out(capsys)
+
+    def test_cookie_without_sessionid_exits(self, capsys, monkeypatch):
+        import InquirerPy.inquirer as inq_mod
+
+        def _secret(message="", **kwargs):
+            box = mock.Mock()
+            box.execute.return_value = "ttwid=only-tt"
+            return box
+
+        monkeypatch.setattr(inq_mod, "secret", _secret)
+        with pytest.raises(SystemExit) as ei:
+            cli._login_douyin(["--cookie"])
+        assert ei.value.code == 1
+        assert "sessionid" in capsys.readouterr().err
+
+    def test_qr_saves_without_printing_session(self, capsys, monkeypatch):
+        class _Auth:
+            def create_qr(self):
+                return {"token": "tok", "url": "https://www.douyin.com/scan?token=tok"}
+
+            def poll_qr(self, token):
+                return {
+                    "status": "3",
+                    "redirect_url": "https://www.douyin.com/?ticket=1",
+                }
+
+            def finalize(self, redirect_url):
+                self.redirect = redirect_url
+
+            def persist(self):
+                from app.services.cookie_manager import CookieConfigManager
+
+                CookieConfigManager().set("douyin", "sessionid=sess-from-qr; ttwid=tt")
+                return ""
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(cli, "_open_douyin_qr_session", lambda: _Auth())
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: print(f"QR:{data}", file=sys.stdout))
+        monkeypatch.setattr("builtins.input", lambda *_: "")
+        cli._login_douyin([])
+        out = _cli_out(capsys)
+        assert "已保存抖音登录态" in out
+        assert "sess-from-qr" not in out
+        capsys.readouterr()
+        cli._cookie_cli(["list"])
+        listed = _cli_out(capsys)
+        assert "douyin" in listed
+        assert "sess-from-qr" not in listed
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "douyin"])
+
+    def test_qr_scanned_then_success(self, capsys, monkeypatch):
+        class _Auth:
+            def __init__(self):
+                self.n = 0
+
+            def create_qr(self):
+                return {"token": "tok", "url": "https://www.douyin.com/scan?token=tok"}
+
+            def poll_qr(self, token):
+                self.n += 1
+                if self.n == 1:
+                    return {"status": "2", "redirect_url": ""}
+                return {
+                    "status": "3",
+                    "redirect_url": "https://www.douyin.com/?ticket=1",
+                }
+
+            def finalize(self, redirect_url):
+                pass
+
+            def persist(self):
+                from app.services.cookie_manager import CookieConfigManager
+
+                CookieConfigManager().set("douyin", "sessionid=sess-from-qr")
+                return ""
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(cli, "_open_douyin_qr_session", lambda: _Auth())
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: None)
+        monkeypatch.setattr("builtins.input", lambda *_: "")
+        cli._login_douyin([])
+        out = _cli_out(capsys)
+        assert "已扫码" in out
+        assert "已保存抖音登录态" in out
+        capsys.readouterr()
+        cli._cookie_cli(["clear", "douyin"])
+
+    def test_qr_expired(self, capsys, monkeypatch):
+        class _Auth:
+            def create_qr(self):
+                return {"token": "tok", "url": "https://www.douyin.com/scan?token=tok"}
+
+            def poll_qr(self, token):
+                return {"status": "5", "redirect_url": ""}
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(cli, "_open_douyin_qr_session", lambda: _Auth())
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: None)
+        monkeypatch.setattr("builtins.input", lambda *_: "")
+        cli._login_douyin([])
+        assert "已过期" in _cli_out(capsys)
+
+    def test_qr_create_failure_exits(self, capsys, monkeypatch):
+        class _Auth:
+            def create_qr(self):
+                raise RuntimeError("sign error")
+
+        monkeypatch.setattr(cli, "_open_douyin_qr_session", lambda: _Auth())
+        with pytest.raises(SystemExit) as ei:
+            cli._login_douyin([])
+        assert ei.value.code == 1
+        assert "生成二维码失败" in capsys.readouterr().err
+
+    def test_qr_finalize_rejects_foreign_host(self, capsys, monkeypatch):
+        class _Auth:
+            def create_qr(self):
+                return {"token": "tok", "url": "https://www.douyin.com/scan?token=tok"}
+
+            def poll_qr(self, token):
+                return {"status": "3", "redirect_url": "https://evil.example/cb"}
+
+            def finalize(self, redirect_url):
+                raise ValueError("登录回调域名不是抖音官方（evil.example）")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(cli, "_open_douyin_qr_session", lambda: _Auth())
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: None)
+        with pytest.raises(SystemExit) as ei:
+            cli._login_douyin([])
+        assert ei.value.code == 1
+        err = capsys.readouterr().err
+        assert "官方" in err
+        assert "evil.example" in err
 
 
 class TestExportCli:

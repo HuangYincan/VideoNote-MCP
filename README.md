@@ -42,7 +42,7 @@ claude plugin install videonote@videonote
 #    装完在会话里跑配置向导收尾：
 /videonote-setup
 
-# 3) （可选）后备 LLM 的 Key / B 站扫码 / CLI 向导——默认路径不需要配置 LLM
+# 3) （可选）后备 LLM 的 Key / 平台扫码（B 站、抖音等） / CLI 向导——默认路径不需要配置 LLM
 # ! videonote setup
 
 # 4) 重启会话，对 agent 说「帮我给这个视频做笔记」+ 链接

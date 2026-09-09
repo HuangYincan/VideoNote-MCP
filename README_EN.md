@@ -42,7 +42,7 @@ claude plugin install videonote@videonote
 #    video-understanding / comments etc.); then run the guided config command:
 /videonote-setup
 
-# 3) (Optional) fallback LLM key / Bilibili QR login / CLI wizard — default path needs no LLM key
+# 3) (Optional) fallback LLM key / platform QR login (Bilibili, Douyin, …) / CLI wizard — default path needs no LLM key
 # ! videonote setup
 
 # 4) Restart your session, tell the agent "make notes for this video" + link

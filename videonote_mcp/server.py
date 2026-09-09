@@ -894,7 +894,7 @@ def _resolve_default_provider_id() -> Optional[str]:
 _SENSITIVE_VIA_MCP = (
     "API key / Cookie / HF token 不能经 MCP 工具传入（会进对话上游）。"
     "请在本会话终端执行：`! videonote providers set <id> --api-key '...'` "
-    "或 `! videonote login bilibili` / `! videonote setup`。"
+    "或 `! videonote login bilibili` / `! videonote login douyin` / `! videonote setup`。"
 )
 
 
@@ -2096,7 +2096,7 @@ def get_config(provider_id: str = "") -> str:
 
     配置修改一律走 CLI（MCP 面不提供写配置工具，凭证红线最干净）：
     `! videonote providers set <id> --api-key '...'` / `! videonote login bilibili` /
-    `! videonote login xiaohongshu` / `! videonote transcriber set ...` / `! videonote transcriber download ...`
+    `! videonote login xiaohongshu` / `! videonote login douyin` / `! videonote transcriber set ...` / `! videonote transcriber download ...`
     """
     raw = get_app_config()
     _blocked = ("token", "cookie", "api_key", "secret", "password")
