@@ -154,7 +154,7 @@
 | B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA） |
 | 小宇宙官方文稿 | 用户在本会话 `! videonote login xiaoyuzhou` 用小宇宙 App 扫码（或 `--token` 粘贴）；未登录会回退本地下载+ASR，长节目会非常慢 |
 | 小红书视频笔记 | 用户在本会话 `! videonote login xiaohongshu` 用小红书 App 扫码（或 `--cookie` 粘贴）；图文笔记无法转写；无官方字幕，走转写引擎 |
-| 抖音视频笔记 | 用户在本会话 `! videonote login douyin` 用抖音 App 扫码（或 `--cookie` 粘贴）；公开视频有时无需登录；遇登录墙/风控时需要 |
+| 抖音视频笔记 | 用户在本会话 `! videonote login douyin` 用抖音 App 扫码（需本机 Chrome/Edge；或 `--cookie` 粘贴）；公开视频有时无需登录；遇登录墙/风控时需要 |
 | 本地文件 | `prepare_note_material(video_url="file:///绝对/路径/foo%20bar.mp4")` 或普通路径，`platform` 可省略；后备 LLM 用 `generate_note` |
 | 视频理解默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `video_understanding`/`video_interval` 即套用（默认关/6s） |
 | 评论/弹幕整合默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `include_comments`/`comments_limit` 即套用（默认关/20 条） |

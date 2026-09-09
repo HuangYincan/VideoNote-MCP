@@ -1,6 +1,6 @@
 [project]
 name = "videonote"
-version = "0.1.26"
+version = "0.1.27"
 description = "VideoNote 能力 MCP 封装：视频链接 → AI Markdown 笔记（内嵌下载/转写/LLM 流水线，无需启动 FastAPI 后端）"
 readme = "README.md"
 # 上界 3.14：faster-whisper(ctranslate2) 等目前尚未提供 3.14 wheel
@@ -39,7 +39,8 @@ dependencies = [
     "InquirerPy>=0.3.4",
     # B 站 / 小红书扫码登录（终端 ASCII 二维码）
     "qrcode>=8.0",
-    # 小红书扫码：edith 已拒旧版 x-s（406），需本机 Chrome 跑官网 JS 出码
+    # 小红书 / 抖音扫码：需本机 Chrome 跑官网 JS 出码
+    # （edith 拒旧 x-s 406；抖音 SSO get_qrcode 被风控成 HTML）
     "playwright>=1.48.0",
 ]
 

@@ -46,10 +46,19 @@ class _FakeJar:
 
 
 class _FakeResp:
-    def __init__(self, status=200, payload=None, content=b"{}"):
+    def __init__(self, status=200, payload=None, content=b"{}", text=None, headers=None):
         self.status_code = status
         self._payload = payload
         self.content = b"{}" if payload is not None else content
+        self.headers = headers or {}
+        if text is not None:
+            self.text = text
+        elif payload is not None:
+            self.text = ""
+        elif isinstance(content, (bytes, bytearray)):
+            self.text = bytes(content).decode("utf-8", "replace")
+        else:
+            self.text = str(content or "")
 
     def json(self):
         if self._payload is None:
@@ -91,10 +100,17 @@ class UrlAndCookieHelpersTest(unittest.TestCase):
     def test_qr_and_redirect_hosts(self):
         self.assertTrue(is_douyin_qr_url("https://www.douyin.com/scan?token=x"))
         self.assertTrue(is_douyin_qr_url("https://aweme.snssdk.com/service/2/web/redirect/"))
+        self.assertTrue(
+            is_douyin_qr_url(
+                "https://api.amemv.com/ucenter_web/app/aweme/scan_login/index.html?t=1"
+            )
+        )
         self.assertFalse(is_douyin_qr_url("https://evil.com/scan"))
         self.assertFalse(is_douyin_qr_url("https://douyin.com.evil.com/scan"))
+        self.assertFalse(is_douyin_qr_url("https://amemv.com.evil.com/scan"))
         self.assertTrue(is_douyin_redirect_url("https://sso.douyin.com/login/callback"))
         self.assertFalse(is_douyin_redirect_url("https://evil.example/redirect"))
+        self.assertFalse(is_douyin_redirect_url("https://api.amemv.com/callback"))
 
     def test_parse_and_sessionid(self):
         parsed = parse_cookie_string("sessionid=abc; ttwid=tt; sessionid_ss=ss")
@@ -111,14 +127,18 @@ class UrlAndCookieHelpersTest(unittest.TestCase):
 
     def test_map_qr_status(self):
         self.assertEqual(_map_qr_status({"status": "1"}), QR_WAIT)
+        self.assertEqual(_map_qr_status({"status": "new"}), QR_WAIT)
         self.assertEqual(_map_qr_status({"status": "2"}), QR_SCANNED)
+        self.assertEqual(_map_qr_status({"status": "scanned"}), QR_SCANNED)
         self.assertEqual(_map_qr_status({"status": "3"}), QR_SUCCESS)
+        self.assertEqual(_map_qr_status({"status": "confirmed"}), QR_SUCCESS)
         self.assertEqual(
             _map_qr_status({"status": "4", "redirect_url": "https://www.douyin.com/"}),
             QR_SUCCESS,
         )
         self.assertEqual(_map_qr_status({"redirect_url": "https://www.douyin.com/"}), QR_SUCCESS)
         self.assertEqual(_map_qr_status({"status": "5"}), QR_EXPIRED)
+        self.assertEqual(_map_qr_status({"status": "expired"}), QR_EXPIRED)
 
 
 class DouyinAuthQrTest(unittest.TestCase):
@@ -154,6 +174,49 @@ class DouyinAuthQrTest(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ei:
             auth.create_qr()
         self.assertIn("风控", str(ei.exception))
+
+    def test_create_qr_html_waf_mentions_chrome(self):
+        html = "<!doctype html><html><head><script>gfkadpd</script></head></html>"
+
+        def handler(url, params):
+            if "get_qrcode" in url:
+                return _FakeResp(
+                    status=200,
+                    payload=None,
+                    content=html.encode(),
+                    text=html,
+                    headers={"content-type": "text/html; charset=utf-8"},
+                )
+            return _FakeResp(payload={})
+
+        auth = DouyinAuth(session=_FakeSession(handler))
+        with self.assertRaises(RuntimeError) as ei:
+            auth.create_qr()
+        msg = str(ei.exception)
+        self.assertIn("风控页", msg)
+        self.assertIn("Chrome", msg)
+        self.assertNotIn("HTTP 200", msg)
+
+    def test_create_qr_risk_4031_mentions_chrome(self):
+        def handler(url, params):
+            if "get_qrcode" in url:
+                return _FakeResp(
+                    payload={
+                        "message": "error",
+                        "data": {
+                            "error_code": 4031,
+                            "description": "您正在尝试访问的网站存在安全风险",
+                        },
+                    }
+                )
+            return _FakeResp(payload={})
+
+        auth = DouyinAuth(session=_FakeSession(handler))
+        with self.assertRaises(RuntimeError) as ei:
+            auth.create_qr()
+        msg = str(ei.exception)
+        self.assertIn("安全风险", msg)
+        self.assertIn("Chrome", msg)
 
     def test_poll_scanned_then_success(self):
         payloads = [
@@ -257,3 +320,157 @@ class VerifyDouyinLoginTest(unittest.TestCase):
                 err = verify_douyin_login(cookie_mgr=mgr)
             self.assertIn("无效", err)
             self.assertNotIn("abc", err)
+
+
+class DouyinBrowserQrParseTest(unittest.TestCase):
+    def test_parse_create_official_url(self):
+        from app.downloaders.douyin_browser import parse_qr_create_payload
+
+        out = parse_qr_create_payload({
+            "data": {
+                "token": "tok-1",
+                "qrcode_index_url": (
+                    "https://api.amemv.com/ucenter_web/app/aweme/scan_login/index.html"
+                ),
+                "error_code": 0,
+            }
+        })
+        self.assertEqual(out["token"], "tok-1")
+        self.assertIn("amemv.com", out["url"])
+
+    def test_parse_create_drops_risk_payload(self):
+        from app.downloaders.douyin_browser import parse_qr_create_payload
+
+        out = parse_qr_create_payload({
+            "data": {"error_code": 4031, "description": "安全风险"},
+        })
+        self.assertEqual(out["token"], "")
+        self.assertEqual(out["url"], "")
+
+    def test_cookies_filter_domain(self):
+        from app.downloaders.douyin_browser import cookies_from_playwright
+
+        raw = [
+            {"name": "sessionid", "value": "s1", "domain": ".douyin.com"},
+            {"name": "other", "value": "nope", "domain": ".example.com"},
+            {"name": "ttwid", "value": "tt", "domain": "www.douyin.com"},
+            {"name": "evil", "value": "x", "domain": "douyin.com.evil.com"},
+            {"name": "evil2", "value": "y", "domain": "evildouyin.com"},
+        ]
+        out = cookies_from_playwright(raw)
+        self.assertEqual(out["sessionid"], "s1")
+        self.assertEqual(out["ttwid"], "tt")
+        self.assertNotIn("other", out)
+        self.assertNotIn("evil", out)
+        self.assertNotIn("evil2", out)
+
+    def test_on_response_ignores_non_douyin_host(self):
+        from app.downloaders.douyin_browser import DouyinBrowserQr
+
+        qr = DouyinBrowserQr(cookie_mgr=mock.Mock())
+        fake = mock.Mock()
+        fake.url = "https://evil.example/passport/web/get_qrcode/"
+        fake.json.return_value = {
+            "data": {
+                "token": "x",
+                "qrcode_index_url": "https://evil.example/phish",
+                "error_code": 0,
+            }
+        }
+        qr._on_response(fake)
+        self.assertEqual(qr._created, {})
+
+    def test_on_response_rejects_foreign_qr_url(self):
+        from app.downloaders.douyin_browser import DouyinBrowserQr
+
+        qr = DouyinBrowserQr(cookie_mgr=mock.Mock())
+        fake = mock.Mock()
+        fake.url = "https://www.douyin.com/passport/web/get_qrcode/?aid=6383"
+        fake.json.return_value = {
+            "data": {
+                "token": "tok",
+                "qrcode_index_url": "https://evil.example/phish",
+                "error_code": 0,
+            }
+        }
+        qr._on_response(fake)
+        self.assertEqual(qr._created, {})
+
+    def test_on_response_accepts_amemv_qr(self):
+        from app.downloaders.douyin_browser import DouyinBrowserQr
+
+        qr = DouyinBrowserQr(cookie_mgr=mock.Mock())
+        fake = mock.Mock()
+        fake.url = "https://login.douyin.com/passport/web/get_qrcode/?aid=6383"
+        fake.json.return_value = {
+            "data": {
+                "token": "tok",
+                "qrcode_index_url": (
+                    "https://api.amemv.com/ucenter_web/app/aweme/scan_login/index.html"
+                ),
+                "error_code": 0,
+            }
+        }
+        qr._on_response(fake)
+        self.assertEqual(qr._created["token"], "tok")
+        self.assertIn("amemv.com", qr._created["url"])
+
+    def test_on_response_maps_passport_status(self):
+        from app.downloaders.douyin_browser import DouyinBrowserQr
+
+        qr = DouyinBrowserQr(cookie_mgr=mock.Mock())
+        fake = mock.Mock()
+        fake.url = "https://www.douyin.com/passport/web/check_qrconnect/?token=t"
+        fake.json.return_value = {"data": {"status": "scanned", "error_code": 0}}
+        qr._on_response(fake)
+        self.assertEqual(qr._status, QR_SCANNED)
+        fake.json.return_value = {
+            "data": {"status": "confirmed", "redirect_url": "https://www.douyin.com/"}
+        }
+        qr._on_response(fake)
+        self.assertEqual(qr._status, QR_SUCCESS)
+        self.assertEqual(qr._redirect, "https://www.douyin.com/")
+
+    def test_poll_sessionid_is_success(self):
+        from app.downloaders.douyin_browser import DouyinBrowserQr
+
+        with tempfile.TemporaryDirectory() as td:
+            mgr = CookieConfigManager(filepath=str(Path(td) / "downloader.json"))
+            qr = DouyinBrowserQr(cookie_mgr=mgr)
+            qr._page = None
+            qr._cookies = lambda: {"sessionid": "sess", "ttwid": "tt"}
+            poll = qr.poll_qr("tok")
+            self.assertEqual(poll["status"], QR_SUCCESS)
+            session = _FakeSession(
+                lambda url, params: _FakeResp(payload={"data": {"user_id": "1", "name": "u"}})
+            )
+            with mock.patch(
+                "app.downloaders.douyin_auth.PublicOnlySession", return_value=session
+            ):
+                self.assertEqual(qr.persist(), "")
+            saved = mgr.get("douyin") or ""
+            self.assertIn("sessionid=sess", saved)
+
+    def test_create_qr_failure_closes(self):
+        from app.downloaders.douyin_browser import DouyinBrowserQr
+
+        qr = DouyinBrowserQr(cookie_mgr=mock.Mock())
+        closed = []
+        qr.close = lambda: closed.append(1)
+        qr._launch = lambda: None
+        qr._page = mock.Mock()
+        qr._page.goto.side_effect = RuntimeError("打开失败")
+        with self.assertRaises(RuntimeError):
+            qr.create_qr()
+        self.assertTrue(closed)
+
+    def test_finalize_rejects_foreign_host(self):
+        from app.downloaders.douyin_browser import DouyinBrowserQr
+
+        qr = DouyinBrowserQr(cookie_mgr=mock.Mock())
+        qr._page = mock.Mock()
+        qr._cookies = lambda: {}
+        with self.assertRaises(ValueError) as ei:
+            qr.finalize("https://evil.example/cb")
+        self.assertIn("官方", str(ei.exception))
+        self.assertIn("evil.example", str(ei.exception))

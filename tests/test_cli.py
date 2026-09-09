@@ -739,6 +739,49 @@ class TestLoginDouyin:
         assert ei.value.code == 1
         assert "生成二维码失败" in capsys.readouterr().err
 
+    def test_qr_browser_unavailable_falls_back_to_http(self, capsys, monkeypatch):
+        from app.downloaders.douyin_browser import BrowserQrUnavailable
+
+        class _Browser:
+            def create_qr(self):
+                raise BrowserQrUnavailable("no chrome")
+
+            def close(self):
+                pass
+
+        class _Http:
+            def create_qr(self):
+                return {"token": "tok", "url": "https://www.douyin.com/scan?token=tok"}
+
+            def poll_qr(self, token):
+                return {
+                    "status": "3",
+                    "redirect_url": "https://www.douyin.com/?ticket=1",
+                }
+
+            def finalize(self, redirect_url):
+                pass
+
+            def persist(self):
+                from app.services.cookie_manager import CookieConfigManager
+
+                CookieConfigManager().set("douyin", "sessionid=sess-from-http")
+                return ""
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(cli, "_open_douyin_qr_session", lambda: _Browser())
+        monkeypatch.setattr("app.downloaders.douyin_auth.DouyinAuth", lambda *a, **k: _Http())
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        monkeypatch.setattr(cli, "_print_ascii_qr", lambda data: None)
+        monkeypatch.setattr("builtins.input", lambda *_: "")
+        cli._login_douyin([])
+        captured = capsys.readouterr()
+        assert "浏览器扫码不可用" in captured.err
+        assert "已保存抖音登录态" in captured.out
+        cli._cookie_cli(["clear", "douyin"])
+
     def test_qr_finalize_rejects_foreign_host(self, capsys, monkeypatch):
         class _Auth:
             def create_qr(self):

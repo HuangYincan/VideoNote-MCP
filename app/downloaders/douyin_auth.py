@@ -1,7 +1,10 @@
 """抖音 Web 扫码登录。
 
-走官网 SSO：`sso.douyin.com/get_qrcode/` + `/check_qrconnect/`，确认后跟随
-官方 `redirect_url` 收集 Cookie，写入 CookieConfigManager 的 `douyin` 槽。
+直连 `sso.douyin.com/get_qrcode/` 常被风控成 HTML（HTTP 200 非 JSON）。
+默认扫码走本机 Chrome 打开官网登录页（`douyin_browser`），拦截
+`passport/web/get_qrcode` + `check_qrconnect`；本模块是无浏览器时的 HTTP 回退，
+以及 Cookie 校验 / 粘贴路径。确认后跟随官方 `redirect_url` 收集 Cookie，
+写入 CookieConfigManager 的 `douyin` 槽。
 
 凭证走 CLI：`videonote login douyin` / `videonote cookie set douyin`。
 MCP 工具不收 cookie（安全红线）。
@@ -16,7 +19,12 @@ from urllib.parse import urlparse
 
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
-from app.utils.url_safety import PublicOnlySession, host_matches, sanitize_error_text
+from app.utils.url_safety import (
+    PublicOnlySession,
+    host_matches,
+    hostname_matches,
+    sanitize_error_text,
+)
 
 logger = get_logger(__name__)
 
@@ -35,23 +43,31 @@ _WEB_HEADERS = {
     "Referer": f"{SSO}/",
 }
 
-# 扫码状态（SSO data.status）：1 等待 / 2 已扫待确认 / 3 成功 / 5 过期
+# 扫码状态（归一后）：1 等待 / 2 已扫待确认 / 3 成功 / 5 过期
+# SSO 用数字；passport/web 用 new / scanned / confirmed / expired
 QR_WAIT = "1"
 QR_SCANNED = "2"
 QR_SUCCESS = "3"
 QR_EXPIRED = "5"
 
-_DOUYIN_HOSTS = ("douyin.com", "snssdk.com")
+_QR_HOSTS = ("douyin.com", "snssdk.com", "amemv.com", "iesdouyin.com")
+_REDIRECT_HOSTS = ("douyin.com", "snssdk.com")
+_COOKIE_HOSTS = ("douyin.com",)
 
 
 def is_douyin_qr_url(url: str) -> bool:
-    """扫码 payload 只允许抖音 / aweme.snssdk 官方域。"""
-    return host_matches(url, *_DOUYIN_HOSTS)
+    """扫码 payload 只允许抖音官方扫码页（含 api.amemv.com）。"""
+    return host_matches(url, *_QR_HOSTS)
 
 
 def is_douyin_redirect_url(url: str) -> bool:
     """登录回调只认官方后缀，拒绝跟随到任意 Location。"""
-    return host_matches(url, *_DOUYIN_HOSTS)
+    return host_matches(url, *_REDIRECT_HOSTS)
+
+
+def is_douyin_cookie_host(host: str) -> bool:
+    """只收集 .douyin.com 精确后缀上的 Cookie。"""
+    return hostname_matches(host, *_COOKIE_HOSTS)
 
 
 def parse_cookie_string(raw: Optional[str]) -> dict:
@@ -97,17 +113,35 @@ def _cookie_dict_from_jar(jar) -> dict:
             return {}
 
 
+def _is_html_response(resp) -> bool:
+    """SSO 被风控时返回 HTTP 200 + text/html，不是 JSON。"""
+    headers = getattr(resp, "headers", None) or {}
+    try:
+        ct = str(headers.get("content-type") or headers.get("Content-Type") or "")
+    except Exception:  # noqa: BLE001
+        ct = ""
+    text = getattr(resp, "text", None)
+    if not isinstance(text, str):
+        content = getattr(resp, "content", b"") or b""
+        if isinstance(content, (bytes, bytearray)):
+            text = bytes(content[:200]).decode("utf-8", "replace")
+        else:
+            text = str(content or "")
+    head = (text or "")[:240].lstrip().lower()
+    return "html" in ct.lower() or head.startswith("<!doctype") or head.startswith("<html")
+
+
 def _map_qr_status(data: dict) -> str:
-    """把 SSO data.status / redirect_url 归一成 QR_* 常量。"""
+    """把 SSO / passport data.status / redirect_url 归一成 QR_* 常量。"""
     redirect = (data.get("redirect_url") or "") if isinstance(data, dict) else ""
     raw = ""
     if isinstance(data, dict):
-        raw = str(data.get("status", "") or "")
-    if redirect or raw in ("3", "4"):
+        raw = str(data.get("status", "") or "").strip().lower()
+    if redirect or raw in ("3", "4", "confirmed", "success"):
         return QR_SUCCESS
-    if raw == "2":
+    if raw in ("2", "scanned", "scanning"):
         return QR_SCANNED
-    if raw == "5":
+    if raw in ("5", "expired", "expire", "canceled", "cancelled"):
         return QR_EXPIRED
     return QR_WAIT
 
@@ -169,22 +203,36 @@ class DouyinAuth:
         try:
             payload = resp.json()
         except ValueError as exc:
-            raise RuntimeError(f"生成二维码失败: HTTP {resp.status_code}") from exc
+            if _is_html_response(resp):
+                raise RuntimeError(
+                    "抖音返回了风控页而不是二维码。请安装 Google Chrome 后重试，"
+                    "或改用 `videonote login douyin --cookie`"
+                ) from exc
+            raise RuntimeError(f"HTTP {resp.status_code}（非 JSON）") from exc
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
             data = {}
         token = data.get("token") or ""
         qr_url = data.get("qrcode_index_url") or data.get("frontend_show_qrcode") or ""
-        err_code = payload.get("error_code") if isinstance(payload, dict) else None
+        err_code = data.get("error_code")
+        if err_code in (None, "", 0, "0") and isinstance(payload, dict):
+            err_code = payload.get("error_code")
         if not token or not qr_url:
             msg = ""
+            if isinstance(data, dict):
+                msg = str(data.get("description") or "")
             if isinstance(payload, dict):
-                msg = payload.get("description") or payload.get("message") or ""
+                msg = msg or str(payload.get("description") or payload.get("message") or "")
             if err_code not in (0, None, "0"):
                 msg = msg or f"error_code={err_code}"
-            raise RuntimeError(f"生成二维码失败: {msg or resp.status_code}")
+            if err_code in (4031, "4031") or "安全风险" in msg:
+                raise RuntimeError(
+                    f"{msg or '直连接口被风控'}。请安装 Google Chrome 后重试，"
+                    "或改用 `videonote login douyin --cookie`"
+                )
+            raise RuntimeError(msg or f"HTTP {resp.status_code}")
         if not is_douyin_qr_url(qr_url):
-            raise RuntimeError("生成二维码失败：返回的二维码地址不是官方域名")
+            raise RuntimeError("返回的二维码地址不是官方域名")
         return {"token": token, "url": qr_url}
 
     def poll_qr(self, token: str) -> dict:
