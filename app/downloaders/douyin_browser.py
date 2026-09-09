@@ -2,15 +2,20 @@
 
 直连 `sso.douyin.com/get_qrcode/` 会被 ByteDance 风控成 HTML（HTTP 200）。
 登录页在真实 Chrome 里自己打 `passport/web/get_qrcode`；我们拦截 JSON 拿
-二维码 URL，终端仍出 ASCII 码，轮询期间保持页面存活（站点自己打 check_qrconnect）。
+二维码 URL，终端仍出 ASCII 码。官网 `is_frontier` 时「已确认」可能只走
+WebSocket，HTTP 会一直停在 scanned——因此轮询时用本机 Chrome 上下文
+主动打 check_qrconnect（关掉 is_frontier），不只等拦截。
 """
 from __future__ import annotations
 
+import json
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 from app.downloaders.douyin_auth import (
     HOME,
+    QR_EXPIRED,
+    QR_SCANNED,
     QR_SUCCESS,
     QR_WAIT,
     _map_qr_status,
@@ -40,6 +45,49 @@ _LAUNCH_TRIES = (
 
 class BrowserQrUnavailable(RuntimeError):
     """本机没有可用的 Playwright / Chrome。"""
+
+
+def rewrite_qrconnect_url(url: str, token: str) -> str:
+    """get_qrcode / check_qrconnect → 短轮询 URL（关掉 is_frontier，钉官方域）。"""
+    if not url or not token:
+        return ""
+    if not host_matches(url, "douyin.com"):
+        return ""
+    parts = urlsplit(url)
+    path = parts.path or "/passport/web/check_qrconnect/"
+    if "get_qrcode" in path:
+        path = path.replace("get_qrcode", "check_qrconnect")
+    elif "check_qrconnect" not in path:
+        path = "/passport/web/check_qrconnect/"
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["token"] = token
+    query["is_frontier"] = "0"
+    return urlunsplit((parts.scheme or "https", parts.netloc, path, urlencode(query), ""))
+
+
+def poll_payload_status(body: dict) -> tuple[str, str]:
+    """从 check_qrconnect / WS JSON 抽出 (QR_*, redirect_url)。"""
+    if not isinstance(body, dict):
+        return QR_WAIT, ""
+    data = body.get("data") if isinstance(body.get("data"), dict) else None
+    if not isinstance(data, dict):
+        data = body
+    st = _map_qr_status(data)
+    redir = str(data.get("redirect_url") or body.get("redirect_url") or "")
+    return st, redir
+
+
+def next_qr_status(current: str, incoming: str) -> str:
+    """扫码状态只前进，避免 frontier 下后续 HTTP scanned/new 把 confirmed 盖掉。"""
+    if incoming == QR_EXPIRED:
+        return QR_EXPIRED
+    if current == QR_SUCCESS:
+        return QR_SUCCESS
+    if incoming == QR_SUCCESS:
+        return QR_SUCCESS
+    if current == QR_SCANNED and incoming == QR_WAIT:
+        return QR_SCANNED
+    return incoming
 
 
 def parse_qr_create_payload(body: dict) -> dict:
@@ -87,6 +135,43 @@ class DouyinBrowserQr:
         self._status = QR_WAIT
         self._redirect = ""
         self._logged_cookies: dict = {}
+        self._source_url = ""
+
+    def _apply_poll_body(self, body: dict) -> None:
+        st, redir = poll_payload_status(body)
+        prev = self._status
+        self._status = next_qr_status(self._status, st)
+        if redir:
+            self._redirect = redir
+        if self._status != prev:
+            logger.info("抖音扫码状态: %s", self._status)
+
+    def _on_ws_payload(self, payload) -> None:
+        text = payload
+        if isinstance(payload, dict):
+            text = payload.get("payload") or payload.get("data") or ""
+        if isinstance(text, bytes):
+            try:
+                text = text.decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001
+                return
+        if not isinstance(text, str) or not text or text[0] not in "{[":
+            return
+        try:
+            body = json.loads(text)
+        except Exception:  # noqa: BLE001
+            return
+        if isinstance(body, dict):
+            self._apply_poll_body(body)
+
+    def _on_websocket(self, ws) -> None:
+        url = getattr(ws, "url", "") or ""
+        if not host_matches(url, "douyin.com", "snssdk.com"):
+            return
+        try:
+            ws.on("framereceived", self._on_ws_payload)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _on_response(self, resp) -> None:
         url = resp.url or ""
@@ -102,16 +187,33 @@ class DouyinBrowserQr:
             parsed = parse_qr_create_payload(body)
             if parsed.get("url") and is_douyin_qr_url(parsed["url"]) and parsed.get("token"):
                 self._created = parsed
+                self._source_url = url
             return
         if _POLL_MARK in url:
-            data = body.get("data") if isinstance(body.get("data"), dict) else {}
-            st = _map_qr_status(data if isinstance(data, dict) else {})
-            self._status = st
-            redir = ""
-            if isinstance(data, dict):
-                redir = str(data.get("redirect_url") or "")
-            if redir:
-                self._redirect = redir
+            self._source_url = self._source_url or url
+            self._apply_poll_body(body)
+
+    def _poll_request_url(self, token: str) -> str:
+        source = self._source_url or f"{HOME}/passport/web/check_qrconnect/?aid=6383"
+        return rewrite_qrconnect_url(source, token)
+
+    def _active_poll(self, token: str) -> None:
+        if not token or self._page is None:
+            return
+        url = self._poll_request_url(token)
+        if not url:
+            return
+        try:
+            resp = self._page.request.get(url, timeout=8000)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("抖音主动轮询失败: %s", sanitize_error_text(exc))
+            return
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001
+            return
+        if isinstance(body, dict):
+            self._apply_poll_body(body)
 
     def _launch(self) -> None:
         try:
@@ -152,6 +254,7 @@ class DouyinBrowserQr:
         )
         self._page = self._context.new_page()
         self._page.on("response", self._on_response)
+        self._page.on("websocket", self._on_websocket)
 
     def _cookies(self) -> dict:
         if self._context is None:
@@ -205,10 +308,11 @@ class DouyinBrowserQr:
             raise
 
     def poll_qr(self, token: str) -> dict:
-        """抽一次站点轮询结果；内部 wait 以便 Playwright 收包。"""
+        """主动短轮询 check_qrconnect，并抽一次页面事件（WS / 拦截）。"""
+        self._active_poll(token)
         if self._page is not None:
             try:
-                self._page.wait_for_timeout(2000)
+                self._page.wait_for_timeout(500)
             except Exception:  # noqa: BLE001
                 pass
         cookies = self._cookies()

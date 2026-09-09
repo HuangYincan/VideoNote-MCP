@@ -132,16 +132,20 @@ def _is_html_response(resp) -> bool:
 
 
 def _map_qr_status(data: dict) -> str:
-    """把 SSO / passport data.status / redirect_url 归一成 QR_* 常量。"""
+    """把 SSO / passport data.status / redirect_url 归一成 QR_* 常量。
+
+    旧 SSO 数字：1 等待 / 2 已扫 / 3·4 成功（4 常带 redirect_url）/ 5 过期。
+    passport/web：new / scanned / confirmed；4 / refused / expired 是失效刷新。
+    """
     redirect = (data.get("redirect_url") or "") if isinstance(data, dict) else ""
     raw = ""
     if isinstance(data, dict):
         raw = str(data.get("status", "") or "").strip().lower()
-    if redirect or raw in ("3", "4", "confirmed", "success"):
+    if redirect or raw in ("3", "confirmed", "success"):
         return QR_SUCCESS
     if raw in ("2", "scanned", "scanning"):
         return QR_SCANNED
-    if raw in ("5", "expired", "expire", "canceled", "cancelled"):
+    if raw in ("4", "5", "expired", "expire", "canceled", "cancelled", "refused"):
         return QR_EXPIRED
     return QR_WAIT
 
