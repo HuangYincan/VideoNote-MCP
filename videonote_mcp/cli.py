@@ -653,6 +653,7 @@ def _wizard_other(inq) -> None:
                     {"name": "B 站扫码登录（自动获取 SESSDATA，AI 字幕用）", "value": "bili-login"},
                     {"name": "小宇宙扫码登录（官方文稿用，App 扫一扫）", "value": "xyz-login"},
                     {"name": "小红书扫码登录（下载视频笔记用，App 扫一扫）", "value": "xhs-login"},
+                    {"name": "抖音扫码登录（下载视频笔记用，App 扫一扫）", "value": "dy-login"},
                     {"name": "平台 Cookie（手动填，B 站等需登录内容）", "value": "cookie"},
                     {"name": f"默认笔记位置（图片模式）：{notes_dir}", "value": "notes"},
                     {"name": f"视频理解默认（{'开' if vu_on else '关'} / {vu_int}s，需多模态模型）", "value": "video"},
@@ -671,6 +672,8 @@ def _wizard_other(inq) -> None:
                 _login_xiaoyuzhou([], exit_on_fail=False)
             elif pick == "xhs-login":
                 _login_xiaohongshu([], exit_on_fail=False)
+            elif pick == "dy-login":
+                _login_douyin([], exit_on_fail=False)
             elif pick == "cookie":
                 _show_header("平台 Cookie")
                 platform = inq.select(
@@ -1482,6 +1485,7 @@ def _cookie_cli(argv) -> None:
     B 站推荐 `videonote login bilibili` 扫码登录（AI 字幕需要 SESSDATA）。
     小宇宙官方文稿需要登录态（推荐 `videonote login xiaoyuzhou` 扫码）。
     小红书视频下载推荐 `videonote login xiaohongshu` 扫码（登录墙/验证码时需要）。
+    抖音下载推荐 `videonote login douyin` 扫码（登录墙/风控时需要）。
     """
     parser = argparse.ArgumentParser(
         prog="videonote cookie",
@@ -1993,6 +1997,162 @@ def _login_xiaohongshu(args, exit_on_fail: bool = True) -> None:
     _login_xiaohongshu_qr(exit_on_fail)
 
 
+def _login_douyin_cookie(exit_on_fail: bool = True) -> None:
+    print("请在电脑浏览器登录 https://www.douyin.com 后：", file=sys.stdout)
+    print("1. 按 F12 → Network → 刷新 → 点任意 www.douyin.com 请求", file=sys.stdout)
+    print("2. Request Headers 里复制完整 Cookie 行（需含 sessionid）", file=sys.stdout)
+    try:
+        from InquirerPy import inquirer as inq
+    except ImportError:
+        print("需要 InquirerPy：`uv sync` 后重试", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    cookie = inq.secret(message="抖音 Cookie 字符串（留空取消）", keybindings=_KB).execute()
+    if not cookie or not cookie.strip():
+        print("已取消", file=sys.stdout)
+        return
+    from app.downloaders.douyin_auth import (
+        has_sessionid,
+        parse_cookie_string,
+        verify_douyin_login,
+    )
+    from app.services.cookie_manager import CookieConfigManager
+
+    if not has_sessionid(parse_cookie_string(cookie)):
+        print("未发现 sessionid，请复制完整 Cookie 行后重试", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    CookieConfigManager().set("douyin", cookie.strip())
+    err = verify_douyin_login()
+    if not err:
+        print(f"{_GREEN}✓ 抖音登录态有效{_RESET}", file=sys.stdout)
+        return
+    print(f"{_YELLOW}⚠ {err}（配置已保存，下载时若仍失败可重试扫码）{_RESET}", file=sys.stdout)
+
+
+def _open_douyin_qr_session():
+    """SSO 扫码会话。测试可 patch 此工厂。"""
+    from app.downloaders.douyin_auth import DouyinAuth
+
+    return DouyinAuth()
+
+
+def _login_douyin_qr(exit_on_fail: bool = True) -> None:
+    """官网 SSO 扫码：get_qrcode → 终端 ASCII 二维码 → 轮询 check_qrconnect。"""
+    import time
+
+    try:
+        import qrcode  # noqa: F401
+    except ImportError:
+        print("需要 qrcode 库：`uv sync` 后重试", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+
+    from app.downloaders.douyin_auth import (
+        QR_EXPIRED,
+        QR_SCANNED,
+        QR_SUCCESS,
+        is_douyin_qr_url,
+    )
+
+    session = _open_douyin_qr_session()
+    try:
+        created = session.create_qr()
+    except Exception as e:
+        print(f"生成二维码失败: {e}", file=sys.stderr)
+        print("扫不了可改用 `videonote login douyin --cookie` 粘贴 Cookie", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    qr_url = created.get("url") or ""
+    token = created.get("token") or ""
+    if not qr_url or not token:
+        print("生成二维码失败：接口未返回 url/token", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+    if not is_douyin_qr_url(qr_url):
+        print("生成二维码失败：返回的二维码地址不是官方域名", file=sys.stderr)
+        if exit_on_fail:
+            sys.exit(1)
+        return
+
+    _show_header("抖音扫码登录")
+    print(f"{_YELLOW}请用抖音 App「扫一扫」扫描下方二维码（约 3 分钟内有效）{_RESET}", file=sys.stdout)
+    print("扫不了可改用 `videonote login douyin --cookie` 粘贴 Cookie", file=sys.stdout)
+    _print_ascii_qr(qr_url)
+
+    last_status = None
+    try:
+        for _ in range(90):
+            time.sleep(2)
+            try:
+                poll = session.poll_qr(token)
+            except Exception as e:
+                print(f"轮询失败（网络？）: {e}", file=sys.stderr)
+                continue
+            st = poll.get("status")
+            if st == QR_SUCCESS:
+                try:
+                    session.finalize(poll.get("redirect_url") or "")
+                except Exception as e:
+                    print(f"{e}", file=sys.stderr)
+                    if exit_on_fail:
+                        sys.exit(1)
+                    return
+                err = session.persist()
+                if err and err.startswith("登录成功但未取到"):
+                    print("登录成功但未取到 sessionid，请改用 `videonote login douyin --cookie`", file=sys.stderr)
+                    if exit_on_fail:
+                        sys.exit(1)
+                    return
+                if err and err.startswith("请求失败"):
+                    print(f"{_YELLOW}⚠ {err}（cookie 已保存）{_RESET}", file=sys.stdout)
+                elif err and ("无效" in err or "未能确认" in err):
+                    print(f"{_YELLOW}⚠ {err}{_RESET}", file=sys.stdout)
+                else:
+                    print(f"{_GREEN}✓ 已保存抖音登录态 —— 下载视频笔记可用了{_RESET}", file=sys.stdout)
+                try:
+                    input("（按回车返回）")
+                except (EOFError, KeyboardInterrupt):
+                    pass
+                return
+            if st == QR_SCANNED and last_status != QR_SCANNED:
+                print("已扫码，请在手机上确认登录…", file=sys.stdout)
+                last_status = QR_SCANNED
+            elif st == QR_EXPIRED:
+                print(f"{_YELLOW}二维码已过期，请重新运行 `videonote login douyin`{_RESET}", file=sys.stdout)
+                try:
+                    input("（按回车返回）")
+                except (EOFError, KeyboardInterrupt):
+                    pass
+                return
+        print(f"{_YELLOW}二维码已过期，请重新运行 `videonote login douyin`{_RESET}", file=sys.stdout)
+    except KeyboardInterrupt:
+        print("（已取消）", file=sys.stdout)
+    finally:
+        close = getattr(session, "close", None)
+        if callable(close):
+            close()
+
+
+def _login_douyin(args, exit_on_fail: bool = True) -> None:
+    """`videonote login douyin`：默认扫码；`--cookie` 粘贴浏览器 Cookie。"""
+    parser = argparse.ArgumentParser(
+        prog="videonote login douyin",
+        description="抖音登录：默认扫码；--cookie 改粘贴浏览器 Cookie",
+    )
+    parser.add_argument("--cookie", action="store_true", help="粘贴 Cookie 而不是扫码")
+    opts = parser.parse_args(args)
+    if opts.cookie:
+        _login_douyin_cookie(exit_on_fail)
+        return
+    _login_douyin_qr(exit_on_fail)
+
+
 def _bilibili_sessdata_from_login_url(login_url: str, headers: dict) -> str:
     """从扫码成功 URL 取 SESSDATA：官方 host 钉死 + PublicOnlySession 跟随（#145 A1）。
 
@@ -2019,12 +2179,13 @@ def _bilibili_sessdata_from_login_url(login_url: str, headers: dict) -> str:
 
 
 def _login_cli(argv, exit_on_fail: bool = True) -> None:
-    """`videonote login [bilibili|youtube|xiaoyuzhou|xiaohongshu]`：平台登录配置。
+    """`videonote login [bilibili|youtube|xiaoyuzhou|xiaohongshu|douyin]`：平台登录配置。
 
     - bilibili：扫码登录，自动获取并保存 SESSDATA（AI 字幕用）
     - youtube：读浏览器登录态或手动粘贴 Cookie（--browser 时实测验证）
     - xiaoyuzhou：扫码登录（`--token` 改粘贴 x-jike token）
     - xiaohongshu：扫码登录（`--cookie` 改粘贴浏览器 Cookie）
+    - douyin：扫码登录（`--cookie` 改粘贴浏览器 Cookie）
 
     exit_on_fail=False 时失败路径只返回不杀进程（setup 向导内调用，#120：
     登录失败不再让整个向导带 traceback/退出，已配的其它设置不丢失）。
@@ -2038,8 +2199,11 @@ def _login_cli(argv, exit_on_fail: bool = True) -> None:
     if argv and argv[0] == "xiaohongshu":
         _login_xiaohongshu(argv[1:], exit_on_fail)
         return
+    if argv and argv[0] == "douyin":
+        _login_douyin(argv[1:], exit_on_fail)
+        return
     if argv and argv[0] != "bilibili":
-        print(f"未知平台: {argv[0]}（支持 bilibili / youtube / xiaoyuzhou / xiaohongshu）", file=sys.stderr)
+        print(f"未知平台: {argv[0]}（支持 bilibili / youtube / xiaoyuzhou / xiaohongshu / douyin）", file=sys.stderr)
         sys.exit(2)
     import time
 

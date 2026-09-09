@@ -41,7 +41,7 @@ description: 用 VideoNote-Mcp 的 MCP 工具把视频链接/本地视频（B站
 
 ## 强制规则
 
-1. **必须用 MCP 工具**。凭证例外：本会话 `! videonote providers set`、`! videonote login bilibili`、`! videonote login xiaoyuzhou`、`! videonote login xiaohongshu`。
+1. **必须用 MCP 工具**。凭证例外：本会话 `! videonote providers set`、`! videonote login bilibili`、`! videonote login xiaoyuzhou`、`! videonote login xiaohongshu`、`! videonote login douyin`。
 2. **单视频一回合一个提交**。不要在同一条消息里并行多个 `generate_note` / `prepare_note_material`（客户端不稳）。普通任务在提交锁内预占名额，覆盖排队和执行全生命周期，超限拒绝。`batch_generate_notes` 只用于后备 LLM 的合集/播放列表，绕过普通 admission，由线程池排队。
 3. **默认你自己写笔记**（见上）。后备才走配置 LLM。
 4. **handoff**：只有返回 `handoff: true`（或 generic **下载失败**）才接手。未知 URL 现在是 `generic`（yt-dlp），**不要**一看到非内置平台就当失败。接手：WebFetch / 浏览器取源，或下到本地再 `prepare_note_material` / `generate_note(platform="local")`。

@@ -17,6 +17,7 @@
 | 小宇宙长时间卡在转写 / 想用官方文稿 | 未配登录态会走本地下载+ASR。引导用户 `! videonote login xiaoyuzhou`（终端扫码，小宇宙 App 确认）后重试；扫不了再用 `--token`。`inspect_video` 应返回 `platform:"xiaoyuzhou"` |
 | 小红书下载失败 / 图文笔记 | 图文笔记无法转写。视频遇登录墙/验证码：引导用户 `! videonote login xiaohongshu`（终端扫码，需本机 Chrome/Edge）；扫不了再用 `--cookie`。`inspect_video` 应返回 `platform:"xiaohongshu"` |
 | 小红书扫码报 406 | 旧版直连接口签名已失效。请用户升级 videonote 后重试扫码（走本机 Chrome）；或 `! videonote login xiaohongshu --cookie` |
+| 抖音下载失败 / 登录墙 | 引导用户 `! videonote login douyin`（终端扫码，抖音 App 确认）；扫不了再用 `--cookie`。`inspect_video` 应返回 `platform:"douyin"` |
 | 整合评论/弹幕时评论拿不到 | 未配 B 站 SESSDATA —— 引导用户 `videonote login bilibili`；抓取失败**不阻断**笔记生成（跳过该部分） |
 | 其他平台（非内置平台） | `inspect_video` 返回 `platform:"generic"` → 自动走 **yt-dlp 通用提取**（覆盖 1800+ 站点）；若也失败任务报错 → Agent 接手：WebFetch/浏览器解析视频源后 `generate_note(video_url="/绝对/路径/x.mp4", platform="local")` |
 | generic 下载报需登录/JS 渲染 | 该站点 yt-dlp 无法直接提取 —— Agent 用 WebFetch/浏览器处理登录/验证，或让用户 `videonote setup` 向导里配「平台 Cookie」后重试 |

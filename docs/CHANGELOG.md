@@ -884,3 +884,11 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **后备**：仅当 Agent 无法看图，或用户明确要求配置 LLM → `generate_note` / 合集 `batch_generate_notes`。
 - **health_check**：`need_provider` 默认 False；合集预解析提示改为默认 prepare。
 - **验证**：全量 `pytest` **981 passed, 1 skipped, 10 subtests passed**；Ruff F/I、`git diff --check` 通过。
+
+## 抖音扫码登录（2026-09-09 · `login douyin` 默认扫码，981→1006 tests）
+
+- **默认扫码**：`videonote login douyin` 走官网 SSO `sso.douyin.com/get_qrcode/` + `/check_qrconnect/`（aid `6383`），终端 ASCII 二维码，抖音 App 扫确认后跟随官方 `redirect_url` 收集 Cookie（需含 sessionid）写入 `downloader.json`。
+- **安全**：二维码 URL 与登录回调只认 `douyin.com` / `snssdk.com`；出站走 `PublicOnlySession`；凭证不打印明文、不进 MCP。
+- **后备**：`--cookie` 粘贴浏览器 Cookie；setup 向导「③ 其他」加「抖音扫码登录」。
+- Skill / 04 / troubleshooting / VENDOR 同步；改 Skill 后需刷新插件。
+- **验证**：全量 `pytest` **1006 passed, 1 skipped, 10 subtests passed**；Ruff F/I、`git diff --check` 通过。

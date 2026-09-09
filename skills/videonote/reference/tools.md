@@ -145,7 +145,7 @@
 
 | 场景 | 操作 |
 |------|------|
-| 配置入口（首次使用） | 用户在 Claude Code 跑 `/videonote-setup`（体检 → 填 key → 转写 → 默认值 → B站扫码 → 数据管理） |
+| 配置入口（首次使用） | 用户在 Claude Code 跑 `/videonote-setup`（体检 → 填 key → 转写 → 默认值 → 平台扫码 → 数据管理） |
 | 给内置供应商填 key | 用户在本会话 `! videonote providers set <id> --api-key 'sk-...'`（隐藏输入、agent 不碰 key） |
 | 查看配置 / 供应商 / 模型 / 转写器 | `get_config()`（只读汇总）；传 `provider_id` 可附加连通性探测 |
 | 自建/新增供应商或设置默认模型 | `! videonote providers add --name ... --base-url ...`（key 缺省隐藏输入） / `! videonote providers test <id> --default <model>`；当前 CLI 不提供删除供应商/模型命令 |
@@ -154,6 +154,7 @@
 | B 站登录/AI 字幕/评论 | 用户在本会话 `! videonote login bilibili` 扫码（二维码渲染进会话终端，存 SESSDATA） |
 | 小宇宙官方文稿 | 用户在本会话 `! videonote login xiaoyuzhou` 用小宇宙 App 扫码（或 `--token` 粘贴）；未登录会回退本地下载+ASR，长节目会非常慢 |
 | 小红书视频笔记 | 用户在本会话 `! videonote login xiaohongshu` 用小红书 App 扫码（或 `--cookie` 粘贴）；图文笔记无法转写；无官方字幕，走转写引擎 |
+| 抖音视频笔记 | 用户在本会话 `! videonote login douyin` 用抖音 App 扫码（或 `--cookie` 粘贴）；公开视频有时无需登录；遇登录墙/风控时需要 |
 | 本地文件 | `prepare_note_material(video_url="file:///绝对/路径/foo%20bar.mp4")` 或普通路径，`platform` 可省略；后备 LLM 用 `generate_note` |
 | 视频理解默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `video_understanding`/`video_interval` 即套用（默认关/6s） |
 | 评论/弹幕整合默认（setup ③） | 用户说「用默认」/ 全自动模式时不传 `include_comments`/`comments_limit` 即套用（默认关/20 条） |
