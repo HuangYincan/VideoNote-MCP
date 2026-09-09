@@ -899,3 +899,9 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **修复**：`videonote login douyin` 默认用本机 Chrome/Edge 打开官网登录页，拦截 `passport/web/get_qrcode` + `check_qrconnect`（与小红书同款 Playwright）；终端仍出 ASCII 码。无浏览器时回退直连接口并提示 `--cookie`。二维码 URL 额外放行官方扫码页 `amemv.com` / `iesdouyin.com`；passport 状态 `new/scanned/confirmed/expired` 与旧数字码并存。
 - Skill / 04 / troubleshooting / VENDOR 同步；改 Skill 后需刷新插件。
 - **验证**：全量 `pytest` **1019 passed, 1 skipped, 10 subtests passed**；Ruff F/I、`git diff --check` 通过。
+
+## 抖音扫码确认后 CLI 卡住（2026-09-10 · v0.1.28，1019→1024 tests）
+
+- **原因**：官网 `get_qrcode` 带 `is_frontier` 时，「已扫码」仍走 HTTP，`confirmed` 可能只推 WebSocket；CLI 只拦 HTTP，就会一直停在「已扫码，请在手机上确认登录」。
+- **修复**：用本机 Chrome 上下文主动短轮询 `check_qrconnect`（`is_frontier=0`），并收官方域 WebSocket JSON；扫码状态只前进不回退。passport 的 `4`/`refused` 视为过期（有 `redirect_url` 仍算成功）。
+- **验证**：全量 `pytest` **1024 passed, 1 skipped, 10 subtests passed**；Ruff F/I 通过。
