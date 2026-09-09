@@ -893,7 +893,7 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - Skill / 04 / troubleshooting / VENDOR 同步；改 Skill 后需刷新插件。
 - **验证**：全量 `pytest` **1006 passed, 1 skipped, 10 subtests passed**；Ruff F/I、`git diff --check` 通过。
 
-## 抖音扫码改本机 Chrome（2026-09-10 · 直连 SSO 被风控成 HTML，1006→1019 tests）
+## 抖音扫码改本机 Chrome（2026-09-10 · v0.1.27，直连 SSO 被风控成 HTML，1006→1019 tests）
 
 - **原因**：`sso.douyin.com/get_qrcode/` 对 requests TLS/UA 返回 HTTP 200 `text/html` 风控页（`gfkadpd`），不是 JSON；CLI 误报「生成二维码失败: HTTP 200」。
 - **修复**：`videonote login douyin` 默认用本机 Chrome/Edge 打开官网登录页，拦截 `passport/web/get_qrcode` + `check_qrconnect`（与小红书同款 Playwright）；终端仍出 ASCII 码。无浏览器时回退直连接口并提示 `--cookie`。二维码 URL 额外放行官方扫码页 `amemv.com` / `iesdouyin.com`；passport 状态 `new/scanned/confirmed/expired` 与旧数字码并存。
