@@ -1,37 +1,12 @@
-"""#151 Skill 默认由当前 Agent 写笔记：非多模态才走配置 LLM。
-
-契约：
-1. SKILL.md 把 prepare_note_material 当默认、generate_note/batch 当后备；
-2. health_check 默认 need_provider=False；合集预解析提示默认 prepare 而非 batch；
-3. inspect_video / generate_note / batch_generate_notes docstring 口径与 SKILL 一致。
-"""
+"""#151 MCP 默认由当前 Agent 写笔记：保留独立于 Skills 的运行时契约。"""
 from __future__ import annotations
 
 import inspect
 import json
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from videonote_mcp import server
-
-_REPO = Path(__file__).resolve().parent.parent
-_SKILL = (_REPO / "skills" / "videonote" / "SKILL.md").read_text(encoding="utf-8")
-
-
-class SkillDefaultAgentWriterTest(unittest.TestCase):
-    def test_skill_default_path_is_prepare_not_generate(self):
-        self.assertIn("prepare_note_material", _SKILL)
-        self.assertIn("health_check(need_provider=False)", _SKILL)
-        self.assertIn("后备路径", _SKILL)
-        # 默认路径禁止把合集交给 batch
-        self.assertIn("不要**对默认路径用 `batch_generate_notes`", _SKILL)
-        # 判定条款：不能看图才走配置 LLM
-        self.assertIn("纯文本模型", _SKILL)
-        self.assertIn("后备 LLM", _SKILL)
-
-    def test_skill_does_not_treat_agent_direct_false_as_generate(self):
-        self.assertIn("不要**因为该键是 false 就改走 `generate_note`", _SKILL)
 
 
 class HealthCheckDefaultNeedProviderTest(unittest.TestCase):

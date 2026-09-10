@@ -14,7 +14,7 @@
 
 ---
 
-VideoNote-Mcp packages the whole "video link → multi-format notes" pipeline into an **MCP Server + Claude Code Skill**: hand an agent a link and it automatically runs download → transcription → frame understanding → danmaku/comments. **By default the current conversation agent writes the note**; the configured LLM is only a fallback when the agent cannot see images.
+VideoNote-Mcp packages the whole "video link → multi-format notes" pipeline into an **MCP Server**: hand an agent a link and it automatically runs download → transcription → frame understanding → danmaku/comments. **By default the current conversation agent writes the note**; the configured LLM is only a fallback when the agent cannot see images.
 
 Repository: [HuangYincan/VideoNote-MCP](https://github.com/HuangYincan/VideoNote-MCP).
 
@@ -25,7 +25,6 @@ It works **end-to-end (one link → one note)** and is **also decoupled**: pick 
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
   <a><img src="https://img.shields.io/badge/MCP-Server-6C5CE7" alt="MCP"></a>
-  <a><img src="https://img.shields.io/badge/Claude%20Code-Skill-D97757" alt="Claude Code"></a>
   <a href="https://glama.ai/mcp/servers/HuangYincan/VideoNote-MCP"><img src="https://glama.ai/mcp/servers/HuangYincan/VideoNote-MCP/badges/score.svg" alt="VideoNote-MCP MCP server"></a>
 </p>
 
@@ -33,20 +32,34 @@ It works **end-to-end (one link → one note)** and is **also decoupled**: pick 
 
 ## Quick Start
 
+**Configure the MCP server directly; no Skills required.**
+
 ```bash
-# 1) One command installs both Skill + MCP (plugin marketplace; MCP command `uvx videonote@latest` auto-fetches the latest PyPI release on each session start)
-claude plugin marketplace add HuangYincan/VideoNote-MCP
-claude plugin install videonote@videonote
+# 1) Register the standalone MCP server (published PyPI version)
+claude mcp add --scope user videonote -- uvx videonote@latest
 
-# 2) Claude Code prompts for defaults during install (style / transcriber /
-#    video-understanding / comments etc.); then run the guided config command:
-/videonote-setup
+# 2) Configure transcription / platform login in your terminal
+#    The default agent-written note workflow needs no LLM API key
+uvx videonote@latest setup
 
-# 3) (Optional) fallback LLM key / platform QR login (Bilibili, Douyin, …) / CLI wizard — default path needs no LLM key
-# ! videonote setup
-
-# 4) Restart your session, tell the agent "make notes for this video" + link
+# 3) Restart or reconnect MCP, then give your agent a video link
 ```
+
+For JSON-based MCP clients:
+
+```json
+{
+  "mcpServers": {
+    "videonote": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["videonote@latest"]
+    }
+  }
+}
+```
+
+> Legacy Skills, templates and `/videonote-setup` have been removed from normal branches and remain recoverable in Git history. Previously installed plugins or local Skills are not automatically removed; disable the old integration when switching to standalone MCP to avoid duplicate loading. Point your client at a source checkout to test unpublished fixes: `uvx` does not load local changes.
 
 > All four install methods, configuration details, updating and security are in [docs/04-使用手册.md](docs/04-使用手册.md).
 

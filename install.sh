@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VideoNote-Mcp 一键安装：创建 venv → 安装 → 注册 MCP → 链接 Skill
+# VideoNote-Mcp 一键安装：创建 venv → 安装 → 直接注册 MCP → CLI 配置
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,41 +24,36 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
-echo "==> 2/3 安装 Skill + 注册 MCP"
-HAVE_UV="0"
-command -v uv >/dev/null 2>&1 && HAVE_UV="1"
-PLUGIN_OK="0"
-# 优先走 marketplace：Skill + MCP server 一起装，插件自带 MCP（带 userConfig env）。
-# 不要同时做用户级 `claude mcp add`——同名的用户级条目 env 为空，会遮蔽插件 server 的 env。
-if [ "$HAVE_UV" = "1" ] && command -v claude >/dev/null 2>&1; then
-  if claude plugin marketplace add HuangYincan/VideoNote-MCP >/dev/null 2>&1 \
-     && claude plugin install videonote@videonote >/dev/null 2>&1; then
-    echo "Skill + MCP 已通过 marketplace 安装（videonote@videonote）"
-    # 清理旧安装残留的用户级条目（空 env 会遮蔽插件 server env）
-    claude mcp remove videonote >/dev/null 2>&1 || true
-    PLUGIN_OK="1"
-  fi
-fi
-if [ "$PLUGIN_OK" != "1" ]; then
-  # 回退：无 uv 或 marketplace 失败 → 用户级 MCP + 本地 Skill 链接
-  if command -v claude >/dev/null 2>&1; then
-    # 插件已装时不要 mcp add：用户级空 env 条目会遮蔽插件 server 的 env（userConfig 失效）
-    if claude plugin list 2>/dev/null | grep -q "videonote"; then
-      echo "检测到插件 videonote 已安装，跳过用户级 mcp add（避免遮蔽插件配置）"
-    else
-      claude mcp add videonote -- "$BIN" && echo "已注册：claude mcp add videonote -- $BIN"
-    fi
+echo "==> 2/3 注册 MCP"
+print_mcp_config() {
+  "$REPO_DIR/.venv/bin/python" - "$BIN" <<'PYJSON'
+import json
+import sys
+print(json.dumps({"mcpServers": {"videonote": {
+    "type": "stdio", "command": sys.argv[1], "args": []
+}}}, ensure_ascii=False))
+PYJSON
+}
+if command -v claude >/dev/null 2>&1; then
+  # 保留旧安装的配置隔离：用户级同名 MCP 会遮蔽插件的 userConfig env。
+  # 只查询，不更新/卸载插件，也不自动改写已有配置。
+  if claude plugin list 2>/dev/null | grep -q "videonote"; then
+    echo "检测到 videonote 插件，跳过自动注册 MCP，避免遮蔽插件配置。"
+    echo "若要改用源码 MCP，请先手动停用/移除旧入口，再核对以下配置："
+    print_mcp_config
+  elif claude mcp add --scope user videonote -- "$BIN"; then
+    echo "已注册用户级 videonote MCP"
   else
-    echo "未找到 claude CLI。请手动把下面的配置加入你的 MCP 配置："
-    echo "  { \"mcpServers\": { \"videonote\": { \"command\": \"$BIN\" } } }"
+    echo "MCP 注册未成功（可能已有同名配置）。未自动移除或覆盖；请核对后手动更新：" >&2
+    print_mcp_config
   fi
-  mkdir -p "$HOME/.claude/skills"
-  ln -sfn "$REPO_DIR/skills/videonote" "$HOME/.claude/skills/videonote"
-  echo "已本地链接：$HOME/.claude/skills/videonote"
+else
+  echo "未找到 claude CLI。请把下面的配置加入你的 MCP 客户端："
+  print_mcp_config
 fi
 
 echo ""
-echo "==> 3/3 初始化配置（LLM 供应商 + 语音转写引擎）"
+echo "==> 3/3 初始化配置（语音转写引擎 + 可选 LLM 供应商）"
 if [ -t 0 ]; then
   "$BIN" setup
 else
@@ -67,7 +62,7 @@ fi
 
 echo ""
 echo "==> 安装完成。验证："
-echo "  重启 Claude Code 会话后跑 /videonote-setup（体检 / 填 key / 转写）"
-echo "  $BIN providers list    # 确认 LLM key 已填"
+echo "  重启或重连 MCP 后调用 health_check（无需额外工作流文件）"
+echo "  $BIN setup             # 调整转写 / 可选 LLM / 平台登录配置"
 echo "  health_check           # ffmpeg / db / whisper 状态"
-echo "  （marketplace 方式的 MCP 由插件提供，`claude mcp list` 不会列出；仅回退安装模式会显示）"
+echo "  claude mcp list        # 查看已注册的 MCP"

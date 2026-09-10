@@ -905,3 +905,11 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **原因**：官网 `get_qrcode` 带 `is_frontier` 时，「已扫码」仍走 HTTP，`confirmed` 可能只推 WebSocket；CLI 只拦 HTTP，就会一直停在「已扫码，请在手机上确认登录」。
 - **修复**：用本机 Chrome 上下文主动短轮询 `check_qrconnect`（`is_frontier=0`），并收官方域 WebSocket JSON；扫码状态只前进不回退。passport 的 `4`/`refused` 视为过期（有 `redirect_url` 仍算成功）。
 - **验证**：全量 `pytest` **1024 passed, 1 skipped, 10 subtests passed**；Ruff F/I 通过。
+
+
+## 移除 Skills 分发（2026-09-10 发起，未发版）
+
+- 删除原 `skills/`（含模板/参考文档）及 `/videonote-setup` 命令。按用户确认不保留备份分支，需要时从删除提交之前的 Git 历史恢复。
+- 安装脚本改为直接注册 MCP，不再安装或链接 Skills；已有插件/同名 MCP 不自动覆盖。可选 Claude 插件仅保留 MCP 配置，打包及 Release 校验同步移除 Skills 依赖。
+- MCP 10 工具保持不变；兼容字段 `health_check.skill_refresh` 返回空串，配置提示改为终端 CLI。中英文 README、MCP JSON 示例和使用/开发文档同步。
+- **验证**：全量 **1033 passed, 1 skipped, 10 subtests passed**；Ruff F/I、shell 语法及 diff 检查通过；wheel/sdist 不含 Skills，官方 MCP SDK 对构建 wheel 的真实 stdio 握手、10 工具名单与 health_check 通过。没有发布新版本。
