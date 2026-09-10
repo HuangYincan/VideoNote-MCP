@@ -6,9 +6,6 @@
     "name": "HuangYincan",
     "url": "https://github.com/HuangYincan"
   },
-  "commands": [
-    "./commands/"
-  ],
   "mcpServers": {
     "videonote": {
       "command": "uvx",

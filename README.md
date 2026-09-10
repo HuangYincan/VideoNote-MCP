@@ -14,7 +14,7 @@
 
 ---
 
-VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 **MCP Server + Claude Code Skill**：给 agent 一个链接，自动完成 下载 → 语音转写 → 画面理解 → 弹幕/评论，**默认由当前对话里的 Agent 写笔记**（配置 LLM 仅当 Agent 无法看图时作为后备）。
+VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 **MCP Server**：给 agent 一个链接，自动完成 下载 → 语音转写 → 画面理解 → 弹幕/评论，**默认由当前对话里的 Agent 写笔记**（配置 LLM 仅当 Agent 无法看图时作为后备）。
 
 仓库：[HuangYincan/VideoNote-MCP](https://github.com/HuangYincan/VideoNote-MCP)。
 
@@ -25,7 +25,6 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
   <a><img src="https://img.shields.io/badge/MCP-Server-6C5CE7" alt="MCP"></a>
-  <a><img src="https://img.shields.io/badge/Claude%20Code-Skill-D97757" alt="Claude Code"></a>
   <a href="https://glama.ai/mcp/servers/HuangYincan/VideoNote-MCP"><img src="https://glama.ai/mcp/servers/HuangYincan/VideoNote-MCP/badges/score.svg" alt="VideoNote-MCP MCP server"></a>
 </p>
 
@@ -33,20 +32,33 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
 
 ## 快速开始
 
+**只配置 MCP 即可，不需要安装 Skills。**
+
 ```bash
-# 1) 一条命令装好 Skill + MCP（插件 marketplace；MCP 启动命令 uvx videonote@latest 自动取 PyPI 最新版）
-claude plugin marketplace add HuangYincan/VideoNote-MCP
-claude plugin install videonote@videonote
+# 1) 注册独立 MCP（PyPI 已发布版本）
+claude mcp add --scope user videonote -- uvx videonote@latest
 
-# 2) 安装时 Claude Code 会逐项提示默认值（风格/转写引擎/视频理解/评论等）；
-#    装完在会话里跑配置向导收尾：
-/videonote-setup
+# 2) 在终端配置转写 / 平台登录；默认由当前 Agent 写笔记，无需 LLM Key
+uvx videonote@latest setup
 
-# 3) （可选）后备 LLM 的 Key / 平台扫码（B 站、抖音等） / CLI 向导——默认路径不需要配置 LLM
-# ! videonote setup
-
-# 4) 重启会话，对 agent 说「帮我给这个视频做笔记」+ 链接
+# 3) 重启或重连 MCP，然后发视频链接，请 Agent 输出文字稿或笔记
 ```
+
+支持 JSON 的 MCP 客户端也可使用：
+
+```json
+{
+  "mcpServers": {
+    "videonote": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["videonote@latest"]
+    }
+  }
+}
+```
+
+> 旧版 Skills、模板和 `/videonote-setup` 已从正常分支移除，需要时可通过 Git 提交历史恢复。已经安装的旧插件或本地 Skill 不会自动删除；若改用独立 MCP，请手动停用旧插件/Skill，避免重复加载。源码修改需客户端直接指向源码，`uvx` 不会加载未发布的本地修复。
 
 > [!TIP]
 > 四种安装方式、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。

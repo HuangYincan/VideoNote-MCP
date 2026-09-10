@@ -1,5 +1,7 @@
 # VideoNote-MCP 使用案例：一条 Prompt，三个视频自动生成精修笔记
 
+> 历史案例：以下记录保留当时的 Skill 工作流。当前版本不再分发 Skills；MCP 可独立运行，安装说明以仓库 README 为准。
+
 ## 前置参数
 
 - LLM 多模态模型已配好（Gemini API，实际使用 gemini-3.1-flash-lite）

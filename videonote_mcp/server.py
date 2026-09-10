@@ -1008,7 +1008,7 @@ def generate_note(
         provider_id = _resolve_default_provider_id()
     if not provider_id:
         raise ValueError(
-            "需要 provider_id：用 `! videonote providers list` 查看，或跑 `/videonote-setup` / "
+            "需要 provider_id：用 `! videonote providers list` 查看，或在终端运行 `videonote setup` / "
             "`! videonote providers set <id> --api-key '...'` 配好默认供应商"
         )
     if _explicit_provider:
@@ -1987,28 +1987,12 @@ def health_check(
         "queue_length": queue_len,
         "max_workers": _MAX_WORKERS,
         "data_dir": str(DATA_DIR),
-        "skill_refresh": _skill_refresh_advice(),
+        "skill_refresh": "",  # 兼容旧客户端字段；MCP 已独立运行，不再提示安装/刷新 Skills。
         "checks": checks,
     }
     if url:
         payload["duration_secs"] = duration_secs
     return json.dumps(payload, ensure_ascii=False)
-
-
-def _skill_refresh_advice() -> str:
-    """插件/Skill 刷新提示（docs/05 #24）：server 与插件版本不一致时点名提示。"""
-    base = (
-        "MCP（启动命令 uvx videonote@latest）每次会话启动自动取 PyPI 最新版；"
-        "Skill/插件不自动更新。"
-        "工作流对不上时：`claude plugin disable videonote@videonote` "
-        "然后 `claude plugin install videonote@videonote`，再开新会话。"
-    )
-    plugin_version = _installed_plugin_version()
-    if plugin_version and plugin_version != _SERVER_VERSION:
-        return (
-            f"检测到插件版本 {plugin_version} 落后于 server {_SERVER_VERSION}：{base}"
-        )
-    return base
 
 
 _PREFLIGHT_MIN_DISK_GB = 1.0
@@ -2028,7 +2012,7 @@ def _preflight_provider(provider_id: Optional[str]) -> "tuple[bool, str]":
     """预检供应商：key 已填、模型可解析（与 generate_note 的解析逻辑一致）。"""
     pid = provider_id or _resolve_default_provider_id()
     if not pid:
-        return False, "无已填 key 的供应商：先 add_provider 再 `! videonote providers set <id> --api-key '...'`，或跑 /videonote-setup"
+        return False, "无已填 key 的供应商：在终端运行 `videonote setup` 配置，或用 `videonote providers set` 更新已有供应商；不要把 API key 发给 Agent"
     try:
         row = ProviderService.get_provider_by_id(pid)
     except Exception as exc:
