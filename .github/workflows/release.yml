@@ -64,14 +64,16 @@ jobs:
               "videonote_mcp/server.py",
               "app/services/note.py",
               "app/services/constant.py",
-              "skills/videonote/SKILL.md",
-              "skills/videonote/reference/tools.md",
           ]
           missing = [r for r in required if not any(n.endswith(r) for n in names)]
           if missing:
               print("::error::wheel 缺少文件: %s" % missing)
               sys.exit(1)
-          print("✅ wheel 内容完整（%d 个文件）" % len(names))
+          unexpected = [n for n in names if n.startswith(("skills/", "commands/"))]
+          if unexpected:
+              print("::error::wheel 不应再分发 Skills/命令: %s" % unexpected)
+              sys.exit(1)
+          print("✅ wheel 内容完整，且不含 Skills（%d 个文件）" % len(names))
           EOF
       # 依赖漂移护栏（v0.1.7 事故）：本地/CI 测试读 uv.lock（锁 1.x），但 wheel 发布后
       # uvx 按 pyproject 解析最新——mcp 2.0 移除 server.fastmcp 致启动即崩（ModuleNotFoundError）。

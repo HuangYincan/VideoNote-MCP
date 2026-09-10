@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "videonote",
-  "description": "VideoNote-Mcp：把视频链接变成 AI Markdown 笔记（Skill + MCP server），无需启动后端",
+  "description": "VideoNote-Mcp：视频链接 → AI Markdown 笔记（独立 MCP server），无需启动后端",
   "owner": {
     "name": "HuangYincan",
     "url": "https://github.com/HuangYincan"
@@ -10,9 +10,8 @@
     {
       "name": "videonote",
       "source": "./",
-      "description": "生成视频笔记的 Skill 与 MCP server（下载→转写→LLM→Markdown）",
-      "displayName": "VideoNote",
-      "skills": ["./skills/videonote"]
+      "description": "视频笔记 MCP server（下载→转写→可选 LLM→Markdown），不包含 Skills 或命令",
+      "displayName": "VideoNote"
     }
   ]
 }

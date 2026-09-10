@@ -1,8 +1,11 @@
 {
   "mcpServers": {
     "videonote": {
-      "command": "uv",
-      "args": ["run", "videonote"]
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "videonote@latest"
+      ]
     }
   }
 }
