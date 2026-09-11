@@ -94,6 +94,29 @@ uv --directory /absolute/path/to/VideoNote-MCP run --frozen videonote login douy
 
 If you set `VIDEONOTE_DATA_DIR` / `VIDEONOTE_CONFIG_DIR`, use identical values for the CLI and MCP server. Complete any secondary verification in the official browser window. An inconclusive follow-up check does not mean the saved Cookie is invalid; it alone is not a reason to scan again. See [Douyin troubleshooting (Chinese)](docs/04-使用手册.md#抖音登录扫码).
 
+## Agent guidance and standalone export templates
+
+Initialization instructions and `health_check` / `get_config` expose the official repository, installation/troubleshooting docs, and version-matching advice. Failed health checks include `next_steps`; they do not install dependencies or change configuration. If the MCP server cannot start, use this README and the client's startup logs first.
+
+**No Skills required; templates are included:** Math Note (English/Chinese LaTeX), English Article (LaTeX), and zju-lab (Typst), with their original licenses and companion files. There are still **10 tools**, and your MCP JSON does not need to change.
+
+```text
+process_media(action="template")                                          # list templates
+process_media(action="template", template_file="GUIDE.md")                 # offline guide
+process_media(action="template", template_id="latex-math-note",
+              template_file="main.tex")                                  # read source
+process_media(action="template", template_id="latex-math-note",
+              out_dir="<health_check.data_dir>/exports/my-note")           # copy to a NEW directory
+```
+
+Existing directories are never overwritten; writes are restricted to the data directory by default. Resources `videonote://templates` and `videonote://help/export` are also available, with the tool calls above as a fallback for clients without resource support.
+
+- SRT/VTT/JSON: deterministic export with `process_media(action="export")`.
+- LaTeX/Typst: the agent adapts the template using the existing note/transcript. **MCP does not automatically compile PDF.** Deliver a PDF only after successful compilation with the required compiler, fonts and packages; otherwise deliver complete source files. Bundled sample PDFs are not user-generated outputs.
+- See the [bundled export guide](videonote_mcp/templates/README.md). Credentials stay in the user's terminal or the platform's official page.
+
+> This describes the current source tree. Published packages may not include these changes yet: check `health_check.server_version` against release notes. Use the source configuration above for this implementation; do not assume `main/dev` docs apply to an older release.
+
 ## Docs
 
 Full installation / configuration / usage / env vars / updating / security docs now live in `docs/` (this README keeps just the overview):

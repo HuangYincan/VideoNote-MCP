@@ -1,0 +1,6 @@
+# Historical third-party templates are byte-for-byte restorations (see provenance.json).
+# Preserve original line endings/whitespace; project code and guides use normal checks.
+/videonote_mcp/templates/latex/** -text -whitespace
+/videonote_mcp/templates/typst/** -text -whitespace
+# Some sample PDFs have text-only headers; never treat their bodies as source diffs.
+/videonote_mcp/templates/**/*.pdf binary
