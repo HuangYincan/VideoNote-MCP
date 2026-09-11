@@ -1,0 +1,32 @@
+{
+  "source_commit": "f8ca8a818271058b1db44af65353d6aedcba5e03",
+  "source_directory": "skills/videonote/templates/",
+  "files": {
+    "latex/English Article/README.md": "d553a150fc077927b79f75b8a6d9a81eb4fe32aa4d5b35e4b784cabcac8a1972",
+    "latex/English Article/image-1.png": "3fd272a8e70bfc379dda5ebcde736fc803726e76669ad0f2d28fcce0a8645923",
+    "latex/English Article/image.png": "e74e8ae83ea7186b632e0cfcc924b30561704bd02b6a0bbc1c798b9e1e96cf64",
+    "latex/English Article/main.pdf": "27c20ab69bebb758da03aab680cd1a5eb03fb2b0fca8d9f032079211f6018e34",
+    "latex/English Article/main.tex": "976de63001d84864a606c656f18b1421700358e0a7bad602eb34b5ca887e98cb",
+    "latex/LICENSE-LPPL-1.3c.txt": "3d262cdf34dafa6955f703c634a8c238ec44109bc8dd6ef34fb7aa54809f7e66",
+    "latex/Math Note/MathNote.cls": "b36034ca3da8ebfb7698ca77ac395fa17937198775dc391c2946dbab62ea7342",
+    "latex/Math Note/MathNoteCN.cls": "65e71fae4bbb6539ca7d5af56d7de5fa5f523fd512c5f19e6777ae786de86225",
+    "latex/Math Note/README.md": "47048c0e7954800b60125c1fe6560b79663d03a488479c742f51f5e3b651f5d6",
+    "latex/Math Note/image.png": "3f22c04a6c23b56970e8e7af9ec953ec2f8d25d784cb7df22341a1f2fbac7cb1",
+    "latex/Math Note/main.pdf": "50719186323592080d905eb31616e0cc588f9f82a2b7b5223db86f141e0bf387",
+    "latex/Math Note/main.tex": "b507e8dd9636f6485febbcff1bdddf2e3ff6bc4e9da25bfb3130405239025812",
+    "latex/NOTICE.md": "6ee457fdc76c866bdbf51d7f6ef262ea664d9106bba4302b67ab0c936d2e4c93",
+    "typst/zju-lab/LICENSE": "3a2fafb1bc3a8820ef4047f21693838b0367c1a69a1d104409f64f5d7ae471fd",
+    "typst/zju-lab/README.md": "c04bbc99edf2f2abd27923fd50893987629c84182bbe878efc77304468f819a5",
+    "typst/zju-lab/demo.pdf": "06ec6b14b69ac9537266abd1886a5bed0a60a32cb3dfa27524f031484c8e7213",
+    "typst/zju-lab/demo.png": "659ab8a4e45337b142878766001c5ffd2a9c937957b51d31863fa32932a49b10",
+    "typst/zju-lab/demo.typ": "9d5fc9fadbe5fd873c570480408ec45ec6d4994ef21ee6627c77e5d6b9c08045",
+    "typst/zju-lab/example.pdf": "57f3a0f05de5dbdfc0d0fdbeeac2fe013e12792c01ae7973fb9c915f05829ad5",
+    "typst/zju-lab/example.png": "9966cffebb8d1216438fc5cb928aa41d29c501022892f7d948515c26d56e3405",
+    "typst/zju-lab/example.typ": "fdd0e056e345c0d3c8f76435aa75650a6388ca2efbe701bc6dc09196f7f5c863",
+    "typst/zju-lab/img/ZJU-logo.png": "9560688903a6b49fdc07de50ee7b03e811011ec8b43f08a79621599429973ade",
+    "typst/zju-lab/img/ZJU-name.png": "5d55aa4b9eba546ec32b3e2b9c3aece03c62f335edf11c50f87b7bf8b84a6271",
+    "typst/zju-lab/imports.typ": "00211ab0b01af18ca374b0c98e041342772a7e97061c0e65dad80ecc32266899",
+    "typst/zju-lab/template.typ": "46c348bbef77b3245b838a0d1026eb01a73dcd935256e7331dba828502de5cea",
+    "typst/zju-lab/works.bib": "84e016d9093ebb92a3afdb25204c3a2b2b56042a6a6a51bdfc228d13179e42f3"
+  }
+}

@@ -61,8 +61,9 @@ CLI 的 `setup` / `login` 可能写入真实配置，请在本机终端按需运
 
 - 发布包 MCP 配置：[`examples/mcp.example.json`](examples/mcp.example.json)。
 - 源码 MCP 配置：[`examples/mcp.source.example.json`](examples/mcp.source.example.json)。替换仓库绝对路径；登录 CLI 与 MCP 使用同一份源码和 `VIDEONOTE_DATA_DIR` / `VIDEONOTE_CONFIG_DIR`。
-- MCP 冒烟用官方 SDK 的 stdio 客户端初始化并校验 **10 个工具的精确名单**，参考 `.github/workflows/ci.yml`；只 import server 不能代替协议验证。
-- 分发相关改动还需 `uv build --no-sources`，检查 wheel/sdist 不包含 Skills/commands，并从 wheel 启动独立 stdio 冒烟。
+- MCP 冒烟用官方 SDK 的 stdio 客户端初始化并校验 **10 个工具的精确名单**，由 `.github/workflows/ci.yml` 调用 `tests/mcp_stdio_smoke.py`（名单在 `EXPECTED`）；同时验证来源说明、Resources、三套模板及许可证复制，只 import server 不能代替协议验证。
+- 历史第三方模板按 `videonote_mcp/templates/provenance.json` 校验原字节；`.gitattributes` 仅对恢复的原件关闭换行转换/空白检查，并将 PDF 标为二进制。不要格式化原件，新指南和代码仍走正常检查。
+- 分发相关改动还需 `uv build --no-sources`，检查 wheel/sdist 不包含 Skills/commands，但须含 `videonote_mcp/templates/` 及原许可证。执行 `uv run python tests/mcp_stdio_smoke.py --wheel dist/videonote-<版本>.whl`，从解包 wheel 在无关工作目录启动独立 stdio 冒烟，不可误用源码资源。
 
 ## 文档与提交自查
 

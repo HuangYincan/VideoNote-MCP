@@ -978,3 +978,13 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **分支维护**：CONTRIBUTING 明确仅 dev/main 为长期分支，临时分支合并后清理；交付时将 dev 快进同步到 main，不强推，不创建备份分支。CI 同时检查 Ruff F/I，并保留三版本矩阵和稳定的 Smoke test 汇总。
 - **验证**：1164 passed、1 skipped、10 subtests passed；Ruff F/I、diff/shell 检查、wheel/sdist 构建通过。隔离源码 JSON 启动和 wheel 的实际 MCP stdio 均返回精确 10 工具，health_check 通过；wheel/sdist 无 Skills/commands。未重新执行真实平台登录、媒体下载或 ASR。
 - **版本边界**：这是仓库整合，不是发版；版本号仍为 0.1.28，未发布 v0.2.1，未推送版本 tag。
+
+
+## 2026-09-11 — MCP 来源指引与独立排版模板（未发版）
+
+- **发现与排错**：初始化携带官方仓库、应用版本、简短用法及安全边界；`health_check` / `get_config` 返回 `project`，失败体检项给出 `code` / `next_steps`。提示核对安装版本与文档，避免把 main/dev 未发布修改当成当前已安装能力。
+- **恢复模板而非 Skills**：历史 Math Note、English Article、Typst zju-lab 的 26 个原文件完整恢复到 `videonote_mcp/templates/`，含配套图片/预览/许可证；provenance 记录历史来源与 SHA-256。新增离线导出指南，不恢复 Skill、命令或备份分支。
+- **不扩工具数量**：已有 `process_media` 新增 `action="template"`，支持列举、读取、复制；另提供模板和导出指南 Resources。仍为 10 个工具，无须调整 MCP JSON。复制仅写新的授权目录，不覆盖用户文件、不修改安装原件、不自动编译。
+- **多格式边界**：SRT/VTT/JSON 继续确定性导出；LaTeX/Typst 由 agent 复用底稿填充副本。PDF 需实际编译并核对，缺依赖时交付源码；中文字体组、原样例标签警告、Typst 缓存/首次联网要求均写入指南。
+- **验证与分发**：1197 passed、1 skipped、10 subtests passed；Ruff F/I、shell、源码/wheel 实际 MCP stdio 通过。wheel/sdist 含全部独立模板且无 Skills/commands，原文件哈希验证；CI 增加 wheel 冒烟。三套模板本机编译成功，中文 MathNoteCN 在副本采用已有 Fandol 字体后也编译成功。未执行真实媒体下载或 ASR。
+- **文档与版本**：同步 README 中英文、架构、预期效果、手册、索引、开发指南和架构图；仅仓库维护，版本仍为 0.1.28，未发版。
