@@ -14,7 +14,7 @@
 
 ---
 
-VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 **MCP Server**：给 agent 一个链接，自动完成 下载 → 语音转写 → 画面理解 → 弹幕/评论，**默认由当前对话里的 Agent 写笔记**（配置 LLM 仅当 Agent 无法看图时作为后备）。
+VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 **MCP Server**：给它一个链接，自动完成下载 → 语音转写 → 画面理解 → 弹幕/评论，并生成文字稿或笔记。
 
 仓库：[HuangYincan/VideoNote-MCP](https://github.com/HuangYincan/VideoNote-MCP)。
 
@@ -32,16 +32,16 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
 
 ## 快速开始
 
-**只配置 MCP 即可，不需要安装 Skills。**
+**配置 MCP 服务即可开始使用。**
 
 ```bash
 # 1) 注册独立 MCP（PyPI 已发布版本）
 claude mcp add --scope user videonote -- uvx videonote@latest
 
-# 2) 在终端配置转写 / 平台登录；默认由当前 Agent 写笔记，无需 LLM Key
+# 2) 在终端配置转写 / 平台登录；默认笔记流程无需 LLM Key
 uvx videonote@latest setup
 
-# 3) 重启或重连 MCP，然后发视频链接，请 Agent 输出文字稿或笔记
+# 3) 重启或重连 MCP，然后发送视频链接
 ```
 
 支持 JSON 的 MCP 客户端也可使用：
@@ -58,64 +58,19 @@ uvx videonote@latest setup
 }
 ```
 
-> 旧版 Skills 与 `/videonote-setup` 已移除，可通过 Git 历史查阅；LaTeX/Typst 模板已独立恢复到 `videonote_mcp/templates/`，不需要恢复 Skills。已经安装的旧插件或本地 Skill 不会自动删除；若改用独立 MCP，请手动停用旧插件/Skill，避免重复加载。源码修改需客户端直接指向源码，`uvx` 不会加载未发布的本地修复。
+> 如果之前配置过旧版插件，请先停用旧配置，再连接独立 MCP，避免同一个服务重复加载。
 
 > [!TIP]
 > 四种安装方式、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
 
-### 使用源码中的修复（未发布到 PyPI）
+## 导出格式
 
-`uvx videonote@latest` 运行已发布的包，不会读取本地修改。需要本仓库的抖音修复时，使用 [源码 JSON 配置](examples/mcp.source.example.json)，将 `/absolute/path/to/VideoNote-MCP` 替换为实际仓库绝对路径：
+- **字幕**：支持 SRT、VTT 和 JSON，适合保存时间轴或导入其他工具。
+- **Markdown 笔记**：可根据转写、画面和评论整理成便于阅读和继续编辑的笔记。
+- **LaTeX / Typst**：安装包附带 Math Note、English Article 和 zju-lab 等模板，可在 MCP 客户端中列出、读取或复制到新目录。
+- 模板复制不会覆盖已有目录。LaTeX / Typst 的编译器、字体和依赖需要在本机准备；MCP 负责提供素材与模板，不自动编译 PDF。
 
-```json
-{
-  "mcpServers": {
-    "videonote": {
-      "type": "stdio",
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/absolute/path/to/VideoNote-MCP",
-        "run",
-        "--frozen",
-        "videonote"
-      ]
-    }
-  }
-}
-```
-
-在终端使用同一份源码登录，然后重连 MCP：
-
-```bash
-uv --directory /absolute/path/to/VideoNote-MCP sync --frozen
-uv --directory /absolute/path/to/VideoNote-MCP run --frozen videonote login douyin
-```
-
-若设置了 `VIDEONOTE_DATA_DIR` / `VIDEONOTE_CONFIG_DIR`，CLI 与 MCP 必须使用相同值。手机确认后如有二次验证，请在打开的官方浏览器窗口内完成；附加校验未能确认不等于 Cookie 无效，不必仅因此反复扫码。详见[抖音登录排障](docs/04-使用手册.md#抖音登录扫码)。
-
-## Agent 指引与独立导出模板
-
-MCP 初始化说明与 `health_check` / `get_config` 会提供官方仓库、安装/排障文档入口及版本匹配提醒；失败体检项返回 `next_steps`。这些是建议，不会自动安装依赖或修改配置。MCP 尚未启动时，先按本 README 配置，再结合客户端启动日志排查。
-
-**无需 Skills，也保留排版模板**：Math Note（LaTeX 中英文）、English Article（LaTeX）、zju-lab（Typst）随安装包分发，含原始许可证与配套文件。仍为 **10 个工具**，不需要改 MCP JSON。
-
-```text
-process_media(action="template")                                          # 列模板
-process_media(action="template", template_file="GUIDE.md")                 # 离线导出指南
-process_media(action="template", template_id="latex-math-note",
-              template_file="main.tex")                                  # 读源码
-process_media(action="template", template_id="latex-math-note",
-              out_dir="<health_check.data_dir>/exports/my-note")           # 复制到新的目录
-```
-
-已有目录不覆盖；默认仅写数据目录内。也可读取 `videonote://templates` / `videonote://help/export` Resources，不支持 Resources 的客户端走以上工具即可。
-
-- SRT/VTT/JSON：`process_media(action="export")` 确定性导出。
-- LaTeX/Typst：Agent 复用已有底稿填模板；**MCP 不自动编译 PDF**。有编译器、字体及依赖且实际编译成功后才交付 PDF，否则交付完整源码。历史样例 PDF 不是用户生成的结果。
-- 详见[随包导出指南](videonote_mcp/templates/README.md)。凭证只在用户终端或官方页面输入。
-
-> 以上描述当前源码能力。已发布包可能尚未包含这些修改：先核对 `health_check.server_version` 与发布记录；需要当前代码时使用上面的源码配置，不把 `main/dev` 文档当作旧版本的功能保证。
+完整的导出说明见[使用手册](docs/04-使用手册.md)。
 
 ## 文档
 
@@ -130,19 +85,19 @@ process_media(action="template", template_id="latex-math-note",
 
 ## 真实案例
 
-两个端到端真实案例：一个走 **AGENT 直接生成**并输出 LaTeX mathnote PDF，一个走 **全自动 LLM 生成**产出便携 Markdown。
+两个端到端真实案例：一个由对话助手直接生成 LaTeX mathnote PDF，一个走 **全自动 LLM 生成**产出便携 Markdown。
 
 ### 案例一 · agent_direct + LaTeX mathnote（DeepSeek-V4 视频）
 
 > 来源：[【闪客】深入解读 DeepSeek V1~V4！男女老少都听得懂～](https://www.bilibili.com/video/BV1rpovBCEGH/?vd_source=2a93b97e35c51587de18c73fcf753191)
 
-一条视频 + 四类外部资料（论文 / 技术报告 / 公众号官宣 / 开源集合）→ **AGENT 直接生成**精修笔记，并输出 **LaTeX mathnote PDF**（中文楷体模板）：
+一条视频 + 四类外部资料（论文 / 技术报告 / 公众号官宣 / 开源集合）→ **对话助手直接生成**精修笔记，并输出 **LaTeX mathnote PDF**（中文楷体模板）：
 
 | Page1 | Page2 | Page3 |
 | :---: | :---: | :---: |
 | <img width="250" src="examples/agent-direct-deepseek-v4-mathnote/deepseek-v4-mathnote-page1.jpg"> | <img width="250" src="examples/agent-direct-deepseek-v4-mathnote/deepseek-v4-mathnote-page2.jpg"> | <img width="250" src="examples/agent-direct-deepseek-v4-mathnote/deepseek-v4-mathnote-page3.jpg"> |
 
-- 无 LLM key：Agent 读转写 + 帧图 + 评论自写笔记
+- 无 LLM key：根据转写、帧图和评论整理笔记
 - 多源交叉整合：视频 × 论文 × 技术报告 × 开源清单
 - 精修保留原稿：`note.md` / `note_original.md` 双份
 - LaTeX mathnote PDF：自适应修复字体缺失 / 断行溢出 / 引用去重
@@ -165,7 +120,7 @@ process_media(action="template", template_id="latex-math-note",
 
 <img src="assets/pipeline.svg" alt="VideoNote-Mcp 流水线地图" width="100%"/>
 
-实线为主流程：一条 `prepare_note_material` 出素材，由当前对话 Agent 写笔记；`generate_note` 是后备（Agent 无法看图时走配置 LLM）。虚线为可选能力（视频理解 / 弹幕评论）。各阶段细节见 [docs/02-架构设计.md](docs/02-架构设计.md)。
+实线为主流程：一条 `prepare_note_material` 出素材，由当前对话助手整理笔记；`generate_note` 是后备（对话助手无法看图时走配置 LLM）。虚线为可选能力（视频理解 / 弹幕评论）。各阶段细节见 [docs/02-架构设计.md](docs/02-架构设计.md)。
 
 ## 任务管理
 
@@ -201,24 +156,14 @@ flowchart TB
 
 - **学习备考**：端到端 + 视频理解 + 基于字幕的后续优化，把课程讲透。
 - **会议纪要**：`process_media(action="merge")` 合并分段录音 → `process_media(action="diarize")` 说话人分离 → `meeting_minutes` 风格。
-- **讲座精读**：端到端生成后，agent 基于完整字幕精修、按章节补齐细节。
+- **讲座精读**：端到端生成后，根据完整字幕精修、按章节补齐细节。
 - **视频赏析**：开启弹幕 + 评论整合，笔记含「观众观点」章节。
-- **默认路径**：一条链接用 `prepare_note_material`，由当前对话 Agent 写笔记；Agent 无法看图或用户要求配置 LLM 时才用 `generate_note`。只做媒体加工用 `process_media`。
+- **默认路径**：一条链接用 `prepare_note_material`，由当前对话助手整理笔记；无法看图或用户要求配置 LLM 时才用 `generate_note`。只做媒体加工用 `process_media`。
 - **真实案例**：完整案例过程记录见 [`examples`](examples)。
-
-## 维护与代码导航
-
-- **入口**：`videonote_mcp/server.py` 管 MCP 协议、权限与任务生命周期；`cli.py` 管终端初始化、登录和配置。密钥只在终端/官方页面填写。
-- **共享逻辑**：`task_artifacts.py` 统一读取任务状态和转写；`app/utils/local_paths.py` 统一路径规整/授权；`app/utils/media_source.py` 统一平台识别。`inspect.py` 的元信息预检和 `export/` 的确定性导出不依赖 MCP 入口、数据库或转写引擎初始化。
-- **处理流水线**：`app/services/note.py` 编排任务，`pipeline.py` 提供处理步骤；模板资源与渲染代码独立，第三方来源见 [VENDOR.md](VENDOR.md)。
-- **导出一致性**：CLI/MCP 优先读 `gen/transcript.json`，缓存缺失/损坏才退到 `result.json`；不改写原转写。已知失败/运行中任务不能导出；无可读状态的旧任务仍允许恢复导出，但不表示任务已成功。CLI 显式 `--out-dir` 可选任意目录，MCP 仍默认限制在数据目录内。
-
-开发者从[接手指南](docs/00-新手上路.md)和[架构设计](docs/02-架构设计.md)开始；不需要本机私有 Skill 或个人记忆。测试隔离运行数据，协议冒烟同时检查源码和 wheel，模板原件按哈希校验。具体命令见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 如何贡献
 
-- 长期分支仅保留 `dev`、`main`。临时功能分支 → PR → `dev`（CI 必须绿）→ PR → `main`；交付后将 `dev` 快进到 `main`，删除已合入的临时分支，保持两者最新。
-- 流程、分支命名与提交前自查见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+欢迎提交 Issue、改进建议和 Pull Request。开发环境、测试命令、分支策略与代码导航见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 致谢
 

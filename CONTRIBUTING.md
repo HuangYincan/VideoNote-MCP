@@ -65,6 +65,14 @@ CLI 的 `setup` / `login` 可能写入真实配置，请在本机终端按需运
 - 历史第三方模板按 `videonote_mcp/templates/provenance.json` 校验原字节；`.gitattributes` 仅对恢复的原件关闭换行转换/空白检查，并将 PDF 标为二进制。不要格式化原件，新指南和代码仍走正常检查。
 - 分发相关改动还需 `uv build --no-sources`，检查 wheel/sdist 不包含 Skills/commands，但须含 `videonote_mcp/templates/` 及原许可证。执行 `uv run python tests/mcp_stdio_smoke.py --wheel dist/videonote-<版本>.whl`，从解包 wheel 在无关工作目录启动独立 stdio 冒烟，不可误用源码资源。
 
+## 维护与代码导航
+
+- **入口**：`videonote_mcp/server.py` 管 MCP 协议、权限与任务生命周期；`cli.py` 管终端初始化、登录和配置。密钥只在终端或官方页面填写。
+- **共享逻辑**：`videonote_mcp/task_artifacts.py` 统一读取任务状态和转写；`app/utils/local_paths.py` 统一路径规整与授权；`app/utils/media_source.py` 统一平台识别。`inspect.py` 的元信息预检和 `export/` 的确定性导出不依赖 MCP 入口、数据库或转写引擎初始化。
+- **处理流水线**：`app/services/note.py` 编排任务，`pipeline.py` 提供处理步骤；模板资源与渲染代码独立，第三方来源见 [VENDOR.md](VENDOR.md)。
+- **导出一致性**：CLI/MCP 优先读 `gen/transcript.json`，缓存缺失或损坏才退到 `result.json`；不改写原转写。已知失败或运行中的任务不能导出；无可读状态的旧任务仍允许恢复导出，但不表示任务已成功。CLI 显式 `--out-dir` 可选任意目录，MCP 仍默认限制在数据目录内。
+- **文档入口**：[接手指南](docs/00-新手上路.md)说明首次接手和验证基线，[架构设计](docs/02-架构设计.md)说明模块边界，[VENDOR.md](VENDOR.md)记录上游来源与分叉，[docs/04-使用手册.md](docs/04-使用手册.md)记录面向用户的安装与使用方式。
+
 ## 模块改动准则
 
 贡献流程完全记录在仓库中，不需要个人记忆或私有开发 Skill。先读 `docs/00-新手上路.md`、架构文档，编辑 `app/` 前核对 `VENDOR.md`。
