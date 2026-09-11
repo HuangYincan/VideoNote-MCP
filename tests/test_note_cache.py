@@ -79,6 +79,13 @@ class IdentityTest(unittest.TestCase):
             "7123456789012345678",
         )
         self.assertEqual(
+            note_cache.derive_video_id(
+                "https://www.douyin.com/jingxuan?modal_id=7123456789012345678",
+                "douyin",
+            ),
+            "7123456789012345678",
+        )
+        self.assertEqual(
             note_cache.derive_video_id("https://www.tiktok.com/@u/video/7123456789012345678", "tiktok"),
             "7123456789012345678",
         )

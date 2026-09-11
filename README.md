@@ -63,12 +63,43 @@ uvx videonote@latest setup
 > [!TIP]
 > 四种安装方式、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
 
+### 使用源码中的修复（未发布到 PyPI）
+
+`uvx videonote@latest` 运行已发布的包，不会读取本地修改。需要本仓库的抖音修复时，使用 [源码 JSON 配置](examples/mcp.source.example.json)，将 `/absolute/path/to/VideoNote-MCP` 替换为实际仓库绝对路径：
+
+```json
+{
+  "mcpServers": {
+    "videonote": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/VideoNote-MCP",
+        "run",
+        "--frozen",
+        "videonote"
+      ]
+    }
+  }
+}
+```
+
+在终端使用同一份源码登录，然后重连 MCP：
+
+```bash
+uv --directory /absolute/path/to/VideoNote-MCP sync --frozen
+uv --directory /absolute/path/to/VideoNote-MCP run --frozen videonote login douyin
+```
+
+若设置了 `VIDEONOTE_DATA_DIR` / `VIDEONOTE_CONFIG_DIR`，CLI 与 MCP 必须使用相同值。手机确认后如有二次验证，请在打开的官方浏览器窗口内完成；附加校验未能确认不等于 Cookie 无效，不必仅因此反复扫码。详见[抖音登录排障](docs/04-使用手册.md#抖音登录扫码)。
+
 ## 文档
 
 安装 / 配置 / 使用 / 环境变量 / 更新 / 安全等完整说明已归档到 `docs/`（README 只保留概览）：
 
 - [文档索引](docs/00-文档索引.md)
-- [架构设计](docs/02-架构设计.md)
+- [架构设计](docs/02-架构设计.md) · [可编辑架构图](docs/videonote-mcp-architecture.excalidraw)
 - [使用手册](docs/04-使用手册.md) —— 安装（4 种方式）· 配置（setup 向导 + CLI）· 环境变量 · 更新 · 安全
 - [更新日志](docs/CHANGELOG.md)
 
@@ -154,7 +185,7 @@ flowchart TB
 
 ## 如何贡献
 
-- 功能分支 → PR → `dev`（CI 冒烟必须绿）；`dev` 稳定后 PR → `main`（保护分支，需 review）。
+- 长期分支仅保留 `dev`、`main`。临时功能分支 → PR → `dev`（CI 必须绿）→ PR → `main`；交付后将 `dev` 快进到 `main`，删除已合入的临时分支，保持两者最新。
 - 流程、分支命名与提交前自查见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 致谢

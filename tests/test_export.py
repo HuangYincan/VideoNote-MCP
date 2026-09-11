@@ -263,6 +263,10 @@ class PlatformHandoffTest(unittest.TestCase):
         self.assertEqual(pipeline.detect_platform("https://www.youtube.com/watch?v=abc"), "youtube")
         self.assertEqual(pipeline.detect_platform("https://v.douyin.com/x"), "douyin")
         self.assertEqual(
+            pipeline.detect_platform("https://www.iesdouyin.com/share/video/1"),
+            "douyin",
+        )
+        self.assertEqual(
             pipeline.detect_platform("https://www.xiaoyuzhoufm.com/episode/69b3b675772ac2295bfc01d0"),
             "xiaoyuzhou",
         )

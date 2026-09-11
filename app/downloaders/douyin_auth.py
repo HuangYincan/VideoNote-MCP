@@ -43,12 +43,13 @@ _WEB_HEADERS = {
     "Referer": f"{SSO}/",
 }
 
-# 扫码状态（归一后）：1 等待 / 2 已扫待确认 / 3 成功 / 5 过期
+# 扫码状态（归一后）：1 等待 / 2 已扫待确认 / 3 已确认 / 5 过期 / verification_required 二次验证
 # SSO 用数字；passport/web 用 new / scanned / confirmed / expired
 QR_WAIT = "1"
 QR_SCANNED = "2"
 QR_SUCCESS = "3"
 QR_EXPIRED = "5"
+QR_VERIFY = "verification_required"
 
 _QR_HOSTS = ("douyin.com", "snssdk.com", "amemv.com", "iesdouyin.com")
 _REDIRECT_HOSTS = ("douyin.com", "snssdk.com")
@@ -131,12 +132,25 @@ def _is_html_response(resp) -> bool:
     return "html" in ct.lower() or head.startswith("<!doctype") or head.startswith("<html")
 
 
+def qr_requires_verification(payload: dict) -> bool:
+    """只识别已实测的身份验证错误 2046，不把普通网络/风控错误当成登录成功。"""
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    return any(
+        isinstance(item, dict) and item.get("error_code") in (2046, "2046")
+        for item in (payload, data)
+    )
+
+
 def _map_qr_status(data: dict) -> str:
     """把 SSO / passport data.status / redirect_url 归一成 QR_* 常量。
 
     旧 SSO 数字：1 等待 / 2 已扫 / 3·4 成功（4 常带 redirect_url）/ 5 过期。
     passport/web：new / scanned / confirmed；4 / refused / expired 是失效刷新。
     """
+    if qr_requires_verification(data):
+        return QR_VERIFY
     redirect = (data.get("redirect_url") or "") if isinstance(data, dict) else ""
     raw = ""
     if isinstance(data, dict):
@@ -259,7 +273,7 @@ class DouyinAuth:
         if not isinstance(data, dict):
             data = {}
         return {
-            "status": _map_qr_status(data),
+            "status": QR_VERIFY if qr_requires_verification(payload) else _map_qr_status(data),
             "redirect_url": data.get("redirect_url") or "",
         }
 
@@ -289,7 +303,11 @@ class DouyinAuth:
 
 
 def verify_douyin_login(cookie_mgr: Optional[CookieConfigManager] = None) -> str:
-    """探测已存登录态。空串=成功，否则是错误信息（不含 cookie 明文）。"""
+    """附加校验：空串=已确认；非空区分认证拒绝与无法确认，不含凭证明文。
+
+    这是独立 HTTP 会话，不是刚扫码的浏览器。HTML、风控或未知 JSON 只能
+    说明探测未能确认，不能据此把浏览器登录判成失败，也不能要求重新扫码。
+    """
     mgr = cookie_mgr or CookieConfigManager()
     cookies = parse_cookie_string(mgr.get("douyin") or "")
     if not has_sessionid(cookies):
@@ -303,22 +321,34 @@ def verify_douyin_login(cookie_mgr: Optional[CookieConfigManager] = None) -> str
                 except Exception:  # noqa: BLE001
                     session.cookies.set(name, value)
             resp = session.get(ACCOUNT_INFO, params={"aid": "6383"}, timeout=15)
-        if resp.status_code in (401, 403):
+        if resp.status_code == 401:
             return "登录态无效或已过期，请重新 `videonote login douyin`"
         if resp.status_code != 200:
-            return f"HTTP {resp.status_code}"
+            return f"未能确认登录态：校验接口返回 HTTP {resp.status_code}"
         try:
             body = resp.json()
         except ValueError:
-            body = {}
+            return "未能确认登录态：校验接口未返回 JSON（可能受到风控限制）"
         data = body.get("data") if isinstance(body, dict) else None
+        # 错误码优先于 message/账号字段；普通接口 success 也不是认证成功证据。
+        for item in (body, data):
+            if not isinstance(item, dict):
+                continue
+            for key in ("error_code", "status_code"):
+                value = item.get(key)
+                if value in (None, 0, "0", ""):
+                    continue
+                # 只回显短数字错误码，不输出响应正文、description 或任意服务端字符串。
+                code = str(value) if isinstance(value, (int, str)) and not isinstance(value, bool) else ""
+                if re.fullmatch(r"-?[0-9]{1,6}", code):
+                    return f"未能确认登录态：校验接口返回 {key}={code}"
+                return "未能确认登录态：校验接口返回异常状态"
         if isinstance(data, dict) and (
             data.get("user_id") or data.get("uid") or data.get("name") or data.get("uniq_id")
         ):
             return ""
-        if isinstance(body, dict) and body.get("message") == "success" and data:
-            return ""
-        return "登录态无效或未能确认，请重新 `videonote login douyin`"
+        return "未能确认登录态：校验响应不含可识别的账号信息"
     except Exception as exc:  # noqa: BLE001
-        logger.info("抖音登录探测失败: %s", sanitize_error_text(exc))
-        return "请求失败（网络？检查 `videonote proxy list`）"
+        # 网络异常可能包含 Cookie/响应片段，只记录类型。
+        logger.info("抖音登录探测失败（%s）", type(exc).__name__)
+        return "未能确认登录态：请求失败（网络？检查 `videonote proxy list`）"
