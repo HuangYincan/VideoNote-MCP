@@ -40,6 +40,7 @@ from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.constant import get_downloader as _new_downloader
 from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import _transcribers, get_transcriber
+from app.utils.media_source import detect_platform as detect_platform
 from app.utils.path_helper import get_data_dir
 from app.utils.video_reader import VideoReader
 
@@ -47,54 +48,6 @@ logger = logging.getLogger(__name__)
 
 # 缺省统一落数据目录（#127 B2）：与 task_manifest.get_note_dir 同源，避免 CWD 相对分裂
 NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", str(Path(get_data_dir()) / "note_results")))
-
-_PLATFORM_HINTS = [
-    ("bilibili", ("bilibili.com", "b23.tv")),
-    ("youtube", ("youtube.com", "youtu.be")),
-    ("douyin", ("douyin.com", "iesdouyin.com")),
-    ("tiktok", ("tiktok.com",)),
-    ("kuaishou", ("kuaishou.com", "gifshow.com")),
-    ("xiaoyuzhou", ("xiaoyuzhoufm.com", "xiaoyuzhou.fm")),
-    ("xiaohongshu", ("xiaohongshu.com", "xhslink.com", "xhslink.cn", "rednote.com")),
-]
-
-
-# ---------------- 平台 / 引擎 ----------------
-
-def _match_platform_host(u: str) -> Optional[str]:
-    """基于 host 精确匹配平台（含子域名/端口/无协议 URL）。
-
-    旧的子串匹配（`"bilibili.com" in u`）会把 evilbilibili.com、bilibili.com.evil.com
-    误判成 bilibili；这里按 host == 目标 或 host 以 `.目标` 结尾判断。
-    """
-    from urllib.parse import urlparse
-
-    s = u if "://" in u else f"http://{u}"
-    try:
-        host = urlparse(s).netloc.lower().split(":")[0].rstrip(".")
-    except Exception:
-        return None
-    if not host:
-        return None
-    for platform, needles in _PLATFORM_HINTS:
-        if any(host == n or host.endswith("." + n) for n in needles):
-            return platform
-    return None
-
-
-def detect_platform(url: str) -> str:
-    """从 URL / 本地路径识别平台（与 server._detect_platform 一致）。
-
-    未知 URL 返回 `"generic"`——走 yt-dlp 通用提取器（覆盖 1800+ 站点，含 GenericIE 兜底）。
-    只有 yt-dlp 也解析失败时，调用方才用 handoff_result 把任务交给 Agent 接手。
-    空 url 仍 raise ValueError。
-    """
-    u = (url or "").strip().lower()
-    if not u:
-        raise ValueError("url 为空")
-    if u.startswith(("file:", "/", "./", "../", "~/")) or Path(u).expanduser().exists():
-        return "local"
-    return _match_platform_host(u) or "generic"
 
 
 def handoff_result(url: str, reason: str = "") -> dict:

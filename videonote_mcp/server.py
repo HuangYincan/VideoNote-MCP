@@ -40,6 +40,8 @@ from videonote_mcp.guidance import (
     add_next_steps,
     project_info,
 )
+from videonote_mcp.task_artifacts import read_task_status, read_transcript
+from videonote_mcp.task_artifacts import validate_task_id as _validate_task_id
 
 DATA_DIR = setup_environment()
 
@@ -111,6 +113,8 @@ from app.services.note import NOTE_OUTPUT_DIR, NoteGenerator
 from app.services.provider import ProviderService
 from app.services.transcriber_config_manager import TranscriberConfigManager
 from app.transcriber import model_download_state as dl_state
+from app.utils.local_paths import LocalPathPolicy
+from app.utils.local_paths import coerce_local_path as _coerce_local_path
 from app.utils.logger import get_logger
 from app.utils.model_status import check_whisper_model_exists
 from app.utils.task_manifest import (
@@ -384,16 +388,7 @@ def _read_task_status(task_id: str) -> str:
     get_task_transcript 的两处「读真实状态」共用——此前 segment_range 非法时硬编码
     `status:"UNKNOWN"`，SUCCESS 任务被误判成未知。
     """
-    try:
-        st = json.loads(
-            (NOTE_OUTPUT_DIR / str(task_id) / "status.json").read_text(encoding="utf-8")
-        )
-        if not isinstance(st, dict):
-            return "UNKNOWN"
-        status = st.get("status")
-        return status if isinstance(status, str) and status.strip() else "UNKNOWN"
-    except Exception:
-        return "UNKNOWN"
+    return read_task_status(NOTE_OUTPUT_DIR / task_id)
 
 
 def _valid_status_data(data) -> Optional[dict]:
@@ -786,25 +781,6 @@ def _index_step_task(task_id: str, kind: str, title: str = "") -> None:
         raise
 
 
-def _coerce_local_path(p: str) -> Path:
-    """把 file:// URI 或普通路径规整为本地 Path（expanduser 展开 ~）。
-
-    必须 unquote：Path.as_uri() 会把空格/非 ASCII 编码成 %20/百分号，不解码
-    Path.exists() 永远 False（含空格/中文的文件会被静默判为不存在）。
-    Windows `file:///C:/x` 的 urlparse.path 是 `/C:/x`，要去掉多余前导斜杠。
-    """
-    s = str(p or "").strip()
-    if s.startswith("file://"):
-        from urllib.parse import unquote, urlparse
-
-        parsed = urlparse(s)
-        s = unquote(parsed.path or "")
-        # Windows：/C:/Users/... → C:/Users/...
-        if os.name == "nt" and len(s) >= 3 and s[0] == "/" and s[2] == ":":
-            s = s[1:]
-    return Path(s).expanduser()
-
-
 def _local_video_exists(video_url: str) -> bool:
     """本地路径 / file:// 是否是存在的文件（generate_note / prepare_note_material 共用）。
 
@@ -835,28 +811,16 @@ def _destructive_cleanup_allowed() -> bool:
     return env_bool("VIDEONOTE_ALLOW_DESTRUCTIVE_CLEANUP", False)
 
 
+def _local_path_policy() -> LocalPathPolicy:
+    return LocalPathPolicy(DATA_DIR, allow_external=_external_paths_allowed())
+
+
 def _inside_data_dir(p: Path) -> bool:
-    """路径是否在数据目录内。resolve 跟随符号链接：目录内软链到外部的路径算外。"""
-    try:
-        return p.resolve().is_relative_to(DATA_DIR.resolve())
-    except OSError:
-        return False
+    return _local_path_policy().contains(p)
 
 
 def _guard_data_boundary(p: Path, what: str) -> None:
-    """数据目录边界校验（#142 A1）：目录外路径默认拒绝，开关放行后仅告警。
-
-    与 SSRF 守卫同构（默认收紧、显式放行）；报错消息带放行开关名，Agent 可转告用户。
-    """
-    if _external_paths_allowed():
-        return
-    if not _inside_data_dir(p):
-        raise ValueError(
-            f"{what} 必须在数据目录内（数据目录: {DATA_DIR}；收到: {p}）。"
-            "为防止本地文件被误读/误写，默认只允许数据目录内的路径；"
-            "确实需要时可设置 VIDEONOTE_ALLOW_EXTERNAL_PATHS=1"
-            "（或插件设置 allow_external_paths）后重启 MCP"
-        )
+    _local_path_policy().guard(p, what)
 
 
 def _guard_remote_url(url: str, platform: str) -> None:
@@ -916,22 +880,6 @@ def _detect_platform(url: str) -> str:
 
 
 _TRANSCRIPT_DEFAULT_SEGMENTS = 50
-
-_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-
-
-def _validate_task_id(task_id: str) -> str:
-    """校验 task_id 是安全 token，防路径穿越。
-
-    task_id 会被直接拼进 `NOTE_OUTPUT_DIR / task_id` 路径，`../evil` 之类
-    可穿透数据目录读取/写入外部文件。server 生成的 task_id 是 uuid4 hex；
-    这里收紧到字母数字 + `-`/`_`。
-    """
-    tid = str(task_id or "").strip()
-    if not _TASK_ID_RE.fullmatch(tid):
-        raise ValueError(f"非法 task_id（只允许字母数字/下划线/连字符，最长 64）: {task_id!r}")
-    return tid
-
 
 # ---------- MCP 工具 ----------
 
@@ -1371,26 +1319,13 @@ def _load_task_transcript(task_id: str) -> Optional[dict]:
     LLM 总结前），FAILED 任务转写也常留档——docstring 承诺「未成功返回 None」，
     否则 Agent 把失败任务读到的转写当成功产出去向用户汇报。
     """
-    task_dir = NOTE_OUTPUT_DIR / str(task_id)
-    try:
-        status = json.loads((task_dir / "status.json").read_text(encoding="utf-8")).get("status", "")
-    except Exception:
-        status = ""
-    if status != "SUCCESS":
+    task_id = _validate_task_id(task_id)
+    if _read_task_status(task_id) != "SUCCESS":
         return None
-    cache = task_dir / "gen" / "transcript.json"
-    if cache.exists():
-        try:
-            return json.loads(cache.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning(f"读取转写缓存失败 task_id={task_id}: {sanitize_error_text(e)}")
-    result_file = task_dir / "result.json"
-    if result_file.exists():
-        try:
-            return json.loads(result_file.read_text(encoding="utf-8")).get("transcript")
-        except Exception:
-            return None
-    return None
+    result = read_transcript(NOTE_OUTPUT_DIR / task_id)
+    if result.cache_error:
+        logger.warning("%s", sanitize_error_text(result.cache_error))
+    return result.transcript
 
 
 @mcp.resource("videonote://templates", title="内置导出模板", mime_type="application/json")
@@ -1924,7 +1859,7 @@ def health_check(
         try:
             from app.services.inspect import inspect_video as _inspect
 
-            info = _inspect(url, platform=platform)
+            info = _inspect(url, platform=platform, local_paths=_local_path_policy())
             if info.get("ok"):
                 entries = info.get("entries") or []
                 if entries:
@@ -2091,7 +2026,7 @@ def inspect_video(url: str, platform: Optional[str] = None) -> str:
     `prepare_note_material`（默认：当前 Agent 写笔记）或 `generate_note`（后备 LLM）。
     只要一集 → 用对应 `entries[].url`。要全出：默认每集 `prepare_note_material`；
     仅当当前 Agent 无法看图或用户要求配置 LLM 时才一条 `batch_generate_notes`。
-    互相独立的链接各开 subagent。
+    独立链接可逐项提交；并行方式由客户端按用户授权和任务容量安排。
 
     返回 {ok, platform, kind: single|multi, title, video_id, current_p?,
     total, truncated, entries:[{p, title, duration, url, video_id}]}。
@@ -2099,7 +2034,7 @@ def inspect_video(url: str, platform: Optional[str] = None) -> str:
     """
     from app.services.inspect import inspect_video as _inspect
 
-    return json.dumps(_inspect(url, platform=platform), ensure_ascii=False)
+    return json.dumps(_inspect(url, platform=platform, local_paths=_local_path_policy()), ensure_ascii=False)
 
 
 @mcp.tool()
@@ -2231,7 +2166,7 @@ def batch_generate_notes(
     # 同口径（提交 0 条，仅展开）；负数钳到 0。
     max_entries = _coerce_int(max_entries if max_entries is not None else 10, 10, clamp_min=0)
     max_entries = min(max_entries, 50)  # 上界钳制
-    parsed = _inspect(video_url, platform=platform)
+    parsed = _inspect(video_url, platform=platform, local_paths=_local_path_policy())
     if not parsed.get("ok"):
         # inspect 失败归一为批量形状（#121 C6）：此前直接透传 inspect 的
         # {ok:false, platform, kind, error}——Agent 拿不到 total/submitted/tasks
@@ -2422,22 +2357,10 @@ def _export_transcript(
             },
             ensure_ascii=False,
         )
-    # gen/transcript.json 是转写规范来源（#122 A2），result.json 兜底——
-    # 与 _load_task_transcript / CLI export 同口径（#127 A3，此前 server 出口反了）
-    cache = task_dir / "gen" / "transcript.json"
-    transcript = None
-    if cache.exists():
-        try:
-            transcript = json.loads(cache.read_text(encoding="utf-8"))
-        except Exception:
-            transcript = None
-    if transcript is None:
-        result_json = task_dir / "result.json"
-        if result_json.exists():
-            try:
-                transcript = json.loads(result_json.read_text(encoding="utf-8")).get("transcript")
-            except Exception:
-                transcript = None
+    result = read_transcript(task_dir)
+    if result.cache_error:
+        logger.warning("%s", sanitize_error_text(result.cache_error))
+    transcript = result.transcript
     if transcript is None:
         return json.dumps(
             {
@@ -2560,6 +2483,8 @@ def process_media(
     - action="export"（默认）：把已完成任务的转写导出为纯格式文件（SRT/VTT/JSON，
       确定性机械渲染，不调 LLM）。需 task_id；formats 可选（srt/vtt/json，缺省取
       setup「导出格式默认」）；out_dir 可选（缺省 note_results/{task_id}/gen/）。
+      优先规范转写缓存，缺失/损坏回退 result.json，不改写原缓存；已知失败/运行中拒绝，
+      UNKNOWN 旧任务可恢复导出但不等于 SUCCESS；转写 Resource 仍要求 SUCCESS。
       返回 {ok, task_id, formats: {fmt: "file://绝对路径"}, errors: {}}，供 Agent 直接 Read；
     - action="template"：内置 LaTeX/Typst 模板（非 Skills）。不传 template_id 列目录；
       传 ID 列配套文件；template_file 读清单中的文本文件，或不传 ID 用 "GUIDE.md" 读离线导出指南。
