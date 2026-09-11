@@ -22,8 +22,8 @@
 | `app/exceptions/` | note, provider, **task**（biz_exception **已删除** 2026-08-18 #134：全仓零引用死类；**不含** exception_handlers —— 仅 FastAPI 用） |
 | `app/decorators/` | timeit |
 | `app/validators/` | **整个子包已删除**（2026-08-18 #134：video_url_validator 全仓零引用死模块，上游同步时勿重引入） |
-| `app/services/` | note, constant, provider, cookie_manager, transcriber_config_manager, proxy_config_manager, **pipeline**, **merge**, **diarization**, **note_cache**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用；**task_serial_executor 已删** —— 2026-08-17 全仓零引用死模块，MCP 用自己的线程池） |
-| `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, logger, path_helper, url_parser, openai_client, env_checker, **task_manifest**, **json_store**, **url_safety** + **本仓库新增** `model_status.py`（见下）（status_code **已删除** 2026-08-17 #132 C10：全库零引用死模块；**不含** response / export / ppt_generator / minio_client） |
+| `app/services/` | note, constant, provider, cookie_manager, transcriber_config_manager, proxy_config_manager, **pipeline**, **inspect**, **merge**, **diarization**, **note_cache**（**不含** chat_service / chat_tools / vector_store —— 本仓库不做 RAG；**不含** model / model_fallback —— 仅 routers 使用；**task_serial_executor 已删** —— 2026-08-17 全仓零引用死模块，MCP 用自己的线程池） |
+| `app/utils/` | note_helper, video_helper, video_reader, screenshot_marker, logger, path_helper, url_parser, openai_client, env_checker, **task_manifest**, **json_store**, **url_safety**, **local_paths**, **media_source** + **本仓库新增** `model_status.py`（见下）（status_code **已删除** 2026-08-17 #132 C10：全库零引用死模块；**不含** response / export / ppt_generator / minio_client） |
 | `videonote_mcp/export/` | SRT/VTT/JSON 确定性导出（不在上游 `utils/export.py`） |
 | `events/` | **整个子包已删除**（2026-08-17，#130 B2）：signals（blinker `transcription_finished`）+ handlers（转写完成后临时文件清理）是死链——4 个转写器 `on_finish` 调用全部注释、`transcription_finished` 永不触发，server 的 register_handler 纯空转。整链（server 注册点 + events 包 + 4 个 on_finish 方法）已删；若上游恢复该机制需重新引入 |
 
@@ -111,3 +111,10 @@ git -C /path/to/BiliNote rev-parse HEAD
   **GPL-3.0** 许可 —— 与本仓库 MIT 混合分发。保留文件头出处声明；整体分发时如需
   规避 GPL 传染，可替换为纯 Python 实现或仅在独立进程调用。
 - 其余 `app/` vendored 代码按上游 BiliNote 许可分发。
+
+## 共享模块解耦分叉（2026-09-11）
+
+- `app/utils/media_source.py` 从 `services/pipeline.py` 提取平台检测；pipeline 保留 `detect_platform` 兼容导入。`services/inspect.py` 不再导入完整流水线或反向导入 MCP 入口，元信息预检不初始化 DB/转写引擎。
+- `app/utils/local_paths.py` 为本仓库新增的路径规整与 `LocalPathPolicy`；MCP 显式注入数据根/外部路径授权，独立预检可从环境取得相同默认策略。软链解析不绕过目录门禁，不能等同于跨进程 TOCTOU 防护。
+- `videonote_mcp/task_artifacts.py` 是自有共享读取器，不属于上游；MCP/CLI/Resource 统一缓存优先和回退规则，但保留各入口的状态准入。`export/exporter.py` 不再为默认输出路径导入 `app.services.note`，改从 task_manifest 在调用时读取目录。
+- 同步上游时保留上述依赖方向和权限语义；`tests/test_core_boundaries.py` 对隔离导入、入口回退一致性及目录访问规则做回归。未改动第三方模板原件或凭证逻辑。

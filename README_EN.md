@@ -59,7 +59,7 @@ For JSON-based MCP clients:
 }
 ```
 
-> Legacy Skills, templates and `/videonote-setup` have been removed from normal branches and remain recoverable in Git history. Previously installed plugins or local Skills are not automatically removed; disable the old integration when switching to standalone MCP to avoid duplicate loading. Point your client at a source checkout to test unpublished fixes: `uvx` does not load local changes.
+> Legacy Skills and `/videonote-setup` have been removed and remain available in Git history. LaTeX/Typst templates have been restored independently under `videonote_mcp/templates/`; restoring Skills is not required. Previously installed plugins or local Skills are not automatically removed; disable the old integration when switching to standalone MCP to avoid duplicate loading. Point your client at a source checkout to test unpublished fixes: `uvx` does not load local changes.
 
 > All four install methods, configuration details, updating and security are in [docs/04-使用手册.md](docs/04-使用手册.md).
 
@@ -206,6 +206,15 @@ flowchart TB
 - **Video appreciation**: enable danmaku + comment integration for an "Audience viewpoints" section.
 - **Default path**: one link uses `prepare_note_material`, and the current conversation agent writes the note; use `generate_note` only when the agent cannot see images or the user asks for the configured LLM. Use `process_media` for media operations (merge / diarize / export).
 - **Real example**: full run records for both cases live in [`examples`](examples).
+
+## Maintenance and code navigation
+
+- **Entry points:** `videonote_mcp/server.py` owns MCP transport, permissions and task lifecycle; `cli.py` owns terminal setup, login and configuration. Credentials stay in the terminal or official login page.
+- **Shared logic:** `task_artifacts.py` reads task status/transcripts; `app/utils/local_paths.py` normalizes paths and enforces access policy; `app/utils/media_source.py` detects platforms. Metadata inspection in `inspect.py` and deterministic `export/` do not require MCP, database or transcription-engine initialization.
+- **Processing pipeline:** `app/services/note.py` orchestrates tasks and `pipeline.py` provides processing steps. Template resources stay separate from rendering code; see [VENDOR.md](VENDOR.md) for third-party provenance.
+- **Consistent exports:** CLI/MCP prefer `gen/transcript.json`, falling back to `result.json` when the cache is missing or unusable, without overwriting the original transcript. Known failed/running tasks cannot be exported. Legacy tasks with unreadable/missing status can still be recovered by export, but this does not mark them successful. Explicit CLI `--out-dir` allows arbitrary destinations; MCP remains data-directory-restricted by default.
+
+Start with the [handoff guide](docs/00-新手上路.md) and [architecture](docs/02-架构设计.md). No private local Skill or personal memory is required. Tests isolate runtime data, protocol smoke tests cover both source and wheel, and original template bytes are hash-checked. Commands are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How to Contribute
 

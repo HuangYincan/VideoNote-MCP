@@ -58,7 +58,7 @@ uvx videonote@latest setup
 }
 ```
 
-> 旧版 Skills、模板和 `/videonote-setup` 已从正常分支移除，需要时可通过 Git 提交历史恢复。已经安装的旧插件或本地 Skill 不会自动删除；若改用独立 MCP，请手动停用旧插件/Skill，避免重复加载。源码修改需客户端直接指向源码，`uvx` 不会加载未发布的本地修复。
+> 旧版 Skills 与 `/videonote-setup` 已移除，可通过 Git 历史查阅；LaTeX/Typst 模板已独立恢复到 `videonote_mcp/templates/`，不需要恢复 Skills。已经安装的旧插件或本地 Skill 不会自动删除；若改用独立 MCP，请手动停用旧插件/Skill，避免重复加载。源码修改需客户端直接指向源码，`uvx` 不会加载未发布的本地修复。
 
 > [!TIP]
 > 四种安装方式、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
@@ -205,6 +205,15 @@ flowchart TB
 - **视频赏析**：开启弹幕 + 评论整合，笔记含「观众观点」章节。
 - **默认路径**：一条链接用 `prepare_note_material`，由当前对话 Agent 写笔记；Agent 无法看图或用户要求配置 LLM 时才用 `generate_note`。只做媒体加工用 `process_media`。
 - **真实案例**：完整案例过程记录见 [`examples`](examples)。
+
+## 维护与代码导航
+
+- **入口**：`videonote_mcp/server.py` 管 MCP 协议、权限与任务生命周期；`cli.py` 管终端初始化、登录和配置。密钥只在终端/官方页面填写。
+- **共享逻辑**：`task_artifacts.py` 统一读取任务状态和转写；`app/utils/local_paths.py` 统一路径规整/授权；`app/utils/media_source.py` 统一平台识别。`inspect.py` 的元信息预检和 `export/` 的确定性导出不依赖 MCP 入口、数据库或转写引擎初始化。
+- **处理流水线**：`app/services/note.py` 编排任务，`pipeline.py` 提供处理步骤；模板资源与渲染代码独立，第三方来源见 [VENDOR.md](VENDOR.md)。
+- **导出一致性**：CLI/MCP 优先读 `gen/transcript.json`，缓存缺失/损坏才退到 `result.json`；不改写原转写。已知失败/运行中任务不能导出；无可读状态的旧任务仍允许恢复导出，但不表示任务已成功。CLI 显式 `--out-dir` 可选任意目录，MCP 仍默认限制在数据目录内。
+
+开发者从[接手指南](docs/00-新手上路.md)和[架构设计](docs/02-架构设计.md)开始；不需要本机私有 Skill 或个人记忆。测试隔离运行数据，协议冒烟同时检查源码和 wheel，模板原件按哈希校验。具体命令见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 如何贡献
 

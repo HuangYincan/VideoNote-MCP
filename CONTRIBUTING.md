@@ -65,6 +65,17 @@ CLI 的 `setup` / `login` 可能写入真实配置，请在本机终端按需运
 - 历史第三方模板按 `videonote_mcp/templates/provenance.json` 校验原字节；`.gitattributes` 仅对恢复的原件关闭换行转换/空白检查，并将 PDF 标为二进制。不要格式化原件，新指南和代码仍走正常检查。
 - 分发相关改动还需 `uv build --no-sources`，检查 wheel/sdist 不包含 Skills/commands，但须含 `videonote_mcp/templates/` 及原许可证。执行 `uv run python tests/mcp_stdio_smoke.py --wheel dist/videonote-<版本>.whl`，从解包 wheel 在无关工作目录启动独立 stdio 冒烟，不可误用源码资源。
 
+## 模块改动准则
+
+贡献流程完全记录在仓库中，不需要个人记忆或私有开发 Skill。先读 `docs/00-新手上路.md`、架构文档，编辑 `app/` 前核对 `VENDOR.md`。
+
+- 先找多处调用的真实共享逻辑，再提取模块；不要仅按行数拆文件，也不要让底层模块反向 import MCP/CLI 入口。
+- 路径规整与权限判定用 `app/utils/local_paths.py`；平台检测用 `app/utils/media_source.py`。任务状态/转写读取用 `videonote_mcp/task_artifacts.py`，调用方自行执行状态准入和结果展示。
+- 文件导出不得为了拿默认目录而 import 整个笔记流水线；模型/DB 初始化只留在需要它们的路径。
+- 回归先证明原问题，再验证共享模块与所有入口。重点保留未知状态旧任务导出、失败任务拒绝、MCP/CLI 目录授权差异和缓存原件不被覆盖的契约。
+- 依赖解耦用 `tests/test_core_boundaries.py` 的隔离子进程验证；同一 pytest 进程中模块可能已被其它测试导入，不能仅凭 `sys.modules` 判定无启动副作用。模板原件保持字节不变。
+- CLI 和任务生命周期的大模块仍可逐步整理；跨进程 TOCTOU、平台真实登录/下载/ASR 等未验证范围要明确保留，不宣称全库问题已解决。
+
 ## 文档与提交自查
 
 - 修改行为时同步 README 中英文版、`docs/04-使用手册.md` 和 MCP 工具描述。

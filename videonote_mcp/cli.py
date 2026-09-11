@@ -11,7 +11,6 @@ import argparse
 import builtins
 import json
 import os
-import re
 import sys
 from pathlib import Path
 from typing import List
@@ -23,6 +22,11 @@ from videonote_mcp.config import (
     resolve_int_config,
     set_app_config,
     setup_environment,
+)
+from videonote_mcp.task_artifacts import (
+    read_task_status,
+    read_transcript,
+    validate_task_id,
 )
 
 # 提前初始化运行时环境（数据目录、DB、输出目录）——必须在 import provider_probe / app.*
@@ -50,6 +54,7 @@ from app.db.provider_dao import seed_default_providers
 from app.services.provider import ProviderService
 from app.services.proxy_config_manager import ProxyConfigManager
 from app.services.transcriber_config_manager import TranscriberConfigManager
+from app.utils.local_paths import coerce_local_path
 from app.utils.url_safety import sanitize_url
 
 init_db()
@@ -2420,69 +2425,33 @@ def _export_cli(argv) -> None:
         )
         sys.exit(1)
 
-    note_output_dir = Path(os.environ.get("NOTE_OUTPUT_DIR", "note_results"))
-    # task_id 进路径拼接前校验格式（与 MCP _validate_task_id 同源正则，防 ../ 逃逸）
-    if not re.fullmatch(r"^[A-Za-z0-9_-]{1,64}$", opts.task_id):
-        print(
-            f"✗ 非法 task_id: {opts.task_id!r}（应为 1-64 位字母/数字/下划线/连字符）",
-            file=sys.stderr,
-        )
+    from app.utils.task_manifest import get_note_dir
+
+    note_output_dir = get_note_dir()
+    try:
+        opts.task_id = validate_task_id(opts.task_id)
+    except ValueError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
         sys.exit(1)
     task_dir = note_output_dir / opts.task_id
-    import json as _json
-
-    # C1 门禁（#126）：与 MCP export_transcript 同口径，非 SUCCESS 任务拒绝导出。
-    # 此前 CLI 对 FAILED/运行中任务照常导出、MCP 拒绝——同一任务两套结论（CLI/MCP 不对称）。
-    # 与 MCP 一致放在参数校验后、读转写前；UNKNOWN（任务不存在/状态不可读）放行，
-    # 由下方「找不到任务」路径报准确原因，而不是误报「任务未成功」。
-    status_path = task_dir / "status.json"
-    task_status = None
-    if status_path.exists():
-        try:
-            task_status = _json.loads(status_path.read_text(encoding="utf-8")).get("status")
-        except Exception:
-            task_status = None
-    if task_status not in ("SUCCESS", "UNKNOWN", None):
+    # 保留旧任务恢复导出：状态不可读时交给共享读取器诊断，已知失败/运行中则拒绝。
+    task_status = read_task_status(task_dir)
+    if task_status not in ("SUCCESS", "UNKNOWN"):
         print(
             f"✗ 任务未成功（当前状态 {task_status}）：只有 SUCCESS 任务能导出转写",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    # 与 server 侧 _load_task_transcript 同源（docs/05 #16）：gen/transcript.json 是
-    # 规范来源，缺失/损坏才退 result.json；损坏与「无转写」分开报（#120）
-    transcript = None
-    cache = task_dir / "gen" / "transcript.json"
-    if cache.exists():
-        try:
-            transcript = _json.loads(cache.read_text(encoding="utf-8"))
-        except Exception as e:
-            print(f"⚠ 转写缓存损坏（{cache}）：{e}", file=sys.stderr)
-    if not transcript:
-        result_path = task_dir / "result.json"
-        if not result_path.exists():
-            print(f"✗ 找不到任务 {opts.task_id} 的结果文件（{result_path}），任务可能未成功", file=sys.stderr)
-            sys.exit(1)
-        try:
-            transcript = _json.loads(result_path.read_text(encoding="utf-8")).get("transcript")
-        except Exception as e:
-            print(f"✗ 任务 {opts.task_id} 的结果文件损坏：{e}", file=sys.stderr)
-            sys.exit(1)
-    if not transcript:
-        print(f"✗ 任务 {opts.task_id} 没有转写结果（可能未到转写阶段）", file=sys.stderr)
+    result = read_transcript(task_dir)
+    if result.cache_error:
+        print(f"⚠ {result.cache_error}", file=sys.stderr)
+    if result.transcript is None:
+        print(f"✗ {result.error}", file=sys.stderr)
         sys.exit(1)
-
-    out_dir = opts.out_dir or str(task_dir / "gen")
-    if opts.out_dir:
-        if opts.out_dir.startswith("file://"):
-            # file:// URI 规整（与 MCP export_transcript #107 同口径）：否则 Path("file:///…")
-            # 在 CWD 建字面 `file:` 目录（#126 C8）
-            from urllib.parse import unquote, urlparse
-
-            out_dir = unquote(urlparse(opts.out_dir).path or "")
-        else:
-            # `~` 展开：否则 Path("~/x") 在 CWD 建字面 `~` 目录（#130 A4，MCP 侧 _coerce_local_path 已展开）
-            out_dir = str(Path(opts.out_dir).expanduser())
+    transcript = result.transcript
+    # 显式终端操作仍允许任意输出目录；MCP 的授权检查由其入口独立负责。
+    out_dir = str(coerce_local_path(opts.out_dir)) if opts.out_dir else str(task_dir / "gen")
     written = export_transcript(transcript, formats=formats, out_dir=out_dir, task_id=opts.task_id)
     # 部分失败时 exporter 把 _errors 塞进 written（#125 C2）：先剥离再判空——
     # 否则全部失败时 {"_errors": ...} 仍 truthy，`not written` 报错分支变死代码，

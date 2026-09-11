@@ -1,4 +1,4 @@
-"""隔离 stdio 冒烟：源码或 wheel，验证初始化/10 工具/离线模板/复制；不下载视频或模型。"""
+"""隔离 stdio 冒烟：源码/wheel，验证 10 工具、预检、转写导出与模板；不下载视频/模型。"""
 import argparse
 import asyncio
 import hashlib
@@ -22,6 +22,43 @@ REPOSITORY = "https://github.com/HuangYincan/VideoNote-MCP"
 def payload(result):
     assert not result.isError, result
     return json.loads(result.content[0].text)
+
+
+async def smoke_artifacts(session: ClientSession, data: Path):
+    """Exercise shared modules through the actual protocol, including packaged installs."""
+    source = data / "本地 视频.mp4"
+    source.write_bytes(b"metadata-only existence check")
+    inspected = payload(await session.call_tool("inspect_video", {"url": source.as_uri()}))
+    assert inspected["ok"] and inspected["entries"][0]["url"] == str(source)
+    outside = data.parent / "outside.mp4"
+    outside.write_bytes(b"must not expose")
+    denied = payload(await session.call_tool("inspect_video", {"url": outside.as_uri()}))
+    assert not denied["ok"] and "VIDEONOTE_ALLOW_EXTERNAL_PATHS" in denied["error"]
+
+    task_id = "smoke-transcript"
+    task_dir = data / "note_results" / task_id
+    (task_dir / "gen").mkdir(parents=True)
+    status_file = task_dir / "status.json"
+    status_file.write_text('{"status":"SUCCESS"}', encoding="utf-8")
+    cache = task_dir / "gen" / "transcript.json"
+    cache.write_text("[]", encoding="utf-8")  # unusable cache must fall back everywhere
+    transcript = {"language": "zh", "full_text": "离线共享转写",
+                  "segments": [{"start": 0, "end": 1, "text": "离线共享转写"}]}
+    (task_dir / "result.json").write_text(json.dumps({"transcript": transcript}), encoding="utf-8")
+    read = payload(await session.call_tool("task", {"task_id": task_id, "action": "transcript"}))
+    assert read["ok"] and read["full_text"] == transcript["full_text"]
+    resource = await session.read_resource(f"videonote://task/{task_id}/transcript")
+    assert transcript["full_text"] in resource.contents[0].text
+    exported = payload(await session.call_tool("process_media", {
+        "task_id": task_id, "formats": ["srt", "vtt", "json"],
+    }))
+    assert exported["ok"] and set(exported["formats"]) == {"srt", "vtt", "json"}
+    content = json.loads((task_dir / "gen" / "transcript.export.json").read_text(encoding="utf-8"))
+    assert content["full_text"] == transcript["full_text"]
+    assert cache.read_text(encoding="utf-8") == "[]"
+    status_file.write_text('{"status":"FAILED"}', encoding="utf-8")
+    failed = payload(await session.call_tool("process_media", {"task_id": task_id}))
+    assert not failed["ok"] and "FAILED" in failed["error"]
 
 
 async def smoke(package_root: Path, data: Path):
@@ -50,6 +87,7 @@ async def smoke(package_root: Path, data: Path):
             for check in health["checks"]:
                 if not check["ok"]:
                     assert check["next_steps"]
+            await smoke_artifacts(session, data)
             resources = await session.list_resources()
             assert {"videonote://templates", "videonote://help/export"} <= {str(r.uri) for r in resources.resources}
             guide = await session.read_resource("videonote://help/export")
@@ -76,7 +114,7 @@ async def smoke(package_root: Path, data: Path):
                 "action": "template", "template_id": "latex-math-note", "template_file": "../../config.json",
             })
             assert traversal.isError
-    print("stdio OK: source metadata, 10 tools, resources, 3 offline templates, licensed copies, path rejection")
+    print("stdio OK: metadata, 10 tools, local inspection, transcript fallback/export, resources, 3 offline templates (licenses verified), path rejection")
 
 
 def main():

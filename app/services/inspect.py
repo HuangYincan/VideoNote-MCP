@@ -11,7 +11,8 @@ from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
 from app.downloaders.common import public_get_retry
-from app.services.pipeline import detect_platform
+from app.utils.local_paths import LocalPathPolicy, coerce_local_path
+from app.utils.media_source import detect_platform
 from app.utils.url_safety import (
     assert_public_http_url,
     public_replay_url,
@@ -28,12 +29,15 @@ _UA = (
 )
 
 
-def inspect_video(url: str, platform: Optional[str] = None) -> dict:
+def inspect_video(
+    url: str, platform: Optional[str] = None, *, local_paths: Optional[LocalPathPolicy] = None,
+) -> dict:
     """解析链接，列出可独立生成笔记的条目。
 
     返回 {ok, platform, kind: single|multi, title, video_id, current_p?,
           total, truncated, entries:[{p, title, duration, url, video_id}]}。
     失败 {ok: False, error}，不抛给调用方。
+    local_paths 可注入入口的数据目录策略；独立调用默认读取已配置的环境，不启动 MCP。
     """
     raw = (url or "").strip()
     if not raw:
@@ -60,16 +64,10 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
         if plat == "xiaohongshu":
             return _inspect_xiaohongshu(raw)
         if plat == "local":
-            # file:// URI 先规整（#133 B2）：#130 A5 用裸 Path(raw) 漏了 file://——
-            # inspect 曾是全工具面唯一不认 file:// 的本地入口（#105/#107 系列输入
-            # 规整的漏网点），同一文件 generate_note 可用、inspect
-            # 却报「本地文件不存在」。entries[].url 透传规整后的路径。
-            # #145 A6：与 generate_note 同数据目录门禁，避免用 ok:true 做目录外存在性探测。
-            from videonote_mcp.server import _coerce_local_path, _guard_data_boundary
-
-            local_path = _coerce_local_path(raw)
+            local_path = coerce_local_path(raw)
             try:
-                _guard_data_boundary(local_path, "本地视频路径")
+                policy = local_paths if local_paths is not None else LocalPathPolicy.from_environment()
+                policy.guard(local_path, "本地视频路径")
             except ValueError as exc:
                 return {
                     "ok": False,
