@@ -27,11 +27,27 @@ def test_local_documentation_links_exist(filename):
         assert (document.parent / unquote(parsed.path)).exists(), (filename, target)
 
 
-@pytest.mark.parametrize("filename", ["README.md", "README_EN.md", "docs/02-架构设计.md"])
+@pytest.mark.parametrize("filename", ["CONTRIBUTING.md", "VENDOR.md", "docs/02-架构设计.md"])
 def test_shared_modules_are_discoverable_in_live_docs(filename):
     text = (ROOT / filename).read_text(encoding="utf-8")
     for module in ("task_artifacts.py", "local_paths.py", "media_source.py"):
         assert module in text
+
+
+@pytest.mark.parametrize("filename", ["README.md", "README_EN.md"])
+def test_readmes_remain_user_facing(filename):
+    text = (ROOT / filename).read_text(encoding="utf-8")
+    for internal_section in (
+        "维护与代码导航",
+        "Maintenance and code navigation",
+        "使用源码中的修复",
+        "Run fixes from a source checkout",
+        "Agent 指引与独立导出模板",
+        "Agent guidance and standalone export templates",
+    ):
+        assert internal_section not in text
+    for implementation_module in ("task_artifacts.py", "local_paths.py", "media_source.py"):
+        assert implementation_module not in text
 
 
 def test_contributor_guidance_does_not_require_private_skills():

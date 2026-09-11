@@ -170,17 +170,14 @@ def test_source_config_pins_checkout_without_personal_configuration():
     }
 
 
-def test_readme_json_matches_published_and_source_examples():
+def test_readme_json_matches_published_example():
     import re
 
-    configs = [
-        json.loads((REPO / name).read_text())
-        for name in ("examples/mcp.example.json", "examples/mcp.source.example.json")
-    ]
+    published_config = json.loads((REPO / "examples/mcp.example.json").read_text())
     for name in ("README.md", "README_EN.md"):
         blocks = re.findall(r"```json\n(.*?)\n```", (REPO / name).read_text(), re.DOTALL)
         parsed = [json.loads(block) for block in blocks]
-        assert all(config in parsed for config in configs), name
+        assert published_config in parsed, name
 
 
 def test_architecture_diagram_is_mcp_only_without_embedded_assets():
