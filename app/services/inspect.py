@@ -6,6 +6,7 @@ Agent 按单视频流程处理；本模块不批量提交。
 from __future__ import annotations
 
 import logging
+import math
 from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -54,6 +55,8 @@ def inspect_video(url: str, platform: Optional[str] = None) -> dict:
     try:
         if plat == "bilibili":
             return _inspect_bilibili(raw)
+        if plat == "douyin":
+            return _inspect_douyin(raw)
         if plat == "xiaohongshu":
             return _inspect_xiaohongshu(raw)
         if plat == "local":
@@ -171,6 +174,51 @@ def _inspect_bilibili(url: str) -> dict:
         "total": total,
         "truncated": truncated,
         "entries": entries,
+    }
+
+
+def _inspect_douyin(url: str) -> dict:
+    """预检与下载复用同一 Cookie/签名路径，不走 yt-dlp 的未签名详情接口。"""
+    from app.downloaders.douyin_downloader import DouyinDownloader
+
+    info = DouyinDownloader().fetch_video_info(url)
+    detail = info.get("aweme_detail") if isinstance(info, dict) else None
+    if not isinstance(detail, dict) or not detail:
+        raise ValueError("抖音未返回视频详情；请检查链接是否可访问或是否触发平台验证，不能据此判定 Cookie 过期")
+    video_id = str(detail.get("aweme_id") or "")
+    if not video_id.isascii() or not video_id.isdigit():
+        raise ValueError("抖音视频详情缺少有效的视频 ID")
+    video = detail.get("video")
+    if not isinstance(video, dict) or not video:
+        raise ValueError("该抖音条目没有视频信息（图文作品无法转写）")
+
+    title = detail.get("item_title") or detail.get("desc") or "抖音视频"
+    duration = None
+    raw_duration = video.get("duration")
+    if not isinstance(raw_duration, bool):
+        try:
+            seconds = float(raw_duration) / 1000
+            if math.isfinite(seconds) and seconds > 0:
+                duration = seconds
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return {
+        "ok": True,
+        "platform": "douyin",
+        "kind": "single",
+        "title": title,
+        "video_id": video_id,
+        "total": 1,
+        "truncated": False,
+        "entries": [
+            {
+                "p": 1,
+                "title": title,
+                "duration": duration,
+                "url": f"https://www.douyin.com/video/{video_id}",
+                "video_id": video_id,
+            }
+        ],
     }
 
 

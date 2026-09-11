@@ -2043,6 +2043,10 @@ def inspect_video(url: str, platform: Optional[str] = None) -> str:
     角色，#136 合并）：空 url / 本地文件不存在 / 内网 SSRF / 平台解析失败 →
     {ok: false, platform?, error}——generate_note 内部也会校验，这里提前给原因。
     generic（未知站点）会走 yt-dlp 展开确认（较慢，几秒）。
+    抖音使用原生 Cookie/签名详情接口，不走 yt-dlp；短链、精选页统一为 /video/{id}。
+    元信息成功不等于下载/转写成功。已扫码仍失败时，先核对 MCP 与 CLI 的版本、
+    data_dir / VIDEONOTE_CONFIG_DIR；附加登录校验或 msToken 初始化未能确认不等于
+    Cookie 过期，不要仅凭这类错误让用户反复扫码。凭证只在终端/官方浏览器输入。
 
     单视频 {ok, platform, kind: single, title, video_id, total, entries}；
     多集（B 站分 P / YouTube 播放列表）kind: multi，entries[].url 可直接喂给

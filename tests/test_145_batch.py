@@ -50,13 +50,26 @@ class DouyinExtractVideoIdTest(unittest.TestCase):
 
         dl = DouyinDownloader()
         with mock.patch(
-            "app.downloaders.douyin_downloader.public_head",
+            "app.utils.url_parser.resolve_douyin_short_url",
             side_effect=TimeoutError("slow"),
         ):
             self.assertEqual(
                 dl.extract_video_id("https://www.douyin.com/video/7234567890123456789"),
                 "7234567890123456789",
             )
+
+    def test_jingxuan_modal_id_without_network(self):
+        from app.downloaders.douyin_downloader import DouyinDownloader
+
+        dl = DouyinDownloader()
+        with mock.patch("app.utils.url_parser.resolve_douyin_short_url") as m_resolve:
+            self.assertEqual(
+                dl.extract_video_id(
+                    "https://www.douyin.com/jingxuan?modal_id=7664861474845658402"
+                ),
+                "7664861474845658402",
+            )
+        m_resolve.assert_not_called()
 
 
 class BcutUploadSsrfTest(unittest.TestCase):

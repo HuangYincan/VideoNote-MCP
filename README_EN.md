@@ -63,6 +63,37 @@ For JSON-based MCP clients:
 
 > All four install methods, configuration details, updating and security are in [docs/04-使用手册.md](docs/04-使用手册.md).
 
+### Run fixes from a source checkout (not yet on PyPI)
+
+`uvx videonote@latest` runs a published package, not local changes. To use the Douyin fixes in this repository, use the [source JSON configuration](examples/mcp.source.example.json) and replace `/absolute/path/to/VideoNote-MCP` with the checkout's absolute path:
+
+```json
+{
+  "mcpServers": {
+    "videonote": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/VideoNote-MCP",
+        "run",
+        "--frozen",
+        "videonote"
+      ]
+    }
+  }
+}
+```
+
+Log in with the same checkout, then reconnect the MCP server:
+
+```bash
+uv --directory /absolute/path/to/VideoNote-MCP sync --frozen
+uv --directory /absolute/path/to/VideoNote-MCP run --frozen videonote login douyin
+```
+
+If you set `VIDEONOTE_DATA_DIR` / `VIDEONOTE_CONFIG_DIR`, use identical values for the CLI and MCP server. Complete any secondary verification in the official browser window. An inconclusive follow-up check does not mean the saved Cookie is invalid; it alone is not a reason to scan again. See [Douyin troubleshooting (Chinese)](docs/04-使用手册.md#抖音登录扫码).
+
 ## Docs
 
 Full installation / configuration / usage / env vars / updating / security docs now live in `docs/` (this README keeps just the overview):
@@ -71,6 +102,7 @@ Full installation / configuration / usage / env vars / updating / security docs 
 - [Architecture](docs/02-架构设计.md)
 - [User Manual](docs/04-使用手册.md) — install (4 methods) · config (setup wizard + CLI) · env vars · updating · security
 - [Changelog](docs/CHANGELOG.md)
+- [Editable architecture diagram](docs/videonote-mcp-architecture.excalidraw)
 
 ---
 
@@ -154,7 +186,7 @@ flowchart TB
 
 ## How to Contribute
 
-- Feature branch → PR → `dev` (CI smoke test must pass); once `dev` is stable, PR → `main` (protected branch, needs review).
+- Keep only `dev` and `main` as permanent branches. Temporary feature branch → PR → `dev` (CI must pass) → PR → `main`. After delivery, fast-forward `dev` to `main` and remove merged temporary branches so both remain current.
 - Workflow, branch naming and pre-commit self-checks are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Acknowledgements

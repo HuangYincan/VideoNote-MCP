@@ -3,12 +3,15 @@
 直连 `sso.douyin.com/get_qrcode/` 会被 ByteDance 风控成 HTML（HTTP 200）。
 登录页在真实 Chrome 里自己打 `passport/web/get_qrcode`；我们拦截 JSON 拿
 二维码 URL，终端仍出 ASCII 码。官网 `is_frontier` 时「已确认」可能只走
-WebSocket，HTTP 会一直停在 scanned——因此轮询时用本机 Chrome 上下文
-主动打 check_qrconnect（关掉 is_frontier），不只等拦截。
+WebSocket，HTTP 会一直停在 scanned。后备轮询必须复用官网实际的请求方法和
+表单，并在网页内发送（由官网 JS 处理签名），不能把出码 URL 改成 GET。
+手机确认后还可能返回 2046 要求电脑端身份验证：必须显示浏览器，暂停
+后备轮询，不打断官方验证流程；等待浏览器真正写入 sessionid 后才落盘。
 """
 from __future__ import annotations
 
 import json
+import time
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
@@ -17,6 +20,7 @@ from app.downloaders.douyin_auth import (
     QR_EXPIRED,
     QR_SCANNED,
     QR_SUCCESS,
+    QR_VERIFY,
     QR_WAIT,
     _map_qr_status,
     format_cookie,
@@ -24,6 +28,7 @@ from app.downloaders.douyin_auth import (
     is_douyin_cookie_host,
     is_douyin_qr_url,
     is_douyin_redirect_url,
+    qr_requires_verification,
     verify_douyin_login,
 )
 from app.services.cookie_manager import CookieConfigManager
@@ -35,34 +40,80 @@ logger = get_logger(__name__)
 
 _CREATE_MARK = "/get_qrcode"
 _POLL_MARK = "/check_qrconnect"
+_COOKIE_WAIT_SECONDS = 15
+_CALLBACK_GRACE_SECONDS = 3
 _LOGIN_PAGE = f"{HOME}/login_page?service={HOME}"
 _LAUNCH_TRIES = (
-    {"channel": "chrome", "headless": True},
-    {"channel": "msedge", "headless": True},
-    {"headless": True},
+    {"channel": "chrome", "headless": False},
+    {"channel": "msedge", "headless": False},
+    {"headless": False},
 )
+
+
+class BrowserQrClosed(RuntimeError):
+    """用户关闭了本次登录窗口；不是可重试的网络错误。"""
 
 
 class BrowserQrUnavailable(RuntimeError):
     """本机没有可用的 Playwright / Chrome。"""
 
 
-def rewrite_qrconnect_url(url: str, token: str) -> str:
-    """get_qrcode / check_qrconnect → 短轮询 URL（关掉 is_frontier，钉官方域）。"""
-    if not url or not token:
-        return ""
-    if not host_matches(url, "douyin.com"):
-        return ""
+def build_poll_request(request, token: str) -> dict:
+    """复制当前二维码的真实轮询请求；不借用出码参数或过期签名。"""
+    url = getattr(request, "url", "")
+    method = getattr(request, "method", "")
+    if not token or not isinstance(url, str) or not host_matches(url, "douyin.com"):
+        return {}
     parts = urlsplit(url)
-    path = parts.path or "/passport/web/check_qrconnect/"
-    if "get_qrcode" in path:
-        path = path.replace("get_qrcode", "check_qrconnect")
-    elif "check_qrconnect" not in path:
-        path = "/passport/web/check_qrconnect/"
+    if parts.scheme != "https" or parts.username or parts.password:
+        return {}
+    if not parts.path.rstrip("/").endswith(_POLL_MARK) or method not in ("GET", "POST"):
+        return {}
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    query["token"] = token
-    query["is_frontier"] = "0"
-    return urlunsplit((parts.scheme or "https", parts.netloc, path, urlencode(query), ""))
+    # URL 签名绑定参数/请求体。交回页面里的官方 JS 重签，不能重放旧签名。
+    for key in ("a_bogus", "X-Bogus", "_signature"):
+        query.pop(key, None)
+    headers = getattr(request, "headers", {}) or {}
+    headers = {k.lower(): v for k, v in headers.items()}
+    options = {"method": method, "headers": {}}
+    if method == "POST":
+        content_type = headers.get("content-type", "")
+        body = getattr(request, "post_data", "") or ""
+        if not isinstance(body, str) or "application/x-www-form-urlencoded" not in content_type:
+            return {}
+        form = dict(parse_qsl(body, keep_blank_values=True))
+        if form.get("token") != token:
+            return {}
+        form["is_frontier"] = "false"
+        options["body"] = urlencode(form)
+        options["headers"]["Content-Type"] = content_type
+    else:
+        if query.get("token") != token:
+            return {}
+        query["is_frontier"] = "false"
+    for key in ("x-tt-passport-csrf-token", "web-sdk-version"):
+        if key in headers:
+            options["headers"][key] = headers[key]
+    options["url"] = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
+    return options
+
+
+# APIRequestContext 共享 Cookie，但不在浏览器中执行，也不会经过网页 JS 签名。
+# 只重放观察到的官网请求；AbortController 给后备轮询设置明确的网络时限。
+_POLL_IN_PAGE = """async ({url, method, headers, body}) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+        const response = await fetch(url, {
+            method, headers, body, credentials: 'include',
+            signal: controller.signal, redirect: 'error'
+        });
+        if (!response.ok) return null;
+        return await response.json();
+    } finally {
+        clearTimeout(timer);
+    }
+}"""
 
 
 def poll_payload_status(body: dict) -> tuple[str, str]:
@@ -72,6 +123,10 @@ def poll_payload_status(body: dict) -> tuple[str, str]:
     data = body.get("data") if isinstance(body.get("data"), dict) else None
     if not isinstance(data, dict):
         data = body
+    if qr_requires_verification(body):
+        return QR_VERIFY, ""
+    if any(item.get("error_code") not in (None, "", 0, "0") for item in (body, data)):
+        return QR_WAIT, ""
     st = _map_qr_status(data)
     redir = str(data.get("redirect_url") or body.get("redirect_url") or "")
     return st, redir
@@ -79,10 +134,14 @@ def poll_payload_status(body: dict) -> tuple[str, str]:
 
 def next_qr_status(current: str, incoming: str) -> str:
     """扫码状态只前进，避免 frontier 下后续 HTTP scanned/new 把 confirmed 盖掉。"""
+    # 已扫码后的身份验证不受旧二维码过期/迟到 confirmed 影响；仅 Cookie 能完成它。
+    # confirmed 也可能只完成了手机授权，随后才返回 2046。
+    if current == QR_VERIFY or incoming == QR_VERIFY:
+        return QR_VERIFY
+    if current in (QR_SUCCESS, QR_EXPIRED):
+        return current
     if incoming == QR_EXPIRED:
         return QR_EXPIRED
-    if current == QR_SUCCESS:
-        return QR_SUCCESS
     if incoming == QR_SUCCESS:
         return QR_SUCCESS
     if current == QR_SCANNED and incoming == QR_WAIT:
@@ -100,7 +159,7 @@ def parse_qr_create_payload(body: dict) -> dict:
         err = body.get("error_code")
     token = str(data.get("token") or "")
     url = str(data.get("qrcode_index_url") or data.get("frontend_show_qrcode") or "")
-    if err not in (0, None, "0") and not (token and url):
+    if err not in (0, None, "", "0"):
         return {"token": "", "url": ""}
     return {"token": token, "url": url}
 
@@ -124,6 +183,7 @@ class DouyinBrowserQr:
     """与 DouyinAuth 同款：create_qr / poll_qr / finalize / persist / close。"""
 
     pumps_events = True
+    interactive_verification = True
 
     def __init__(self, cookie_mgr: Optional[CookieConfigManager] = None):
         self._cookie_mgr = cookie_mgr or CookieConfigManager()
@@ -135,13 +195,21 @@ class DouyinBrowserQr:
         self._status = QR_WAIT
         self._redirect = ""
         self._logged_cookies: dict = {}
-        self._source_url = ""
+        self._poll_request: dict = {}
+        self._displayed_token = ""
+        self._expires_at: Optional[float] = None
+
+    @property
+    def verification_required(self) -> bool:
+        return self._status == QR_VERIFY
 
     def _apply_poll_body(self, body: dict) -> None:
+        if has_sessionid(self._logged_cookies):
+            return
         st, redir = poll_payload_status(body)
         prev = self._status
         self._status = next_qr_status(self._status, st)
-        if redir:
+        if redir and st == QR_SUCCESS and self._status == QR_SUCCESS:
             self._redirect = redir
         if self._status != prev:
             logger.info("抖音扫码状态: %s", self._status)
@@ -162,6 +230,11 @@ class DouyinBrowserQr:
         except Exception:  # noqa: BLE001
             return
         if isinstance(body, dict):
+            # 官网也有其他业务 WS；只消费能绑定到当前二维码的消息。
+            data = body.get("data") if isinstance(body.get("data"), dict) else body
+            token = self._created.get("token")
+            if token and data.get("token") != token:
+                return
             self._apply_poll_body(body)
 
     def _on_websocket(self, ws) -> None:
@@ -173,44 +246,65 @@ class DouyinBrowserQr:
         except Exception:  # noqa: BLE001
             pass
 
+    def _on_request(self, request) -> None:
+        options = build_poll_request(request, self._created.get("token") or "")
+        if options:
+            self._poll_request = options
+
     def _on_response(self, resp) -> None:
         url = resp.url or ""
         if not host_matches(url, "douyin.com"):
             return
+        path = urlsplit(url).path.rstrip("/")
+        is_create = path.endswith(_CREATE_MARK)
+        is_poll = path.endswith(_POLL_MARK)
+        if not (is_create or is_poll):
+            return
+        http_status = getattr(resp, "status", None)
+        if isinstance(http_status, int) and not 200 <= http_status < 300:
+            return
+        if is_poll:
+            options = build_poll_request(resp.request, self._created.get("token") or "")
+            if self._created.get("token") and not options:
+                return  # 页面自动刷新出的另一张二维码，不是终端展示的那一张。
+            if options:
+                self._poll_request = options
         try:
             body = resp.json()
         except Exception:  # noqa: BLE001
             return
         if not isinstance(body, dict):
             return
-        if _CREATE_MARK in url:
+        if is_create:
             parsed = parse_qr_create_payload(body)
             if parsed.get("url") and is_douyin_qr_url(parsed["url"]) and parsed.get("token"):
+                if self._displayed_token:
+                    if parsed["token"] != self._displayed_token:
+                        self._status = next_qr_status(self._status, QR_EXPIRED)
+                    return
                 self._created = parsed
-                self._source_url = url
+                self._poll_request = {}
+                self._status, self._redirect = QR_WAIT, ""
+                # 官网 expire_time 是 Unix 秒数。换算为单调时钟，避免系统校时影响等待。
+                expiry = body.get("data", {}).get("expire_time")
+                try:
+                    remaining = max(0.0, min(180.0, float(expiry) - time.time()))
+                except (TypeError, ValueError):
+                    remaining = 180.0
+                self._expires_at = time.monotonic() + remaining
             return
-        if _POLL_MARK in url:
-            self._source_url = self._source_url or url
-            self._apply_poll_body(body)
-
-    def _poll_request_url(self, token: str) -> str:
-        source = self._source_url or f"{HOME}/passport/web/check_qrconnect/?aid=6383"
-        return rewrite_qrconnect_url(source, token)
+        self._apply_poll_body(body)
 
     def _active_poll(self, token: str) -> None:
-        if not token or self._page is None:
-            return
-        url = self._poll_request_url(token)
-        if not url:
+        if self.verification_required:
+            return  # 重放请求不会完成短信/刷脸，反而可能重置官方验证流程。
+        if self._page is None or token != self._created.get("token") or not self._poll_request:
             return
         try:
-            resp = self._page.request.get(url, timeout=8000)
+            body = self._page.evaluate(_POLL_IN_PAGE, self._poll_request)
         except Exception as exc:  # noqa: BLE001
-            logger.info("抖音主动轮询失败: %s", sanitize_error_text(exc))
-            return
-        try:
-            body = resp.json()
-        except Exception:  # noqa: BLE001
+            # 不输出异常里的带 token URL；官网自己的轮询/回调仍在运行。
+            logger.info("抖音后备轮询暂不可用（%s），继续等待官网回调", type(exc).__name__)
             return
         if isinstance(body, dict):
             self._apply_poll_body(body)
@@ -241,18 +335,15 @@ class DouyinBrowserQr:
         if self._browser is None:
             self.close()
             raise BrowserQrUnavailable(
-                f"无法启动 Chrome/Edge（{last_err}）。请安装 Google Chrome，或改用 "
+                f"无法启动 Chrome/Edge（{sanitize_error_text(last_err)}）。请安装 Google Chrome，或改用 "
                 "`videonote login douyin --cookie`"
             )
         self._context = self._browser.new_context(
             locale="zh-CN",
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-            ),
         )
         self._page = self._context.new_page()
+        self._page.on("request", self._on_request)
         self._page.on("response", self._on_response)
         self._page.on("websocket", self._on_websocket)
 
@@ -260,7 +351,8 @@ class DouyinBrowserQr:
         if self._context is None:
             return {}
         try:
-            return cookies_from_playwright(self._context.cookies())
+            # 只收主站实际可用的 Cookie，避免 SSO 子域或其他 path 的同名项覆盖。
+            return cookies_from_playwright(self._context.cookies(HOME))
         except Exception:  # noqa: BLE001
             return {}
 
@@ -302,43 +394,75 @@ class DouyinBrowserQr:
                 )
             if not is_douyin_qr_url(qr_url):
                 raise RuntimeError("抖音二维码地址不是官方域名，已拒绝展示")
-            return dict(self._created)
-        except Exception:
+            self._displayed_token = token
+            created = dict(self._created)
+            if self._expires_at is not None:
+                created["expires_in"] = max(0.0, self._expires_at - time.monotonic())
+            return created
+        except BaseException:
             self.close()
             raise
 
-    def poll_qr(self, token: str) -> dict:
-        """主动短轮询 check_qrconnect，并抽一次页面事件（WS / 拦截）。"""
-        self._active_poll(token)
-        if self._page is not None:
-            try:
-                self._page.wait_for_timeout(500)
-            except Exception:  # noqa: BLE001
-                pass
+    def _capture_session(self) -> bool:
         cookies = self._cookies()
-        if has_sessionid(cookies):
-            self._status = QR_SUCCESS
-            self._logged_cookies = cookies
+        if not has_sessionid(cookies):
+            return False
+        self._status = QR_SUCCESS
+        self._logged_cookies = cookies
+        return True
+
+    def poll_qr(self, token: str) -> dict:
+        """先驱动官网事件与回调，再用实际请求做浏览器内短轮询。"""
+        # 登录成功后官网可能关掉登录页；已有 Cookie 时不再调用已关闭的页面。
+        if not self._capture_session():
+            if self._page is not None:
+                if self._page.is_closed() is True:
+                    raise BrowserQrClosed("登录窗口已关闭，本次扫码已取消")
+                self._page.wait_for_timeout(2000)
+            if not self._capture_session() and self._status not in (QR_SUCCESS, QR_EXPIRED, QR_VERIFY):
+                self._active_poll(token)
+                self._capture_session()
         return {"status": self._status, "redirect_url": self._redirect}
 
+    def _wait_for_session(self, seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while not self._capture_session():
+            if self.verification_required:
+                return False  # 交还 CLI 显示操作提示，并使用独立的人工验证等待时间。
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or self._page is None:
+                return False
+            self._page.wait_for_timeout(min(250, remaining * 1000))
+        return True
+
     def finalize(self, redirect_url: str) -> None:
-        """浏览器会话里站点会自己跟随回调；这里只在仍缺 sessionid 时打开官方跳转。"""
-        if has_sessionid(self._cookies()):
+        """让官网先走完回调；有确认而没 Cookie 时仍给异步落地留出时间。"""
+        if self._capture_session():
             return
         url = (redirect_url or self._redirect or "").strip()
-        if not url or self._page is None:
-            return
-        if not is_douyin_redirect_url(url):
-            host = urlparse(url).netloc or "未知域名"
+        if url and not is_douyin_redirect_url(url):
+            host = urlparse(url).hostname or "未知域名"
             raise ValueError(f"登录回调域名不是抖音官方（{host}）")
-        try:
-            self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            self._page.wait_for_timeout(1500)
-        except Exception as exc:  # noqa: BLE001
-            logger.info("跟随抖音登录回调失败: %s", sanitize_error_text(exc))
+        if self._page is None:
+            return
+        # 立即 goto 会中断官方 JS 的票据交换请求；先给它完成的机会。
+        deadline = time.monotonic() + _COOKIE_WAIT_SECONDS
+        if self._wait_for_session(_CALLBACK_GRACE_SECONDS) or self.verification_required:
+            return
+        if url:
+            try:
+                self._page.goto(
+                    url, wait_until="domcontentloaded",
+                    timeout=max(1, (deadline - time.monotonic()) * 1000),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.info("抖音登录回调尚未完成（%s）", type(exc).__name__)
+        self._wait_for_session(max(0, deadline - time.monotonic()))
 
     def persist(self) -> str:
-        cookies = self._logged_cookies or self._cookies()
+        cookies = self._cookies()
+        if not has_sessionid(cookies):
+            cookies = self._logged_cookies
         if not has_sessionid(cookies):
             return "登录成功但未取到 sessionid"
         self._cookie_mgr.set("douyin", format_cookie(cookies))
