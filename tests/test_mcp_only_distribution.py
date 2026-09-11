@@ -156,3 +156,39 @@ def test_installer_does_not_shadow_an_existing_plugin_mcp(tmp_path):
 
     assert calls.read_text().splitlines() == ["plugin", "list"]
     assert "避免遮蔽插件配置" in result.stdout
+
+
+def test_source_config_pins_checkout_without_personal_configuration():
+    config = json.loads((REPO / "examples/mcp.source.example.json").read_text())
+    assert config["mcpServers"]["videonote"] == {
+        "type": "stdio",
+        "command": "uv",
+        "args": [
+            "--directory", "/absolute/path/to/VideoNote-MCP",
+            "run", "--frozen", "videonote",
+        ],
+    }
+
+
+def test_readme_json_matches_published_and_source_examples():
+    import re
+
+    configs = [
+        json.loads((REPO / name).read_text())
+        for name in ("examples/mcp.example.json", "examples/mcp.source.example.json")
+    ]
+    for name in ("README.md", "README_EN.md"):
+        blocks = re.findall(r"```json\n(.*?)\n```", (REPO / name).read_text(), re.DOTALL)
+        parsed = [json.loads(block) for block in blocks]
+        assert all(config in parsed for config in configs), name
+
+
+def test_architecture_diagram_is_mcp_only_without_embedded_assets():
+    diagram = json.loads((REPO / "docs/videonote-mcp-architecture.excalidraw").read_text())
+    assert diagram["type"] == "excalidraw"
+    assert not diagram.get("files")
+    text = "\n".join(e.get("text", "") for e in diagram["elements"])
+    assert "MCP-only" in text
+    assert "Skill" not in text
+    assert "skills/" not in text
+    assert "douyin" in text

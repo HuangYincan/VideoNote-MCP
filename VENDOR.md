@@ -51,13 +51,18 @@
 - `app/db/engine.py`（2026-08-25 #140 复扫 A3：SQLite 数据文件在 connect 事件 chmod 0600——上游无此安全收紧，同步时需人工合并）
 - `app/services/cookie_manager.py` / `proxy_config_manager.py` / **`app/utils/json_store.py`**（2026-08-17 #106：三个配置管理器改 `json_store` 安全读写——损坏不静默当空（warning + `.corrupt` 备份）、`_write` 原子化（tmp+replace+0600）；上游若带原生读写逻辑需人工合并）
 - `app/downloaders/bilibili_downloader.py` / `generic_downloader.py` / `local_downloader.py`（2026-09-01 #147：local ffmpeg 转 mp3/封面改为可取消 Popen）
-- `app/downloaders/common.py` / `app/utils/url_parser.py` / `app/downloaders/douyin_downloader.py` / `app/downloaders/kuaishou_helper/kuaishou.py` / `app/downloaders/bilibili_subtitle.py`（2026-08-25 #140：出站请求逐跳 SSRF 校验——stream_download 入口校验 + 短链解析/视频页跟随/API 资源 URL 改走 `url_safety.public_get/public_head`；2026-09-01 #147：`pin_public_host` 钉死校验 IP，堵住 DNS rebinding TOCTOU；上游若带原生 requests 调用逻辑需人工合并）
+- `app/downloaders/common.py` / `app/utils/url_parser.py` / `app/downloaders/douyin_downloader.py` / `app/downloaders/kuaishou_helper/kuaishou.py` / `app/downloaders/bilibili_subtitle.py`（2026-08-25 #140：出站请求逐跳 SSRF 校验——stream_download 入口校验 + 短链解析/视频页跟随/API 资源 URL 改走 `url_safety.public_get/public_head`；2026-09-01 #147：`pin_public_host` 钉死校验 IP，堵住 DNS rebinding TOCTOU；2026-09-10：抖音 aweme_id 归一 `/video/{id}`、`modal_id` 精选页、`v.douyin.com` 短链，下载器与转写缓存共用 `extract_douyin_aweme_id`；上游若带原生 requests 调用逻辑需人工合并）
 - `app/transcriber/transcriber_provider.py`（funasr / mlx）
 - `app/transcriber/whisper.py` / `mlx_whisper_transcriber.py` / `app/utils/model_status.py`（2026-08-25 #142 A2：内置模型 revision 固定——whisper 经 `WhisperModel(revision=…)`、mlx 经 `snapshot_download(revision=…)`，映射/散列单一来源在 model_status；上游若带原生下载逻辑需人工合并）
 - `app/downloaders/youtube_downloader.py`（2026-08-25 #142 A4：`VIDEONOTE_YTDLP_EJS` 开关控制 `remote_components`——上游默认无此 env 门禁，同步需人工合并）
 - `app/gpt/universal_gpt.py`（checkpoint 损坏弃用时打 warning 留痕，#106）
 - `app/downloaders/xiaohongshu_downloader.py` / `xiaohongshu_auth.py` / `xiaohongshu_browser.py` / `xiaoyuzhou_subtitle.py`（2026-09-01 #144：笔记页 host 钉死、cookie 域精确后缀、Playwright 响应/二维码官方域、官方文稿失败不回退 ASR；2026-09-01 #145：下载器 close 自建 Auth/Session；上游同步需人工合并）
 - `app/downloaders/douyin_downloader.py` / `kuaishou_helper/kuaishou.py` / `app/transcriber/bcut.py` / `app/downloaders/youtube_subtitle.py`（2026-09-01 #145：裸 requests 改 PublicOnlySession/public_get/post；必剪上传 URL 入口校验；YouTube 字幕 Session 默认超时）
+- `app/downloaders/douyin_browser.py`（扫码时序修复，待发布）：复用实际 POST/GET 轮询请求，在网页 JS 上下文关闭 frontier 后备轮询；二维码 token 绑定、服务端有效期、异步回调 Cookie 等待及主站 Cookie 作用域不可被旧版 URL 改写 / APIRequestContext 实现覆盖。
+  - 同日身份验证修复（待发布）：`douyin_auth.py` / `douyin_browser.py` 必须保留 2046 → `verification_required` 映射、可见浏览器、验证期间停止后备轮询并等待真实 Cookie 的语义；不能将其泛化为网络错误或回退到隐藏窗口。CLI 对人工验证单独限时 5 分钟，不受原二维码过期影响。
+- `app/downloaders/douyin_auth.py`（2026-09-10，待发布）：独立登录校验必须区分明确拒绝认证（401）与无法确认（非 JSON、403/429、非零错误码或未知响应）；错误优先于 message/账号字段，不得把「未确认」恢复成「无效，请重扫」，也不得把普通 success 包装当成认证成功。诊断只输出 HTTP 状态或短数字错误码，网络异常只记录类型。
+- `app/services/inspect.py`（2026-09-10，待发布）：抖音预检复用 `DouyinDownloader.fetch_video_info`，与下载共用 Cookie/msToken/ABogus；不得回退到 yt-dlp 未签名接口后把缺失详情误报为 Cookie 过期。单条元信息归一官方视频长链，缺详情/无效 ID/非视频仍失败，时长从毫秒转秒；预检成功不等于媒体下载成功。
+- `app/downloaders/douyin_downloader.py`（2026-09-10，待发布）：msToken 初始化的预期失败不再阻断详情请求，保留原 Cookie 与 ABogus，以空 msToken 尝试原生接口并以详情结果为准；成功取得的 token 仍照常使用。取消必须透传并在后备请求前复查；日志不得回显初始化异常中的 token。不可恢复为「初始化失败即要求重扫」，也不可把后备尝试当成下载成功。
 - 整文件为本仓库新增：`pipeline.py`、`merge.py`、`diarization.py`、`inspect.py`、`note_cache.py`、`audio_preprocess.py`、`funasr_transcriber.py`、`generic_downloader.py`、`bilibili_comment.py`、`xiaoyuzhou_downloader.py`、`xiaoyuzhou_subtitle.py`、`xiaohongshu_downloader.py`、`xiaohongshu_auth.py`、`xiaohongshu_sign.py`、`xiaohongshu_browser.py`、`douyin_auth.py`、`douyin_browser.py`、`task_manifest.py`、`json_store.py`、`url_safety.py`（2026-09-01 #147：`pin_public_host` / 连接期 DNS 钉死；2026-09-09 抖音 SSO 扫码；2026-09-10 抖音扫码改本机 Chrome）
 
 ## 本轮审查新增语义分叉（2026-09-01 #148）

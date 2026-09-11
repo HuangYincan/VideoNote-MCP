@@ -445,49 +445,55 @@ class DouyinBrowserQrParseTest(unittest.TestCase):
         qr._on_response(fake)
         self.assertEqual(qr._status, QR_SCANNED)
 
-    def test_rewrite_qrconnect_url_disables_frontier(self):
-        from app.downloaders.douyin_browser import rewrite_qrconnect_url
+    def test_poll_request_disables_frontier_for_legacy_get(self):
+        from app.downloaders.douyin_browser import build_poll_request
 
-        url = rewrite_qrconnect_url(
-            "https://login.douyin.com/passport/web/get_qrcode/?aid=6383&is_frontier=1",
-            "tok-1",
+        request = mock.Mock(
+            url="https://login.douyin.com/passport/web/check_qrconnect/?token=tok-1&is_frontier=1",
+            method="GET", headers={},
         )
-        self.assertIn("/check_qrconnect", url)
-        self.assertIn("token=tok-1", url)
-        self.assertIn("is_frontier=0", url)
-        self.assertTrue(url.startswith("https://login.douyin.com/"))
+        options = build_poll_request(request, "tok-1")
+        self.assertEqual(options["method"], "GET")
+        self.assertIn("token=tok-1", options["url"])
+        self.assertIn("is_frontier=false", options["url"])
+        self.assertTrue(options["url"].startswith("https://login.douyin.com/"))
 
-    def test_rewrite_qrconnect_url_rejects_foreign_host(self):
-        from app.downloaders.douyin_browser import rewrite_qrconnect_url
+    def test_poll_request_rejects_foreign_host(self):
+        from app.downloaders.douyin_browser import build_poll_request
 
-        self.assertEqual(
-            rewrite_qrconnect_url("https://evil.example/passport/web/get_qrcode/", "tok"),
-            "",
+        request = mock.Mock(
+            url="https://evil.example/passport/web/check_qrconnect/?token=tok",
+            method="GET", headers={},
         )
+        self.assertEqual(build_poll_request(request, "tok"), {})
 
     def test_poll_qr_actively_fetches_confirmed(self):
         from app.downloaders.douyin_browser import DouyinBrowserQr
 
         qr = DouyinBrowserQr(cookie_mgr=mock.Mock())
         qr._status = QR_SCANNED
-        qr._source_url = "https://www.douyin.com/passport/web/check_qrconnect/?token=old&is_frontier=1"
-        resp = mock.Mock()
-        resp.json.return_value = {
+        qr._created = {"token": "tok"}
+        qr._on_request(mock.Mock(
+            url="https://www.douyin.com/passport/web/check_qrconnect/?aid=6383",
+            method="POST", headers={"content-type": "application/x-www-form-urlencoded"},
+            post_data="token=tok&is_frontier=true",
+        ))
+        qr._page = mock.Mock()
+        qr._page.evaluate.return_value = {
             "data": {
                 "status": "confirmed",
                 "redirect_url": "https://www.douyin.com/?ticket=1",
             }
         }
-        qr._page = mock.Mock()
-        qr._page.request.get.return_value = resp
         qr._cookies = lambda: {}
         poll = qr.poll_qr("tok")
         self.assertEqual(poll["status"], QR_SUCCESS)
         self.assertIn("www.douyin.com", poll["redirect_url"])
-        called_url = qr._page.request.get.call_args.args[0]
-        self.assertIn("check_qrconnect", called_url)
-        self.assertIn("is_frontier=0", called_url)
-        self.assertIn("token=tok", called_url)
+        options = qr._page.evaluate.call_args.args[1]
+        self.assertIn("check_qrconnect", options["url"])
+        self.assertEqual(options["method"], "POST")
+        self.assertIn("is_frontier=false", options["body"])
+        self.assertIn("token=tok", options["body"])
 
     def test_ws_payload_confirmed_is_success(self):
         from app.downloaders.douyin_browser import DouyinBrowserQr

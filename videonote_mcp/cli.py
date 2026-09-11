@@ -2040,7 +2040,8 @@ def _open_douyin_qr_session():
 
 
 def _login_douyin_qr(exit_on_fail: bool = True) -> None:
-    """官网扫码：本机 Chrome 拦 passport get_qrcode → 终端 ASCII 二维码。"""
+    """官网扫码：生命周期从启动浏览器开始，截止时间不依赖轮询次数。"""
+    import math
     import time
 
     try:
@@ -2055,89 +2056,135 @@ def _login_douyin_qr(exit_on_fail: bool = True) -> None:
         QR_EXPIRED,
         QR_SCANNED,
         QR_SUCCESS,
+        QR_VERIFY,
         DouyinAuth,
         is_douyin_qr_url,
     )
-    from app.downloaders.douyin_browser import BrowserQrUnavailable
+    from app.downloaders.douyin_browser import BrowserQrClosed, BrowserQrUnavailable
+    from app.utils.url_safety import sanitize_error_text
 
-    session = _open_douyin_qr_session()
+    def close_session(session):
+        close = getattr(session, "close", None)
+        if callable(close):
+            close()
+
+    session = None
     try:
-        created = session.create_qr()
-    except BrowserQrUnavailable as e:
-        print(f"浏览器扫码不可用: {e}", file=sys.stderr)
-        print("改走直连接口（多半已被抖音风控）…", file=sys.stderr)
-        session = DouyinAuth()
+        print("正在打开抖音登录窗口；若要求身份验证，请在浏览器内完成。", file=sys.stdout)
+        session = _open_douyin_qr_session()
         try:
-            created = session.create_qr()
+            try:
+                created = session.create_qr()
+            except BrowserQrUnavailable as e:
+                print(f"浏览器扫码不可用: {sanitize_error_text(e)}", file=sys.stderr)
+                print("改走直连接口（多半已被抖音风控）…", file=sys.stderr)
+                close_session(session)
+                session = None
+                session = DouyinAuth()
+                created = session.create_qr()
         except Exception as e:
-            print(f"生成二维码失败: {e}", file=sys.stderr)
+            print(f"生成二维码失败: {sanitize_error_text(e)}", file=sys.stderr)
             print("请安装 Google Chrome 后重试，或 `videonote login douyin --cookie`", file=sys.stderr)
             if exit_on_fail:
                 sys.exit(1)
             return
-    except Exception as e:
-        print(f"生成二维码失败: {e}", file=sys.stderr)
-        print("请安装 Google Chrome 后重试，或 `videonote login douyin --cookie`", file=sys.stderr)
-        if exit_on_fail:
-            sys.exit(1)
-        return
-    qr_url = created.get("url") or ""
-    token = created.get("token") or ""
-    if not qr_url or not token:
-        print("生成二维码失败：接口未返回 url/token", file=sys.stderr)
-        if exit_on_fail:
-            sys.exit(1)
-        return
-    if not is_douyin_qr_url(qr_url):
-        print("生成二维码失败：返回的二维码地址不是官方域名", file=sys.stderr)
-        if exit_on_fail:
-            sys.exit(1)
-        return
+        qr_url = created.get("url") or ""
+        token = created.get("token") or ""
+        if not qr_url or not token:
+            print("生成二维码失败：接口未返回 url/token", file=sys.stderr)
+            if exit_on_fail:
+                sys.exit(1)
+            return
+        if not is_douyin_qr_url(qr_url):
+            print("生成二维码失败：返回的二维码地址不是官方域名", file=sys.stderr)
+            if exit_on_fail:
+                sys.exit(1)
+            return
 
-    _show_header("抖音扫码登录")
-    print(f"{_YELLOW}请用抖音 App「扫一扫」扫描下方二维码（约 3 分钟内有效）{_RESET}", file=sys.stdout)
-    print("扫不了可改用 `videonote login douyin --cookie` 粘贴 Cookie", file=sys.stdout)
-    _print_ascii_qr(qr_url)
+        try:
+            expires_in = max(0.0, min(180.0, float(created.get("expires_in", 180))))
+        except (TypeError, ValueError):
+            expires_in = 180.0
+        deadline = time.monotonic() + expires_in
+        verification_started = False
+        _show_header("抖音扫码登录")
+        print(f"{_YELLOW}请用抖音 App「扫一扫」扫描下方二维码（约 {math.ceil(expires_in)} 秒内有效）{_RESET}", file=sys.stdout)
+        print("扫不了可改用 `videonote login douyin --cookie` 粘贴 Cookie", file=sys.stdout)
+        _print_ascii_qr(qr_url)
 
-    pumps = bool(getattr(session, "pumps_events", False))
-    last_status = None
-    try:
-        for _ in range(90):
+        pumps = bool(getattr(session, "pumps_events", False))
+        last_status = None
+        while time.monotonic() < deadline:
             if not pumps:
-                time.sleep(2)
+                time.sleep(min(2, max(0, deadline - time.monotonic())))
+                if time.monotonic() >= deadline:
+                    break
             try:
                 poll = session.poll_qr(token)
+            except BrowserQrClosed:
+                print("登录窗口已关闭，本次扫码已取消。", file=sys.stdout)
+                return
             except Exception as e:
-                print(f"轮询失败（网络？）: {e}", file=sys.stderr)
+                print(f"轮询失败（网络？）: {sanitize_error_text(e)}", file=sys.stderr)
+                # 浏览器已关闭等立即失败不能空转到超时。
+                time.sleep(min(2, max(0, deadline - time.monotonic())))
                 continue
             st = poll.get("status")
             if st == QR_SUCCESS:
+                print("手机已确认，正在等待浏览器完成登录…", file=sys.stdout)
                 try:
                     session.finalize(poll.get("redirect_url") or "")
                 except Exception as e:
-                    print(f"{e}", file=sys.stderr)
+                    print(f"完成登录回调失败: {sanitize_error_text(e)}", file=sys.stderr)
                     if exit_on_fail:
                         sys.exit(1)
                     return
-                err = session.persist()
-                if err and err.startswith("登录成功但未取到"):
-                    print("登录成功但未取到 sessionid，请改用 `videonote login douyin --cookie`", file=sys.stderr)
-                    if exit_on_fail:
-                        sys.exit(1)
-                    return
-                if err and err.startswith("请求失败"):
-                    print(f"{_YELLOW}⚠ {err}（cookie 已保存）{_RESET}", file=sys.stdout)
-                elif err and ("无效" in err or "未能确认" in err):
-                    print(f"{_YELLOW}⚠ {err}{_RESET}", file=sys.stdout)
+                if getattr(session, "verification_required", False) is True:
+                    # confirmed 后的票据交换也可能要求身份验证，不可立即 persist/关闭窗口。
+                    st = QR_VERIFY
                 else:
-                    print(f"{_GREEN}✓ 已保存抖音登录态 —— 下载视频笔记可用了{_RESET}", file=sys.stdout)
-                try:
-                    input("（按回车返回）")
-                except (EOFError, KeyboardInterrupt):
-                    pass
-                return
+                    try:
+                        err = session.persist()
+                    except Exception as e:
+                        print(f"保存登录态失败: {sanitize_error_text(e)}", file=sys.stderr)
+                        if exit_on_fail:
+                            sys.exit(1)
+                        return
+                    if err and err.startswith("登录成功但未取到"):
+                        print("登录成功但未取到 sessionid，请改用 `videonote login douyin --cookie`", file=sys.stderr)
+                        if exit_on_fail:
+                            sys.exit(1)
+                        return
+                    if err:
+                        # HTTP 500 等非预设错误也不能落入「登录成功」分支。
+                        print(f"{_GREEN}✓ 已保存抖音登录 Cookie{_RESET}", file=sys.stdout)
+                        print(f"{_YELLOW}⚠ {sanitize_error_text(err)}{_RESET}", file=sys.stdout)
+                        if err.startswith("未能确认登录态"):
+                            print("这不等于浏览器登录失败。可先尝试下载，无需仅因这条提示重新扫码。", file=sys.stdout)
+                    else:
+                        print(f"{_GREEN}✓ 已保存抖音登录态 —— 下载视频笔记可用了{_RESET}", file=sys.stdout)
+                    try:
+                        input("（按回车返回）")
+                    except (EOFError, KeyboardInterrupt):
+                        pass
+                    return
+            if st == QR_VERIFY:
+                if getattr(session, "interactive_verification", False) is not True:
+                    print("抖音要求二次验证，直连接口无法完成。请安装本机 Chrome 后重试，或用 --cookie。", file=sys.stderr)
+                    if exit_on_fail:
+                        sys.exit(1)
+                    return
+                if not verification_started:
+                    # 只延长一次；不能每次轮询都把截止时间向后推成无限等待。
+                    verification_started = True
+                    deadline = time.monotonic() + 300
+                    print(f"{_YELLOW}手机已确认，但抖音要求二次验证。{_RESET}", file=sys.stdout)
+                    print("请在已打开的浏览器中完成身份验证（短信或刷脸），不要关闭窗口。", file=sys.stdout)
+                    print("验证码只在抖音官方页面输入；完成后会自动保存登录态，最多等待 5 分钟。", file=sys.stdout)
+                last_status = QR_VERIFY
+                continue
             if st == QR_SCANNED and last_status != QR_SCANNED:
-                print("已扫码，请在手机上确认登录…", file=sys.stdout)
+                print("已扫码，请在手机上确认登录；若已确认，请查看电脑登录窗口是否要求身份验证。", file=sys.stdout)
                 last_status = QR_SCANNED
             elif st == QR_EXPIRED:
                 print(f"{_YELLOW}二维码已过期，请重新运行 `videonote login douyin`{_RESET}", file=sys.stdout)
@@ -2146,20 +2193,23 @@ def _login_douyin_qr(exit_on_fail: bool = True) -> None:
                 except (EOFError, KeyboardInterrupt):
                     pass
                 return
-        print(f"{_YELLOW}二维码已过期，请重新运行 `videonote login douyin`{_RESET}", file=sys.stdout)
+        if verification_started:
+            print(f"{_YELLOW}等待二次验证超时，未保存登录态。请重新运行 `videonote login douyin`。{_RESET}", file=sys.stdout)
+            if exit_on_fail:
+                sys.exit(1)
+        else:
+            print(f"{_YELLOW}等待扫码超时，请重新运行 `videonote login douyin`{_RESET}", file=sys.stdout)
     except KeyboardInterrupt:
         print("（已取消）", file=sys.stdout)
     finally:
-        close = getattr(session, "close", None)
-        if callable(close):
-            close()
+        close_session(session)
 
 
 def _login_douyin(args, exit_on_fail: bool = True) -> None:
     """`videonote login douyin`：默认扫码；`--cookie` 粘贴浏览器 Cookie。"""
     parser = argparse.ArgumentParser(
         prog="videonote login douyin",
-        description="抖音登录：本机 Chrome 出码；--cookie 改粘贴浏览器 Cookie",
+        description="抖音登录：显示本机 Chrome 窗口扫码及二次验证；--cookie 改粘贴浏览器 Cookie",
     )
     parser.add_argument("--cookie", action="store_true", help="粘贴 Cookie 而不是扫码")
     opts = parser.parse_args(args)

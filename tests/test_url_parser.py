@@ -48,17 +48,17 @@ class YoutubeEmbedTest(unittest.TestCase):
         self.assertIsNone(extract_video_id("https://www.youtube.com/embed/dQw4w9WgXcQ", "douyin"))
 
 
-class DouyinShortUrlTest(unittest.TestCase):
-    """v.douyin.com 短链先解真实链接再提 id（#125 B1）。
+class DouyinAwemeIdTest(unittest.TestCase):
+    """同一条抖音视频的多种 URL 归一为 aweme_id。
 
-    旧实现只匹配 /video/(\\d+)——App 分享默认短链解析不出 → 缓存身份 douyin:None
-    永不命中，同一视频每次都重下重转写。
+    旧实现只匹配 /video/(\\d+)——精选页 ``?modal_id=`` 与短链跳到精选页时
+    解析不出 id，缓存身份 douyin:None，同一视频每次重下重转写。
     """
+
+    VIDEO_ID = "7664861474845658402"
 
     def test_short_url_resolved_before_extract(self):
         from unittest import mock
-
-        from app.utils.url_parser import extract_video_id
 
         with mock.patch("app.utils.url_parser.resolve_douyin_short_url") as m_resolve:
             m_resolve.return_value = "https://www.douyin.com/video/7234567890123456789"
@@ -66,26 +66,112 @@ class DouyinShortUrlTest(unittest.TestCase):
         m_resolve.assert_called_once_with("https://v.douyin.com/abc123/")
         self.assertEqual(vid, "7234567890123456789")
 
-    def test_resolve_failure_falls_back_to_none(self):
-        from app.utils.url_parser import extract_video_id
+    def test_short_url_resolved_to_jingxuan_modal_id(self):
+        from unittest import mock
 
-        self.assertIsNone(extract_video_id("https://v.douyin.com/abc123/", "douyin"))
+        with mock.patch("app.utils.url_parser.resolve_douyin_short_url") as m_resolve:
+            m_resolve.return_value = (
+                f"https://www.douyin.com/jingxuan?modal_id={self.VIDEO_ID}"
+            )
+            vid = extract_video_id("https://v.douyin.com/_pnGDe3Hk3E/", "douyin")
+        m_resolve.assert_called_once_with("https://v.douyin.com/_pnGDe3Hk3E/")
+        self.assertEqual(vid, self.VIDEO_ID)
+
+    def test_resolve_failure_falls_back_to_none(self):
+        from unittest import mock
+
+        with mock.patch(
+            "app.utils.url_parser.resolve_douyin_short_url", return_value=None
+        ):
+            self.assertIsNone(extract_video_id("https://v.douyin.com/abc123/", "douyin"))
 
     def test_full_url_unresolved_keeps_working(self):
-        from app.utils.url_parser import extract_video_id
-
         self.assertEqual(
             extract_video_id("https://www.douyin.com/video/7234567890123456789", "douyin"),
             "7234567890123456789",
         )
 
     def test_share_url_matches(self):
-        from app.utils.url_parser import extract_video_id
-
         self.assertEqual(
             extract_video_id("https://www.iesdouyin.com/share/video/7234567890123456789", "douyin"),
             "7234567890123456789",
         )
+
+    def test_jingxuan_modal_id(self):
+        from unittest import mock
+
+        with mock.patch("app.utils.url_parser.resolve_douyin_short_url") as m_resolve:
+            self.assertEqual(
+                extract_video_id(
+                    f"https://www.douyin.com/jingxuan?modal_id={self.VIDEO_ID}",
+                    "douyin",
+                ),
+                self.VIDEO_ID,
+            )
+        m_resolve.assert_not_called()
+
+    def test_user_and_discover_modal_id(self):
+        self.assertEqual(
+            extract_video_id(
+                f"https://www.douyin.com/user/MS4wLjABAAAA?modal_id={self.VIDEO_ID}",
+                "douyin",
+            ),
+            self.VIDEO_ID,
+        )
+        self.assertEqual(
+            extract_video_id(
+                f"https://www.douyin.com/discover?modal_id={self.VIDEO_ID}&from=web",
+                "douyin",
+            ),
+            self.VIDEO_ID,
+        )
+
+    def test_equivalent_forms_share_same_id(self):
+        from unittest import mock
+
+        video = f"https://www.douyin.com/video/{self.VIDEO_ID}"
+        jingxuan = f"https://www.douyin.com/jingxuan?modal_id={self.VIDEO_ID}"
+        self.assertEqual(extract_video_id(video, "douyin"), self.VIDEO_ID)
+        self.assertEqual(extract_video_id(jingxuan, "douyin"), self.VIDEO_ID)
+        with mock.patch("app.utils.url_parser.resolve_douyin_short_url") as m_resolve:
+            m_resolve.return_value = jingxuan
+            self.assertEqual(
+                extract_video_id("https://v.douyin.com/_pnGDe3Hk3E/", "douyin"),
+                self.VIDEO_ID,
+            )
+
+    def test_modal_id_preferred_over_path(self):
+        self.assertEqual(
+            extract_video_id(
+                f"https://www.douyin.com/video/1111111111111111111?modal_id={self.VIDEO_ID}",
+                "douyin",
+            ),
+            self.VIDEO_ID,
+        )
+
+    def test_share_text_extracts_embedded_short_url(self):
+        from unittest import mock
+
+        share = (
+            "7.43 11/16 gba:/ j@P.xS 标题 https://v.douyin.com/_pnGDe3Hk3E/ "
+            "复制此链接，打开Dou音搜索，直接观看视频！"
+        )
+        with mock.patch("app.utils.url_parser.resolve_douyin_short_url") as m_resolve:
+            m_resolve.return_value = (
+                f"https://www.douyin.com/video/{self.VIDEO_ID}"
+            )
+            vid = extract_video_id(share, "douyin")
+        m_resolve.assert_called_once_with("https://v.douyin.com/_pnGDe3Hk3E/")
+        self.assertEqual(vid, self.VIDEO_ID)
+
+    def test_feed_without_modal_id_is_not_a_video(self):
+        from unittest import mock
+
+        with mock.patch("app.utils.url_parser.resolve_douyin_short_url") as m_resolve:
+            self.assertIsNone(
+                extract_video_id("https://www.douyin.com/jingxuan", "douyin")
+            )
+        m_resolve.assert_not_called()
 
 
 class XiaoyuzhouEpisodeIdTest(unittest.TestCase):

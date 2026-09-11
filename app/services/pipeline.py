@@ -51,7 +51,7 @@ NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", str(Path(get_data_dir()) / "
 _PLATFORM_HINTS = [
     ("bilibili", ("bilibili.com", "b23.tv")),
     ("youtube", ("youtube.com", "youtu.be")),
-    ("douyin", ("douyin.com",)),
+    ("douyin", ("douyin.com", "iesdouyin.com")),
     ("tiktok", ("tiktok.com",)),
     ("kuaishou", ("kuaishou.com", "gifshow.com")),
     ("xiaoyuzhou", ("xiaoyuzhoufm.com", "xiaoyuzhou.fm")),

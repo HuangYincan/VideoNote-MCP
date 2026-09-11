@@ -18,10 +18,10 @@ from app.models.audio_model import AudioDownloadResult
 from app.services.cookie_manager import CookieConfigManager
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
+from app.utils.url_parser import extract_video_id as parse_platform_video_id
 from app.utils.url_safety import (
     assert_public_http_url,
     public_get,
-    public_head,
     sanitize_error_text,
     sanitize_url,
 )
@@ -153,30 +153,9 @@ class DouyinDownloader(Downloader):
         return url
 
     def extract_video_id(self, url: str) -> str:
-        video_url = DouyinDownloader.find_url(url)
-        candidates = [url]
-        if video_url:
-            page = video_url[0]
-            candidates.append(page)
-            try:
-                # public_head 逐跳校验（#140）：入口 URL 公网后重定向到内网的
-                # Location 在发出前拦截（入口校验覆盖不到 redirect 目标）
-                response = public_head(page, timeout=(5, 10))
-                candidates.append(response.url)
-            except Exception:
-                # HEAD 失败仍解析原始路径（#145 B1）：``/video/{id}`` 长链不该因
-                # 短链探测超时变成空 aweme_id。
-                pass
-        patterns = [
-            r'video/(\d+)',
-            r'aweme_id=(\d+)',
-        ]
-        for candidate in reversed(candidates):
-            for pattern in patterns:
-                match = re.search(pattern, candidate)
-                if match:
-                    return match.group(1)
-        return ""
+        # 与 url_parser / 转写缓存同一套形态：/video/{id}、modal_id、短链。
+        # 长链不再无条件 HEAD；短链解析走 url_parser 的 lru_cache。
+        return parse_platform_video_id(url, "douyin") or ""
 
     def gen_real_msToken(self, cancel_event: Optional[threading.Event] = None) -> str:
         check_cancel(cancel_event)
@@ -232,7 +211,16 @@ class DouyinDownloader(Downloader):
         try:
             kwargs = self.headers_config
             base_params = BaseRequestModel().model_dump()
-            base_params["msToken"] = self.gen_real_msToken(cancel_event=cancel_event)
+            try:
+                base_params["msToken"] = self.gen_real_msToken(cancel_event=cancel_event)
+            except ValueError:
+                # 初始化接口的网络/响应失败不等于详情不可访问。实际验证：保留
+                # Cookie + ABogus、使用空 msToken 仍可取得详情；以详情结果为准。
+                # 不打印初始化异常原文，其中可能含服务端返回的 token。
+                check_cancel(cancel_event)
+                logger.warning("抖音 msToken 初始化不可用，尝试使用现有 Cookie 与签名请求视频详情")
+                base_params["msToken"] = ""
+            check_cancel(cancel_event)
 
             base_params["aweme_id"] = aweme_id
             ab_value = self._bogus.get_value(base_params)

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "videonote": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/VideoNote-MCP",
+        "run",
+        "--frozen",
+        "videonote"
+      ]
+    }
+  }
+}

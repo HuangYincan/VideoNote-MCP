@@ -913,3 +913,68 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - 安装脚本改为直接注册 MCP，不再安装或链接 Skills；已有插件/同名 MCP 不自动覆盖。可选 Claude 插件仅保留 MCP 配置，打包及 Release 校验同步移除 Skills 依赖。
 - MCP 10 工具保持不变；兼容字段 `health_check.skill_refresh` 返回空串，配置提示改为终端 CLI。中英文 README、MCP JSON 示例和使用/开发文档同步。
 - **验证**：全量 **1033 passed, 1 skipped, 10 subtests passed**；Ruff F/I、shell 语法及 diff 检查通过；wheel/sdist 不含 Skills，官方 MCP SDK 对构建 wheel 的真实 stdio 握手、10 工具名单与 health_check 通过。没有发布新版本。
+
+
+## 抖音扫码请求与登录生命周期修复（待发布，1024→1064 tests）
+
+- **复现**：旧有 34 条抖音认证测试全通过，但新增首批 17 条时序回归全部失败；固定 90 次循环会在快速浏览器轮询时约 45 秒退出，慢请求又会超出承诺时长；确认后 Cookie 尚未落地便直接持久化，失败初始化/二维码渲染还会漏关会话。
+- **请求实现**：官网实测 `get_qrcode` 是 GET、`check_qrconnect` 是带 token / `is_frontier=true` 的 POST 表单。删除「改写出码 URL，再用 APIRequestContext 发 GET」；观察并绑定当前二维码的实际请求，在网页内 fetch 相同方法/表单，移除旧 URL 签名并设置 `is_frontier=false`，保留官方 JS 和原生回调。继续支持实际观察到的旧 GET 轮询。
+- **状态与有效期**：忽略无关响应和其他 token，错误响应不得触发成功，已确认状态不被晚到过期覆盖；页面自动换码后要求重试而非悄悄替换终端 token。按官网 `expire_time` 和单调时钟显示/限制剩余秒数（实测约 60 秒；缺省上限 180 秒），不按循环次数计时。
+- **Cookie 与退出**：手机确认后先给官网回调 3 秒宽限，总计最多等待 15 秒落地主站可用 Cookie；优先读取最终 Cookie 而非早期快照；全生命周期 finally 关闭浏览器 / HTTP 后备会话，包含 Ctrl-C、出码失败和渲染失败。所有验证错误均显示警告，不再把 HTTP 500 等未知错误误报为成功。
+- **验证**：全量 `pytest` **1064 passed, 1 skipped, 10 subtests passed**；Ruff F/I、`git diff --check` 通过。真实本机 Chrome 成功出码、浏览器内 POST 短轮询返回 HTTP 200 / `error_code=0`，并确认退出关闭浏览器、未保存凭证。**未进行真实手机扫码确认**；该段由延迟 Cookie / 回调的确定性回归覆盖，仍需用户本机完成最终验收。
+- 手册、Skill 及其工具/排错参考同步；此节记录源码改动，不代表已经发布到 PyPI。安装版用户需在对应修复版发布后更新；更新 Skill 后刷新插件。
+
+
+## 抖音扫码二次验证不可见、状态卡在已扫码（2026-09-10 · 待发布，1064→1074 tests）
+
+- **人工复现**：手机确认成功后，网页登录页仍显示「身份验证」（短信/刷脸），主站没有 sessionid；脱敏诊断捕获 `check_qrconnect` 的 `error_code=2046`。不是单纯的 WebSocket/POST 轮询问题。
+- **根因**：旧代码将所有非零错误码视为等待状态，丢失身份验证要求；浏览器以 headless 启动，用户看不到验证弹窗；CLI 只按二维码有效期计时，可能提前关闭验证窗口。
+- **修复**：显示 Chrome/Edge/Chromium 窗口；2046 映射为独立二次验证状态。此时暂停后备请求，不跟随回调打断验证；即使原二维码过期/刷新、迟到 confirmed，也继续等待官方页面写入 Cookie。CLI 提示本人完成短信/刷脸并只延长一次、最多等待 5 分钟；关闭窗口可取消，直连回退遇验证则明确要求使用浏览器。
+- **回归**：从人工诊断的脱敏状态构造实际调用链回放，先验证 2 项失败再修复。新增 10 项测试覆盖可见窗口、响应识别、超过二维码有效期后完成验证、confirmed 回调阶段触发验证、无 Cookie 不保存、关闭/超时及 HTTP 回退。
+- **验证**：扫码相关 **84 passed**；全量 **1074 passed, 1 skipped, 10 subtests passed**；Ruff F/I 与 `git diff --check` 通过。完整短信/刷脸及成功落盘仍需本人在修复版完成，不把响应回放当作实机登录成功。
+- **运行边界**：尚未发布或改动系统安装包；从仓库运行 `.venv/bin/python -m videonote_mcp.cli login douyin` 才能验证此次源码修改。凭证与验证码不得经 Agent 对话。
+
+
+## 抖音浏览器已登录，附加校验却提示重扫（2026-09-10 · 待发布，1074→1091 tests）
+
+- **用户现象**：二次验证已完成、浏览器已进入登录态，CLI 已保存 Cookie，却提示「登录态无效或未能确认，请重新扫码」。日志表明当前卡点已从扫码推进到登录后的独立 HTTP 校验；本次未获实际接口响应，不能据此断言已保存 Cookie 无效或一定可用。
+- **确定性复现**：以合成的 HTML、空 JSON、异常状态回放真实 `CLI → DouyinBrowserQr.persist → verify_douyin_login` 路径；首批 4 项失败，扩展到 17 项时 12 失败 / 5 通过，证明未知校验结果被误报为登录失效。
+- **修复**：区分「Cookie 已保存」「明确认证拒绝（401）」和「附加校验未能确认」。非 JSON、403/429、未知响应不再要求已登录用户重新扫码；保留 Cookie，可先尝试下载。不把普通 message=success 或错误响应里附带的账号字段当成认证成功。诊断只显示 HTTP 状态或短数字错误码，网络异常只记录类型，不回显响应正文或凭证。
+- **验证**：新增 17 项回归全部通过；全量 **1091 passed, 1 skipped, 10 subtests passed**，Ruff F/I 与 `git diff --check` 通过。真实账号接口探测尚未执行，需用户明确授权后才能区分风控、响应兼容性与凭证问题；此轮修复的是已证实的误判，不冒充实机登录/下载验收成功。
+- 手册、Skill、工具/排错参考及 VENDOR 同步；尚未发布。插件用户在对应版本发布后仍需刷新 Skill。
+
+## 抖音同一视频多种链接归一（2026-09-10 · 待发布，1091→1099 tests）
+
+- **现象**：同一条抖音视频常有 `/video/{id}`、精选页 `/jingxuan?modal_id={id}`、App 分享短链 `v.douyin.com/...` 三种形态。旧解析只认路径里的 `/video/(\\d+)`，精选页与「短链跳到精选页」提不出 aweme_id，转写缓存键变成 `douyin:None`，同一视频每次重下重转写。
+- **修复**：`url_parser.extract_douyin_aweme_id` 统一提取 `modal_id` / `aweme_id` / `/video|note/{id}` / `iesdouyin.com/share/video`；短链只在本地解析不出 id 时才 HEAD。下载器与 `note_cache` 共用该解析。`detect_platform` 认 `iesdouyin.com`。
+- **验证**：新增 8 项回归；全量 **1099 passed, 1 skipped, 10 subtests passed**；Ruff F/I 通过。未请求真实下载。
+
+
+## 2026-09-10 — 修复抖音预检误走 yt-dlp（待发布）
+
+- 用户报告扫码完成后，MCP 针对抖音长链、`modal_id` 精选页及 App 短链仍返回 `Fresh cookies (not necessarily logged in) are needed`。回归测试确认旧 `inspect_video` 不走原生下载器，即使原生元信息可用也会被 yt-dlp 失败阻断。
+- `app/services/inspect.py` 新增抖音分支，复用 `DouyinDownloader.fetch_video_info` 的 Cookie/msToken/ABogus 路径；统一返回官方视频长链及秒级时长。缺详情、无效视频 ID、非视频条目保持失败；不回退到 yt-dlp，也不把未知响应一律解释为 Cookie 过期。
+- `tests/test_douyin_inspect.py` 新增 35 项：三类输入、原生请求确实携带合成 Cookie 和签名、MCP 工具包装、元信息缺失/异常字段、原生错误透传、SSRF 入口守卫。初始 3 个核心用例复现原报错；修复后相关 46 项通过。官方 MCP SDK 的隔离 stdio 冒烟通过（10 工具、三种链接；HTTP 为合成响应，不是线上下载验收）。
+- 排障核对发现源码数据目录有抖音 Cookie，但安装版默认目录无抖音 Cookie，客户端仍配置 uvx 安装版。手册和 Skill 补充版本/数据目录核对，避免让用户无效地反复扫码；未自动复制凭证、修改外部客户端配置或发布。
+- 真实原生元信息探测停在 msToken 初始化的 TLS `ConnectError`，尚未发出视频详情请求；真实媒体下载和转写未验收。未把回归通过或浏览器已登录当作端到端成功。
+- 验证：`pytest -q` → **1134 passed, 1 skipped, 10 subtests passed**；Ruff F/I 与 `git diff --check` 通过。
+
+
+## 2026-09-10 — 抖音 msToken 初始化失败不再阻断详情请求（待发布）
+
+- **实机定位**：在用户授权的只读范围内，仅向官方视频详情接口发送已保存的 Cookie，不跟随重定向、不下载媒体、不输出凭证。保留 ABogus 签名、将 msToken 留空，目标视频详情返回 HTTP 200、`status_code=0`、视频 ID 匹配。这证明先前 msToken 初始化的 TLS 错误不应直接阻断详情尝试，不能据此判定 Cookie 过期。
+- **修复**：`DouyinDownloader.fetch_video_info` 捕获初始化器的预期 `ValueError`，在复查取消状态后保留 Cookie 与签名，以空 msToken 请求详情。成功取得的 token 保持原样；取消和非预期错误仍透传；初始化日志不回显异常原文，避免响应 token 泄露。详情失败仍失败，预检与下载入口共用该恢复行为。
+- **确定性验证**：新增 `tests/test_douyin_mstoken_fallback.py`，初始核心 15 项中 10 失败 / 5 通过；修复后补齐下载入口与 MCP 包装，共 18 项通过，覆盖 TLS/HTTP/缺失与异常 token、有效 token、缓存、详情失败、取消及凭证不外泄。单测使用合成凭证和 HTTP，音频下载只做 mock，不是实机下载验收。
+- **真实恢复分支验证**：重放先前初始化 TLS 失败（该步骤无网络），随后由修改后的生产代码发出真实签名详情请求，HTTP 200 / `status_code=0`，预检成功，目标时长 **579.22 秒**。未伪称完整实时 msToken 初始化、媒体下载或转写成功，也不以公开详情可访问证明账号身份校验成功。
+- **全量**：`pytest -q` → **1152 passed, 1 skipped, 10 subtests passed**；Ruff F/I 与 `git diff --check` 通过。手册、Skill、排错参考、VENDOR 及活跃状态同步。未修改外部 Claude MCP 配置、复制 Cookie、发布或安装新版本；源码修复需要客户端改用源码及同一数据/配置目录后重启，发布后插件用户还需刷新 Skill。
+
+
+## 2026-09-11 — 整合抖音修复、源码 MCP 配置与分支维护（未发版）
+
+- **抖音登录**：二维码按官网剩余时间计时，绑定当前二维码的 GET/POST/WS 状态；手机确认后遇二次验证，保持可见浏览器并单独等待最多 5 分钟。取得主站 Cookie 后保存；附加 HTTP 校验无法确认时不再直接要求重扫。
+- **抖音解析**：预检与下载复用原生 Cookie/msToken/ABogus 路径，避免旧版 yt-dlp `Fresh cookies` 误报。msToken 初始化预期失败时保留 Cookie 和签名继续尝试详情请求；短链、精选弹层和视频页共享 aweme_id 与转写缓存。元信息可访问不代表媒体下载或转写成功。
+- **MCP 配置**：新增 `examples/mcp.source.example.json`，用 `uv --directory … run --frozen videonote` 固定源码入口；README 中英文版同时提供已发布包与源码 JSON。登录 CLI 必须与 MCP 使用相同源码及数据/配置目录，避免“扫码成功但另一实例仍无 Cookie”。不包含个人配置或凭证。
+- **文档与分发**：保留 MCP-only 主线，不恢复 Skills/commands；同步使用手册、工具描述、架构文档、文档索引、VENDOR 和可编辑架构图，保留历史审查结论。增加配置示例/README 一致性与架构图回归。
+- **分支维护**：CONTRIBUTING 明确仅 dev/main 为长期分支，临时分支合并后清理；交付时将 dev 快进同步到 main，不强推，不创建备份分支。CI 同时检查 Ruff F/I，并保留三版本矩阵和稳定的 Smoke test 汇总。
+- **验证**：1164 passed、1 skipped、10 subtests passed；Ruff F/I、diff/shell 检查、wheel/sdist 构建通过。隔离源码 JSON 启动和 wheel 的实际 MCP stdio 均返回精确 10 工具，health_check 通过；wheel/sdist 无 Skills/commands。未重新执行真实平台登录、媒体下载或 ASR。
+- **版本边界**：这是仓库整合，不是发版；版本号仍为 0.1.28，未发布 v0.2.1，未推送版本 tag。
