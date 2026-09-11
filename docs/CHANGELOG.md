@@ -988,3 +988,4 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **多格式边界**：SRT/VTT/JSON 继续确定性导出；LaTeX/Typst 由 agent 复用底稿填充副本。PDF 需实际编译并核对，缺依赖时交付源码；中文字体组、原样例标签警告、Typst 缓存/首次联网要求均写入指南。
 - **验证与分发**：1197 passed、1 skipped、10 subtests passed；Ruff F/I、shell、源码/wheel 实际 MCP stdio 通过。wheel/sdist 含全部独立模板且无 Skills/commands，原文件哈希验证；CI 增加 wheel 冒烟。三套模板本机编译成功，中文 MathNoteCN 在副本采用已有 Fandol 字体后也编译成功。未执行真实媒体下载或 ASR。
 - **文档与版本**：同步 README 中英文、架构、预期效果、手册、索引、开发指南和架构图；仅仓库维护，版本仍为 0.1.28，未发版。
+- **实现提交**：`50db5f7`（独立模板与 MCP 指引）；PR #51 的 Python 3.11/3.12/3.13 与 Smoke test 检查通过。
