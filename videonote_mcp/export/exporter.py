@@ -15,9 +15,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 from app.models.transcriber_model import TranscriptResult
-from app.services.note import NOTE_OUTPUT_DIR
 from app.utils.json_store import write_text_atomic
-from app.utils.task_manifest import record_task_paths
+from app.utils.task_manifest import get_note_dir, record_task_paths
 
 from .json import to_json
 from .srt import to_srt
@@ -59,8 +58,8 @@ def export_transcript(
 
     if out_dir is None:
         task = task_id or "export"
-        out_dir = NOTE_OUTPUT_DIR / task
-    out_dir = Path(out_dir)
+        out_dir = get_note_dir() / task
+    out_dir = Path(out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     segments = _segments(source)

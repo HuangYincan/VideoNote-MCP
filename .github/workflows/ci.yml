@@ -25,7 +25,7 @@ jobs:
         run: uv run ruff check --select F,I .
       - name: Server imports
         run: uv run python -c "import videonote_mcp.server; print('import OK')"
-      - name: MCP initialization, tools and offline templates over stdio
+      - name: MCP tools, artifact exports and offline templates over stdio
         run: uv run python tests/mcp_stdio_smoke.py
       - name: Build and verify standalone wheel
         run: |

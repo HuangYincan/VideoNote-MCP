@@ -9,8 +9,8 @@
 `{fmt: file://绝对路径}` 供 Agent 直接 Read。
 
 import 纪律：`srt/vtt/json` 渲染器只依赖纯 dataclass，可无副作用导入；
-`exporter` 会触发 `app.services.note`（加载 vendored 流水线），因此**惰性导入**，
-避免 `import videonote_mcp.export` 时提前加载 app.* 并产生 stdout 噪音。
+`exporter` 仅按需加载文件写入/manifest 工具，不导入 note、DB、转写引擎或 MCP
+入口。纯渲染与文件落盘分离，普通 import 不初始化运行目录。
 """
 from typing import Dict, List, Optional, Union
 
