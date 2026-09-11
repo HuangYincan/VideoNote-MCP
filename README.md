@@ -94,6 +94,29 @@ uv --directory /absolute/path/to/VideoNote-MCP run --frozen videonote login douy
 
 若设置了 `VIDEONOTE_DATA_DIR` / `VIDEONOTE_CONFIG_DIR`，CLI 与 MCP 必须使用相同值。手机确认后如有二次验证，请在打开的官方浏览器窗口内完成；附加校验未能确认不等于 Cookie 无效，不必仅因此反复扫码。详见[抖音登录排障](docs/04-使用手册.md#抖音登录扫码)。
 
+## Agent 指引与独立导出模板
+
+MCP 初始化说明与 `health_check` / `get_config` 会提供官方仓库、安装/排障文档入口及版本匹配提醒；失败体检项返回 `next_steps`。这些是建议，不会自动安装依赖或修改配置。MCP 尚未启动时，先按本 README 配置，再结合客户端启动日志排查。
+
+**无需 Skills，也保留排版模板**：Math Note（LaTeX 中英文）、English Article（LaTeX）、zju-lab（Typst）随安装包分发，含原始许可证与配套文件。仍为 **10 个工具**，不需要改 MCP JSON。
+
+```text
+process_media(action="template")                                          # 列模板
+process_media(action="template", template_file="GUIDE.md")                 # 离线导出指南
+process_media(action="template", template_id="latex-math-note",
+              template_file="main.tex")                                  # 读源码
+process_media(action="template", template_id="latex-math-note",
+              out_dir="<health_check.data_dir>/exports/my-note")           # 复制到新的目录
+```
+
+已有目录不覆盖；默认仅写数据目录内。也可读取 `videonote://templates` / `videonote://help/export` Resources，不支持 Resources 的客户端走以上工具即可。
+
+- SRT/VTT/JSON：`process_media(action="export")` 确定性导出。
+- LaTeX/Typst：Agent 复用已有底稿填模板；**MCP 不自动编译 PDF**。有编译器、字体及依赖且实际编译成功后才交付 PDF，否则交付完整源码。历史样例 PDF 不是用户生成的结果。
+- 详见[随包导出指南](videonote_mcp/templates/README.md)。凭证只在用户终端或官方页面输入。
+
+> 以上描述当前源码能力。已发布包可能尚未包含这些修改：先核对 `health_check.server_version` 与发布记录；需要当前代码时使用上面的源码配置，不把 `main/dev` 文档当作旧版本的功能保证。
+
 ## 文档
 
 安装 / 配置 / 使用 / 环境变量 / 更新 / 安全等完整说明已归档到 `docs/`（README 只保留概览）：

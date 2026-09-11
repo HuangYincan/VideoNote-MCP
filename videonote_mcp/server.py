@@ -34,6 +34,12 @@ from videonote_mcp.config import (
     resolve_int_config,
     setup_environment,
 )
+from videonote_mcp.guidance import (
+    REPOSITORY_URL,
+    SERVER_INSTRUCTIONS,
+    add_next_steps,
+    project_info,
+)
 
 DATA_DIR = setup_environment()
 
@@ -212,7 +218,9 @@ def _coerce_int(value, default: int, clamp_min: Optional[int] = None) -> int:
 init_db()
 seed_default_providers()
 
-mcp = FastMCP("videonote")
+mcp = FastMCP("videonote", website_url=REPOSITORY_URL, instructions=SERVER_INSTRUCTIONS)
+# SDK 1.x FastMCP 未暴露 version 参数；低层 Server 支持该字段，避免初始化回报 SDK 版本。
+mcp._mcp_server.version = _SERVER_VERSION
 
 # ---------- 后台任务 ----------
 
@@ -1385,6 +1393,30 @@ def _load_task_transcript(task_id: str) -> Optional[dict]:
     return None
 
 
+@mcp.resource("videonote://templates", title="内置导出模板", mime_type="application/json")
+def templates_resource() -> str:
+    """列出独立 LaTeX/Typst 模板；无需 Skills。"""
+    from videonote_mcp.export.templates import template_catalog
+
+    return json.dumps(template_catalog(), ensure_ascii=False)
+
+
+@mcp.resource("videonote://templates/{template_id}", title="模板配套文件", mime_type="application/json")
+def template_resource(template_id: str) -> str:
+    """按白名单 ID 列文件；用 process_media(action='template', template_file=...) 读取源码。"""
+    from videonote_mcp.export.templates import access_template
+
+    return json.dumps(access_template(template_id), ensure_ascii=False)
+
+
+@mcp.resource("videonote://help/export", title="离线多格式导出指南", mime_type="text/markdown")
+def export_guide_resource() -> str:
+    """从底稿到字幕/LaTeX/Typst 的随包指引；不依赖读取 GitHub。"""
+    from videonote_mcp.export.templates import export_guide
+
+    return export_guide()
+
+
 @mcp.resource(
     "videonote://task/{task_id}/transcript",
     title="任务转写文本",
@@ -1794,8 +1826,12 @@ def health_check(
 
     返回 {ok, server_version, plugin_version, whisper_models, engine_advice,
     audio_enhance, keyed_providers, queue_length, max_workers, data_dir, skill_refresh,
-    checks: [{name, ok, detail}], duration_secs?}。ok=false 时先解决 detail 里的问题
+    checks: [{name, ok, detail, code?, next_steps?}], project, duration_secs?}。ok=false 时先解决 detail 里的问题
     再提交，避免长任务跑到半路才因模型未下载 / 磁盘满失败。
+
+    project 给出官方仓库、安装/使用手册和版本匹配提示；失败检查项的 next_steps 是建议，
+    不会自动安装/清理/改配置。MCP 无法启动时从仓库 README 和客户端日志排查。
+    导出模板用 process_media(action="template")；不要求安装 Skills。
 
     - need_provider: 默认 False（#151：默认路径是 Agent 写笔记，不需要配置 LLM）。
       走 generate_note / batch_generate_notes 后备时传 True，才检查供应商 key/模型。
@@ -1968,10 +2004,12 @@ def health_check(
     with _tasks_lock:
         queue_len = len(_task_futures)
 
+    add_next_steps(checks)
     failed = [c for c in checks if not c["ok"]]
     payload = {
         "ok": not failed,
         "server_version": _SERVER_VERSION,
+        "project": project_info(_SERVER_VERSION),
         "plugin_version": _installed_plugin_version(),
         "whisper_models": models,
         "engine_advice": engine_advice,
@@ -2069,6 +2107,7 @@ def get_config(provider_id: str = "") -> str:
     """读取当前配置（只读，不做任何修改；敏感项一律不返回）。
 
     汇总返回：
+    - project: 官方仓库、README/使用手册入口、当前版本与版本匹配提醒；无需 Skills；
     - app_config: setup 持久化的默认值（默认供应商/模型、风格、视频理解/弹幕开关、
       导出格式等，已过滤敏感键）；
     - providers: 已配置供应商（api_key 掩码）与默认供应商 id；
@@ -2103,6 +2142,7 @@ def get_config(provider_id: str = "") -> str:
         for p in ProviderService.get_all_providers_safe()
     ]
     result = {
+        "project": project_info(_SERVER_VERSION),
         "app_config": safe,
         "providers": providers,
         "transcriber": {
@@ -2504,7 +2544,7 @@ def _diarize_media(audio_file: str, num_speakers: Optional[int] = None) -> str:
 
 @mcp.tool()
 def process_media(
-    action: Literal["export", "merge", "diarize"] = "export",
+    action: Literal["export", "merge", "diarize", "template"] = "export",
     task_id: str = "",
     formats: Optional[List[str]] = None,
     out_dir: Optional[str] = None,
@@ -2512,6 +2552,8 @@ def process_media(
     audio_file: str = "",
     num_speakers: Optional[int] = None,
     hf_token: Optional[str] = None,
+    template_id: str = "",
+    template_file: str = "",
 ) -> str:
     """媒体/转写加工（合并自 export_transcript / merge_audio / diarize_media，#138）。
 
@@ -2519,6 +2561,12 @@ def process_media(
       确定性机械渲染，不调 LLM）。需 task_id；formats 可选（srt/vtt/json，缺省取
       setup「导出格式默认」）；out_dir 可选（缺省 note_results/{task_id}/gen/）。
       返回 {ok, task_id, formats: {fmt: "file://绝对路径"}, errors: {}}，供 Agent 直接 Read；
+    - action="template"：内置 LaTeX/Typst 模板（非 Skills）。不传 template_id 列目录；
+      传 ID 列配套文件；template_file 读清单中的文本文件，或不传 ID 用 "GUIDE.md" 读离线导出指南。
+      out_dir 显式复制全部配套文件/许可证到新的目录，拒绝覆盖，默认限数据目录内；
+      template_file 与 out_dir 不可同时传。读取不写文件，不接受任意文件路径。
+      由 Agent 基于已有底稿生成 .tex/.typ；不重新转写，不自动编译/安装。PDF 需本机编译器、
+      字体/宏包且实际编译成功；源码包中的样例 PDF 不是用户导出结果。
     - action="merge"：把多个音频/视频文件合并为一个 16kHz mono wav（FFmpeg concat）。
       需 files（至少 2 个本地路径，编码可不同）；out_dir 可选（缺省 note_results/merged/）。
       同 generate_note 安全边界：本地文件/输出目录默认限数据目录内，数据目录外
@@ -2537,6 +2585,13 @@ def process_media(
     """
     if hf_token:
         raise ValueError(_SENSITIVE_VIA_MCP)
+    if action == "template":
+        from videonote_mcp.export.templates import access_template
+
+        dest = _coerce_local_path(out_dir).resolve() if out_dir else None
+        if dest is not None:
+            _guard_data_boundary(dest, "模板输出目录")
+        return json.dumps(access_template(template_id, template_file, dest), ensure_ascii=False)
     if action == "export":
         if not task_id:
             raise ValueError("action=export 需要 task_id（已完成任务的 id）")
@@ -2550,7 +2605,7 @@ def process_media(
             raise ValueError("action=diarize 需要 audio_file（本地音频/视频文件路径）")
         return _diarize_media(audio_file, num_speakers=num_speakers)
     # schema Literal 已约束 action；直接调用/老客户端仍可能传非法值（#138 入口显式报错）
-    raise ValueError(f"action 必须是 export / merge / diarize，收到: {action!r}")
+    raise ValueError(f"action 必须是 export / merge / diarize / template，收到: {action!r}")
 
 
 # ---------- 入口 ----------

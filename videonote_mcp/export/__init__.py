@@ -3,7 +3,7 @@
 与输出层的分工：
   - 这里只产出 SRT / VTT / JSON 三种**无歧义**格式，结果可离线核对、可复用；
   - 思维导图 / 闪卡 / LaTeX / typst / 用户自定义模板等**创意格式**不在这里——
-    由当前对话 Agent 基于 MD 底稿转换；无需额外安装 Skills。
+    由当前对话 Agent 基于 MD 底稿转换；templates 模块提供独立模板的读取/复制，不执行编译；无需 Skills。
 
 核心入口：`export_transcript(source, formats, out_dir)`（见 exporter.py），返回
 `{fmt: file://绝对路径}` 供 Agent 直接 Read。
