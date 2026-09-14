@@ -74,21 +74,27 @@ class WhisperTranscriber(Transcriber):
         # 共享单例上的转写锁：模型加载前就建好，即使加载失败锁也始终存在
         self._lock = threading.Lock()
 
-        model_dir = get_model_dir("whisper")
+        self.model = self._load_model_with_purge(model_size, get_model_dir("whisper"))
+
+    def _load_model_with_purge(self, model_size: str, model_dir: str) -> WhisperModel:
+        """加载模型；cache 损坏时清理后重下一次（#124 B18 / #145 B6）。
+
+        `__init__` 与空闲释放后的 `transcript()` 自愈共用：两处都必须处理 cache 损坏，
+        否则被空闲释放过的模型遇到损坏 cache 会直接抛错（少了 init 的 purge+重下）。
+        """
         try:
-            self.model = self._build_model(model_size, model_dir)
+            return self._build_model(model_size, model_dir)
         except Exception as e:
             if WhisperTranscriber._is_cache_error(e):
                 # 自愈：损坏 / 截断 / 半成品 cache → 删掉对应 HF cache 重下一次
                 logger.warning(f"加载 whisper-{model_size} 失败（cache 损坏）：{e}；清理 cache 后重新下载")
                 WhisperTranscriber._purge_cache(model_dir, model_size)
-                self.model = self._build_model(model_size, model_dir)
-            else:
-                # 网络瞬时故障/404/参数错误不 purge、也不立刻再下一次（#145 B6）：
-                # 旧代码注释写「等再次加载时自然重试」，实现却无条件 _build_model，
-                # 把 HF 404/超时放大一倍。
-                logger.warning(f"加载 whisper-{model_size} 失败（非 cache 损坏，不清理）: {e}")
-                raise
+                return self._build_model(model_size, model_dir)
+            # 网络瞬时故障/404/参数错误不 purge、也不立刻再下一次（#145 B6）：
+            # 旧代码注释写「等再次加载时自然重试」，实现却无条件 _build_model，
+            # 把 HF 404/超时放大一倍。
+            logger.warning(f"加载 whisper-{model_size} 失败（非 cache 损坏，不清理）: {e}")
+            raise
 
     def _build_model(self, model_size: str, model_dir: str) -> WhisperModel:
         # resolve 把模型名映射成可加载标识：内置 size→Systran repo_id、自定义映射、
@@ -169,21 +175,24 @@ class WhisperTranscriber(Transcriber):
         #
         # 不变量：本函数返回值 ⊇ 旧实现（旧的 is_cuda_available() 判定被完整保留为第二
         # 个分支），所以只可能把「误判为 CPU」修正成 GPU，绝不会把原本的 GPU 判成 CPU。
+        if is_ct2_cuda_available():
+            logger.info(" ctranslate2 的 CUDA 后端可用，使用 GPU")
+            return True
+        # torch 安装损坏时 import 会抛 OSError（不只是 ImportError）；探测失败一律当
+        # 不可用，绝不让它把「本可回落 CPU」的路径变成构造期异常（与哨兵日志同一关切）。
         try:
-            if is_ct2_cuda_available():
-                logger.info(" ctranslate2 的 CUDA 后端可用，使用 GPU")
-                return True
-            if is_cuda_available():
-                logger.info(" CUDA 可用，使用 GPU")
-                return True
-            logger.warning(
-                " 未检测到可用的 GPU 推理后端，回退 CPU：可能是无 N 卡 / 驱动过旧 / 缺 "
-                "CUDA 运行时库（cuBLAS 12）。注意 whisper 推理不依赖 torch，装 torch "
-                "并不会让 whisper 用上 GPU；请检查 CUDA 运行时库与 CUDA_PATH。"
-            )
-            return False
-        except ImportError:
-            return False
+            torch_cuda = is_cuda_available()
+        except Exception:  # noqa: BLE001 —— 探测失败即视为不可用
+            torch_cuda = False
+        if torch_cuda:
+            logger.info(" CUDA 可用，使用 GPU")
+            return True
+        logger.warning(
+            " 未检测到可用的 GPU 推理后端，回退 CPU：可能是无 N 卡 / 驱动过旧 / 缺 "
+            "CUDA 运行时库（cuBLAS / cuBLASLt）。注意 whisper 推理不依赖 torch，装 "
+            "torch 并不会让 whisper 用上 GPU；请检查 CUDA 运行时库与 CUDA_PATH。"
+        )
+        return False
 
     @timeit
     def transcript(
@@ -203,7 +212,7 @@ class WhisperTranscriber(Transcriber):
             # 与 funasr 的 _ensure_model() 同款设计：用到才建，把致命错误降级为一次重载。
             if self.model is None:
                 logger.info("模型已被空闲释放卸载，按原尺寸重建")
-                self.model = self._build_model(self.model_size, get_model_dir("whisper"))
+                self.model = self._load_model_with_purge(self.model_size, get_model_dir("whisper"))
             try:
 
                 segments_raw, info = self.model.transcribe(file_path)

@@ -118,3 +118,13 @@ git -C /path/to/BiliNote rev-parse HEAD
 - `app/utils/local_paths.py` 为本仓库新增的路径规整与 `LocalPathPolicy`；MCP 显式注入数据根/外部路径授权，独立预检可从环境取得相同默认策略。软链解析不绕过目录门禁，不能等同于跨进程 TOCTOU 防护。
 - `videonote_mcp/task_artifacts.py` 是自有共享读取器，不属于上游；MCP/CLI/Resource 统一缓存优先和回退规则，但保留各入口的状态准入。`export/exporter.py` 不再为默认输出路径导入 `app.services.note`，改从 task_manifest 在调用时读取目录。
 - 同步上游时保留上述依赖方向和权限语义；`tests/test_core_boundaries.py` 对隔离导入、入口回退一致性及目录访问规则做回归。未改动第三方模板原件或凭证逻辑。
+
+## Windows ffmpeg / GPU 转写与显存释放分叉（2026-09-15，未发版）
+
+- `app/downloaders/common.py`：`run_ffmpeg_cancellable` 就地收口 —— 传入 `subprocess.PIPE` 降级为 `DEVNULL` 并告警（本函数只 `poll()`、从不读管道），并显式 `stdin=DEVNULL`（子进程不再继承 MCP 的 JSON-RPC stdin）。上游若恢复无 stdin 重定向或 PIPE 用法需人工合并。
+- `app/downloaders/local_downloader.py`：移除 `convert_to_mp3` / `extract_cover` 两处 `PIPE` 传参（本地视频路径死锁根因）。与既有「本地转码改可取消 Popen」分叉同源。
+- `app/transcriber/transcriber_provider.py`：新增 GPU 显存空闲释放（`VIDEONOTE_GPU_IDLE_RELEASE_SEC`，只关模型不摘单例 + 代次守卫/空闲复检/无锁 fail-closed）、`get_whisper_transcriber` 首次导入前后日志；`env_int` 改为复用 `app/utils/env_checker.env_int`。
+- `app/transcriber/whisper.py`：`is_cuda()` 判据改为先问 ctranslate2（`is_ct2_cuda_available()`）、torch 仅兜底且探测异常按不可用；设备哨兵结构化日志；`transcript()` 在模型被空闲释放后按原尺寸自愈重建，并在 GPU 转写结束后挂空闲计时器。
+- `app/utils/env_checker.py`：新增 `env_int`（供 `transcriber_provider` / `note_cache` / `universal_gpt` 共用，已收敛三处重复实现）与 ctranslate2 CUDA 探测（`get_cuda_device_count()` + **cuBLAS/cuBLASLt 双库**可加载，CUDA 12/11 两代，fail-closed）；此前该文件为上游原样。上游同步需人工合并。
+- `app/gpt/universal_gpt.py`：`_env_int` 改复用 `app/utils/env_checker.env_int`（原为本仓库 #127 分叉，语义不变）。
+- `videonote_mcp/config.py`：`OPENBLAS_NUM_THREADS=1`（setdefault，先于任何 numpy 导入）；`videonote_mcp/server.py`：Windows 下 `VIDEONOTE_PREHEAT_TRANSCRIBER` 主线程预热（默认开，可关）。

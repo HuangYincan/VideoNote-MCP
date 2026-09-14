@@ -8,6 +8,7 @@ from enum import Enum
 from app.transcriber.bcut import BcutTranscriber
 from app.transcriber.groq import GroqTranscriber
 from app.transcriber.kuaishou import KuaishouTranscriber
+from app.utils.env_checker import env_int
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -109,41 +110,15 @@ def _get_or_build_transcriber(key: TranscriberType, cls, *args, **kwargs):
 # 显存里，哪怕几小时不转写也不还回去，挤压游戏 / 绘图 / 其它推理应用。而模型权重是
 # 由模型对象持有的（不是 CT2 的 caching allocator），所以只有丢弃对象才能归还显存。
 #
-# 策略：每次转写结束后重置一个空闲计时器；空闲超过 _GPU_IDLE_RELEASE_SEC 秒就卸载
-# 占用 GPU 的转写器并清空单例，下次用到时按 _get_or_build_transcriber 既有逻辑重建。
-# 实测重载约 1.7s，批量任务期间计时器会被反复重置、不会重复加载。
+# 策略：每次转写结束后重置一个空闲计时器；空闲超过 _GPU_IDLE_RELEASE_SEC 秒就关闭
+# 占用 GPU 的 whisper 模型（**只关模型、不摘单例**，见 _release_idle_gpu），下次用到
+# 时由 whisper.transcript() 按原尺寸自愈重建。实测重载约 1.7s，批量任务期间计时器会
+# 被反复重置、不会重复加载。
 #
-def _env_int(name: str, default: int, lo: int = None, hi: int = None) -> int:
-    """环境变量取整数：未设置 / 非法 → default；越界 → 夹取。
-
-    模块级调用必须容错：非法值（空串、手滑值）若用裸 int() 会在 **import 期** 抛
-    ValueError，让整个 transcriber_provider 导入失败 —— 链路是
-    server.py → app.services.pipeline → 本模块，于是 **MCP server 直接起不来**
-    （连 health_check 都没了，用户还失去了自查手段）。
-    与 app/services/note_cache.py 的 _env_int 同口径（那儿已有同样守卫）。
-    app/ 是 vendored 层，不能反向 import videonote_mcp.config 的 env_int。
-    """
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
-        return default
-    try:
-        val = int(str(raw).strip())
-    except (TypeError, ValueError):
-        logger.warning("%s=%r 不是整数，按默认值 %s 处理", name, raw, default)
-        return default
-    if lo is not None and val < lo:
-        logger.warning("%s=%s 小于下限 %s，按 %s 处理", name, val, lo, lo)
-        return lo
-    if hi is not None and val > hi:
-        logger.warning("%s=%s 超过上限 %s，按 %s 处理", name, val, hi, hi)
-        return hi
-    return val
-
-
 # 上限 86400s（一天）：threading.Timer 的 interval 过大（约 >9.2e9）会让计时器线程
 # 抛 OverflowError 立刻死掉 —— 那等于「静默禁用释放」外加每次转写往 stderr 刷 traceback。
 # 设 VIDEONOTE_GPU_IDLE_RELEASE_SEC=0 可关闭自动释放（回到常驻行为）。
-_GPU_IDLE_RELEASE_SEC = _env_int("VIDEONOTE_GPU_IDLE_RELEASE_SEC", 180, lo=0, hi=86400)
+_GPU_IDLE_RELEASE_SEC = env_int("VIDEONOTE_GPU_IDLE_RELEASE_SEC", 180, lo=0, hi=86400)
 _idle_timer = None
 _idle_lock = threading.Lock()
 # 计时器代次：Timer.cancel() 对「已经进入回调」的计时器无效，旧回调仍会走到

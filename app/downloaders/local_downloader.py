@@ -1,6 +1,5 @@
 import hashlib
 import os
-import subprocess
 import threading
 from abc import ABC
 from typing import Optional

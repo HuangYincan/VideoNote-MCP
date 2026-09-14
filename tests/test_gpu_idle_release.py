@@ -1,6 +1,6 @@
 """GPU 空闲释放 + CUDA 判据的回归测试（2026-09-14 高烈度评审修掉的缺陷）。
 
-覆盖的缺陷（逐条对应评审发现，详见 memory/gpu-patch-review-findings）：
+覆盖的缺陷：
 
 1. **env 解析容错** —— 裸 `int(os.environ.get(...))` 在 **import 期** 抛 ValueError，
    使 `transcriber_provider` 无法导入 → `videonote_mcp.server` 起不来 → MCP 全部工具
@@ -40,13 +40,14 @@ class EnvIntTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from app.transcriber import transcriber_provider as tp
+        from app.utils.env_checker import env_int
 
-        cls.tp = tp
+        # staticmethod：否则 self.env_int(...) 会把 self 绑成第一个位置参数
+        cls.env_int = staticmethod(env_int)
 
     def _read(self, raw):
         with mock.patch.dict(os.environ, {"VN_TEST_ENV_INT": raw}):
-            return self.tp._env_int("VN_TEST_ENV_INT", 180, lo=0, hi=86400)
+            return self.env_int("VN_TEST_ENV_INT", 180, lo=0, hi=86400)
 
     def test_valid_passthrough(self):
         self.assertEqual(self._read("300"), 300)
@@ -68,7 +69,7 @@ class EnvIntTest(unittest.TestCase):
     def test_unset_falls_back(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("VN_TEST_ENV_INT", None)
-            self.assertEqual(self.tp._env_int("VN_TEST_ENV_INT", 180, lo=0, hi=86400), 180)
+            self.assertEqual(self.env_int("VN_TEST_ENV_INT", 180, lo=0, hi=86400), 180)
 
     def test_clamped_low(self):
         self.assertEqual(self._read("-5"), 0)
@@ -142,8 +143,9 @@ class IsCudaOrderTest(unittest.TestCase):
                 for ct2_ok in (False, True):
                     with self.subTest(t=torch_cuda, ti=torch_installed, c=ct2_ok):
                         new = self._is_cuda(torch_cuda, torch_installed, ct2_ok)
-                        # 旧实现（原 elif 顺序）的等价判定
-                        old = torch_cuda or (False if torch_installed else ct2_ok)
+                        # 旧实现只以 torch.cuda.is_available() 为唯一判据
+                        # （torch_installed 只影响日志，ct2 当时根本没被探测）
+                        old = torch_cuda
                         self.assertTrue(
                             new or not old,
                             f"新实现把旧的 True 变成了 False：torch_cuda={torch_cuda} "
@@ -305,6 +307,124 @@ class IdleReleaseTest(unittest.TestCase):
         self.tp._release_idle_gpu(gen)
         self.assertEqual(inst.closed, 0)
 
+    def _stub_transcriber(self, device="cuda", model_size="tiny"):
+        inst = _FakeTranscriber(device=device)
+        inst.model_size = model_size
+        return inst
+
+    def test_schedule_cancels_previous_and_rearms(self):
+        """`schedule_gpu_idle_release` 先 cancel 旧计时器再挂新的：批量连续任务期间
+        旧计时器不会残留、也就不会在一批任务中途卸载模型。"""
+        old = mock.Mock()
+        self.tp._idle_timer = old
+        self.tp._gpu_last_touch = 0.0
+        with mock.patch.object(self.tp, "_arm_idle_timer") as arm:
+            self.tp.schedule_gpu_idle_release()
+        old.cancel.assert_called_once()
+        arm.assert_called_once_with(self.tp._GPU_IDLE_RELEASE_SEC)
+        self.assertGreater(self.tp._gpu_last_touch, 0.0, "取用/结束时必须刷新空闲基准")
+        self.assertIs(self.tp._idle_timer, old, "本测试打桩了 _arm_idle_timer，引用不变")
+
+    def test_schedule_noop_when_disabled(self):
+        """`VIDEONOTE_GPU_IDLE_RELEASE_SEC=0` 时不得挂计时器，也不改空闲基准。"""
+        self.tp._gpu_last_touch = 12345.0
+        with mock.patch.object(self.tp, "_GPU_IDLE_RELEASE_SEC", 0), \
+             mock.patch.object(self.tp, "_arm_idle_timer") as arm:
+            self.tp.schedule_gpu_idle_release()
+        arm.assert_not_called()
+        self.assertEqual(self.tp._gpu_last_touch, 12345.0)
+
+    def test_hand_out_touches_gpu_instance(self):
+        """`_get_or_build_transcriber` 取用即刷新空闲基准（覆盖「已取走但还没进
+        transcript()」的窗口，如预处理模式下中间隔一次 ffmpeg 归一化）。"""
+        inst = self._stub_transcriber(device="cuda")
+        self.tp._transcribers[self.K] = inst
+        self.tp._gpu_last_touch = 0.0
+        got = self.tp._get_or_build_transcriber(self.K, _FakeTranscriber, model_size="tiny")
+        self.assertIs(got, inst)
+        self.assertGreater(self.tp._gpu_last_touch, 0.0)
+
+    def test_hand_out_does_not_touch_cpu_instance(self):
+        inst = self._stub_transcriber(device="cpu")
+        self.tp._transcribers[self.K] = inst
+        self.tp._gpu_last_touch = 0.0
+        self.tp._get_or_build_transcriber(self.K, _FakeTranscriber, model_size="tiny")
+        self.assertEqual(self.tp._gpu_last_touch, 0.0, "CPU 无显存可释放，不应挂计时器基准")
+
+
+class Ct2ProbeTest(unittest.TestCase):
+    """ctranslate2 CUDA 探测：cuBLAS 与 cuBLASLt 缺一不可（否则「探测说能用、首次
+    transcribe 才 FAILED」，正是本次探测要避免的失败模式）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import app.utils.env_checker as ec
+
+        cls.ec = ec
+        cls.pairs = (
+            ec._CT2_CUDA_LIBS_WIN if sys.platform == "win32" else ec._CT2_CUDA_LIBS_POSIX
+        )
+
+    def test_requires_both_cublas_and_cublaslt(self):
+        primary = self.pairs[0]
+        # 只装到 cuBLAS（缺 cuBLASLt）→ 判不可用
+        with mock.patch.object(
+            self.ec, "_load_shared_library", side_effect=lambda n: n == primary[0]
+        ):
+            self.assertFalse(self.ec._ct2_cuda_libs_loadable())
+        # 一对齐全 → 可用
+        with mock.patch.object(
+            self.ec, "_load_shared_library", side_effect=lambda n: n in primary
+        ):
+            self.assertTrue(self.ec._ct2_cuda_libs_loadable())
+
+    def test_falls_back_to_other_cuda_generation(self):
+        """CUDA 12 那对缺失时，CUDA 11 那对齐全仍应判可用。"""
+        if len(self.pairs) < 2:
+            self.skipTest("当前平台只有一代候选库")
+        secondary = self.pairs[1]
+        with mock.patch.object(
+            self.ec, "_load_shared_library", side_effect=lambda n: n in secondary
+        ):
+            self.assertTrue(self.ec._ct2_cuda_libs_loadable())
+
+    def test_no_device_falls_back(self):
+        fake = mock.Mock()
+        fake.get_cuda_device_count.return_value = 0
+        with mock.patch.dict(sys.modules, {"ctranslate2": fake}):
+            self.assertFalse(self.ec.is_ct2_cuda_available())
+
+    def test_missing_libs_falls_back(self):
+        fake = mock.Mock()
+        fake.get_cuda_device_count.return_value = 1
+        with mock.patch.dict(sys.modules, {"ctranslate2": fake}), \
+             mock.patch.object(self.ec, "_ct2_cuda_libs_loadable", return_value=False):
+            self.assertFalse(self.ec.is_ct2_cuda_available())
+
+    def test_available_returns_true(self):
+        fake = mock.Mock()
+        fake.get_cuda_device_count.return_value = 1
+        with mock.patch.dict(sys.modules, {"ctranslate2": fake}), \
+             mock.patch.object(self.ec, "_ct2_cuda_libs_loadable", return_value=True):
+            self.assertTrue(self.ec.is_ct2_cuda_available())
+
+
+class IsCudaProbeGuardTest(unittest.TestCase):
+    """`is_cuda()` 的 torch 兜底分支：torch 安装损坏（抛 OSError 而非 ImportError）时
+    不得让探测崩溃，应视为不可用并回落 CPU。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from app.transcriber.whisper import WhisperTranscriber
+
+        cls.W = WhisperTranscriber
+
+    def test_broken_torch_probe_does_not_raise(self):
+        with mock.patch("app.transcriber.whisper.is_ct2_cuda_available", return_value=False), \
+             mock.patch("app.transcriber.whisper.is_cuda_available",
+                        side_effect=OSError("DLL load failed while importing torch")):
+            self.assertFalse(self.W.is_cuda())
+
 
 class SelfHealTest(unittest.TestCase):
     """`transcript()` 在模型被释放后按原尺寸重建，而不是抛误导性 AttributeError。"""
@@ -351,6 +471,28 @@ class SelfHealTest(unittest.TestCase):
              mock.patch("app.transcriber.whisper.get_model_dir", return_value="/tmp/x"):
             tr.transcript("whatever.mp3")
         self.assertEqual(build.call_count, 0, "模型在时不重建")
+
+    def test_self_heal_purges_on_corrupt_cache(self):
+        """自愈重建与 __init__ 共用同一加载路径：cache 损坏时同样 purge + 重下，
+        而不是直接抛错（否则被空闲释放过的模型遇到损坏 cache 就永久失败）。"""
+        tr = self._bare_instance()
+        tr.model = None
+        fake = self._fake_model()
+        calls = {"n": 0}
+
+        def build(*_a, **_k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("truncated cache")
+            return fake
+
+        with mock.patch.object(self.W, "_build_model", side_effect=build), \
+             mock.patch.object(self.W, "_purge_cache") as purge, \
+             mock.patch("app.transcriber.whisper.get_model_dir", return_value="/tmp/x"):
+            result = tr.transcript("whatever.mp3")
+        purge.assert_called_once()
+        self.assertEqual(result.full_text, "你好")
+        self.assertIs(tr.model, fake)
 
     def test_instance_without_device_attribute_does_not_raise(self):
         """回归守卫：`finally` 里裸读 `self.device` 曾让 2 个既有单测失败。
