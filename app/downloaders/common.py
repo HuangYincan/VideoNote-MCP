@@ -9,7 +9,10 @@ from typing import Any, Callable, Optional
 import requests
 
 from app.exceptions.task import TaskCancelledError, check_cancel
+from app.utils.logger import get_logger
 from app.utils.url_safety import assert_public_http_url, pin_public_host, public_get
+
+logger = get_logger(__name__)
 
 
 def ytdlp_cancel_hook(cancel_event: Optional[threading.Event]) -> Callable[[dict], None]:
@@ -43,10 +46,35 @@ def run_ffmpeg_cancellable(
 
     ``subprocess.run(timeout=600)`` 在 cancel 后仍会占满 worker 最多 10 分钟。
     改为 Popen + 0.2s poll：事件置位即 terminate，超时 kill。
+
+    **不要传 `subprocess.PIPE`**：本函数只 ``poll()``、**从不读取管道**。ffmpeg
+    转码时会持续往 stderr 写进度，管道缓冲写满后 ffmpeg 阻塞在 write、本函数在
+    poll 上死等 —— 症状是「进程活着、CPU 不增长、永不返回」，极易被误判成别的问题。
+    ``local_downloader`` 的 `convert_to_mp3` / `extract_cover` 曾踩此坑（本地视频
+    必现；平台视频走「下载音频」不经转码，所以问题长期未暴露）。
+
+    传 PIPE 在此就地降级为 DEVNULL 并记 warning：本函数既然从不读，PIPE 就没有
+    任何合法语义，收口在这里可避免后续调用点再次误用。
     """
+    if stdout == subprocess.PIPE:
+        logger.warning(
+            "run_ffmpeg_cancellable 不读管道：stdout=PIPE 已降级为 DEVNULL"
+            "（否则 ffmpeg 写满管道缓冲会死锁）"
+        )
+        stdout = subprocess.DEVNULL
+    if stderr == subprocess.PIPE:
+        logger.warning(
+            "run_ffmpeg_cancellable 不读管道：stderr=PIPE 已降级为 DEVNULL"
+            "（否则 ffmpeg 写满管道缓冲会死锁）"
+        )
+        stderr = subprocess.DEVNULL
     check_cancel(cancel_event)
     try:
-        proc = subprocess.Popen(command, stdout=stdout, stderr=stderr)
+        # stdin 显式 DEVNULL：默认会继承父进程 stdin，而 MCP 的 stdin 是 JSON-RPC
+        # 管道 —— ffmpeg 在「已输出完整结果、准备退出」时仍可能去触碰继承来的句柄而
+        # 长时间不返回（实测：输出文件已完整有效，进程却再卡数分钟）。ffmpeg 自己也
+        # 推荐非交互场景用 -nostdin；这里从 API 层收口，免得每个调用点各写一遍。
+        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
     except OSError as exc:
         raise RuntimeError("启动 ffmpeg 失败") from exc
     deadline = time.monotonic() + timeout

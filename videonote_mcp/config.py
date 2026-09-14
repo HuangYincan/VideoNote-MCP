@@ -218,6 +218,28 @@ def setup_environment() -> Path:
     # （真正需要音频转写的任务会以 FAILED + 明确错误结束，而非卡在 INITIALIZING）。
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "10")
+    # 给 numpy 自带的 OpenBLAS 收口线程数。两条独立理由：
+    #
+    # 1) 它在本项目里纯属浪费：numpy 只被 faster_whisper 用来做音频数组处理
+    #    （np.frombuffer / astype / np.pad / np.fft），**全程不走 BLAS 矩阵运算**。
+    #    实测 GPU 转写速度不受影响（3.19s vs 3.18s，噪声级）。
+    # 2) 它默认按核数建 worker 并提交内存：实测 20 核起 19 个线程、提交 685 MB；
+    #    设为 1 后线程 0 个、提交 45 MB（15 倍）。核数越多的机器越夸张。
+    #
+    # **只设 OPENBLAS_NUM_THREADS、绝不设 OMP_NUM_THREADS**：ctranslate2 自带
+    # libiomp5md.dll 走 OpenMP 做推理并行，限 OMP 线程数会把 **CPU 回退路径**
+    # 拖慢 2.7 倍（实测 5.58s → 15.30s），那是负优化。
+    #
+    # ⚠️ 注意：OpenBLAS 用的是裸 Win32 线程 + SetProcessAffinityMask，**不链接任何
+    # OpenMP 运行时**，所以 OMP_*/KMP_*/MKL_* 一类调参对它无效；本变量只压线程数，
+    # **不关掉加载期的亲和性改写**。
+    #
+    # ⚠️ 另外：本变量**不是**「MCP 首次导入 numpy 时约 5 分钟停顿」的修复。那条停顿
+    # 自愈、每进程一次、外部 0/2020 次复现，根因仍未定（详见项目记忆
+    # openblas-import-hang）。此处的收口是独立成立的优化，不要误当成那个 bug 的解。
+    # 必须在任何 numpy 导入之前生效 —— setup_environment() 正是这个位置（server.py
+    # 在 import app.* 之前调用它）。
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     # 配置目录（transcriber_config / cookie 落到这里，避免依赖 CWD）
     os.environ.setdefault("VIDEONOTE_CONFIG_DIR", str(config_dir))
     # 模型目录：已安装包时一定要指到用户数据目录（否则会写进 site-packages）。

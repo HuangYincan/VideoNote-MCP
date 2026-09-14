@@ -14,7 +14,11 @@ from app.transcriber.whisper_models import (
     resolve_whisper_model,
     resolve_whisper_revision,
 )
-from app.utils.env_checker import is_cuda_available, is_torch_installed
+from app.utils.env_checker import (
+    is_ct2_cuda_available,
+    is_cuda_available,
+    is_torch_installed,
+)
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_model_dir
 
@@ -49,6 +53,23 @@ class WhisperTranscriber(Transcriber):
 
         self.compute_type = compute_type or ("float16" if self.device == "cuda" else "int8")
         self.model_size = model_size
+
+        # 设备哨兵：把最终解析结果打一行结构化日志。
+        # 没有它，「实际跑在 GPU 还是 CPU」只能靠推断——而静默回落（以为在 GPU、其实
+        # 在 CPU）是最难发现的失败模式：任务照常成功、只是耗时没变，health_check 也不
+        # 暴露 device。这行日志是唯一的直接证据，也便于 grep 验收。
+        #
+        # torch_installed 只是诊断信息，探测本身绝不允许影响构造：device='cpu' 是显式
+        # 短路（按设计完全不碰探测），若让 torch 安装损坏时的 OSError 从这里漏出去，
+        # 会把「显式指定 CPU」这条原本安全的路径变成构造失败。
+        try:
+            torch_installed = is_torch_installed()
+        except Exception:  # noqa: BLE001 —— 诊断信息，不阻断构造
+            torch_installed = False
+        logger.info(
+            f"推理设备已解析: device={self.device} compute_type={self.compute_type} "
+            f"model={self.model_size} torch_installed={torch_installed}"
+        )
 
         # 共享单例上的转写锁：模型加载前就建好，即使加载失败锁也始终存在
         self._lock = threading.Lock()
@@ -136,17 +157,31 @@ class WhisperTranscriber(Transcriber):
                 shutil.rmtree(path, ignore_errors=True)
     @staticmethod
     def is_cuda() -> bool:
+        # 顺序即语义：whisper 的推理内核全部来自 ctranslate2，与 torch 无关；torch 在本项目
+        # 里只是 funasr / diarization 两个可选重依赖。所以先问「真正跑推理的引擎能不能用
+        # GPU」，torch 只作兜底（历史机器上 torch 自带 CUDA runtime、并把 torch/lib 加进
+        # DLL 搜索路径，那种情况下两种判据通常同时为真）。
+        #
+        # 反例（必须先问 ctranslate2 的原因）：Windows 上从 PyPI 装 torch 默认是 CPU-only
+        # wheel，而 pyproject 的 funasr / diarization 两个 extra 都会装 torch。若把
+        # is_torch_installed() 排在前面，这类用户会被直接判成 CPU —— 即使 ctranslate2 的
+        # CUDA 后端完全可用，这正是本次要修的「判据错位」。
+        #
+        # 不变量：本函数返回值 ⊇ 旧实现（旧的 is_cuda_available() 判定被完整保留为第二
+        # 个分支），所以只可能把「误判为 CPU」修正成 GPU，绝不会把原本的 GPU 判成 CPU。
         try:
+            if is_ct2_cuda_available():
+                logger.info(" ctranslate2 的 CUDA 后端可用，使用 GPU")
+                return True
             if is_cuda_available():
                 logger.info(" CUDA 可用，使用 GPU")
                 return True
-            elif is_torch_installed():
-                logger.info(" 只装了 torch，但没有 CUDA，用 CPU")
-                return False
-            else:
-                logger.warning(" 还没有安装 torch，请先安装")
-                return False
-
+            logger.warning(
+                " 未检测到可用的 GPU 推理后端，回退 CPU：可能是无 N 卡 / 驱动过旧 / 缺 "
+                "CUDA 运行时库（cuBLAS 12）。注意 whisper 推理不依赖 torch，装 torch "
+                "并不会让 whisper 用上 GPU；请检查 CUDA 运行时库与 CUDA_PATH。"
+            )
+            return False
         except ImportError:
             return False
 
@@ -160,6 +195,15 @@ class WhisperTranscriber(Transcriber):
         # 锁须覆盖 transcribe 调用和 segments 生成器迭代（生成器同样读取共享模型）。
         with self._lock:
             check_cancel(cancel_event)
+            # 自愈：模型只在 __init__ 构建，而 close() 会把它置空且没有重载路径。
+            # 空闲释放（transcriber_provider._release_idle_gpu）可能在本实例被某个任务
+            # 取走之后、进入本锁之前把它卸载 —— 那段窗口里没人持实例 _lock，靠互斥无法
+            # 消除。没有这一层，任务会以 `'NoneType' object has no attribute 'transcribe'`
+            # 失败；预处理分块路径更糟：异常被吞成「跳过该块」，任务 SUCCESS 但内容缺失。
+            # 与 funasr 的 _ensure_model() 同款设计：用到才建，把致命错误降级为一次重载。
+            if self.model is None:
+                logger.info("模型已被空闲释放卸载，按原尺寸重建")
+                self.model = self._build_model(self.model_size, get_model_dir("whisper"))
             try:
 
                 segments_raw, info = self.model.transcribe(file_path)
@@ -190,6 +234,22 @@ full_text=" ".join(seg.text for seg in segments).strip(),
                 # 否则上层 asdict(None) 会报误导性的 TypeError
                 logger.error(f"转写失败：{e}")
                 raise
+            finally:
+                # GPU 用完就重置空闲释放计时器（见 transcriber_provider.schedule_gpu_idle_release）：
+                # 空闲超时后卸载模型、归还显存，避免常驻挤压其它 GPU 应用。CPU 无显存可释放，
+                # 不挂计时器。延迟导入避免与 transcriber_provider 形成循环依赖。
+                # 用 getattr 取值：本类实例可能未经 __init__ 构造（测试用 object.__new__ 覆盖
+                # transcript() 的组装语义），裸读 self.device 会在 finally 里抛 AttributeError
+                # 并顶掉 return —— 那是回归。
+                if getattr(self, "device", None) == "cuda":
+                    try:
+                        from app.transcriber.transcriber_provider import (
+                            schedule_gpu_idle_release,
+                        )
+
+                        schedule_gpu_idle_release()
+                    except Exception:  # noqa: BLE001 —— 计时器失败不影响转写结果
+                        pass
 
 
     def close(self) -> None:

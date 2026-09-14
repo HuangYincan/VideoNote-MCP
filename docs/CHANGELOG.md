@@ -1007,3 +1007,15 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **代码解耦**：提取本地路径策略、平台识别和任务转写读取模块；CLI/MCP/Resource 共享缓存回退规则，同时保留各入口的状态准入和目录授权语义；确定性导出不再为默认目录导入完整 note 流水线。
 - **质量与文档**：同步 README、架构/手册、贡献指南、VENDOR 和可编辑架构图；新增 66 项回归。全量 **1263 passed, 1 skipped, 10 subtests passed**；源码与 wheel 的真实 stdio、三套模板原件哈希及分发排除规则均验证通过。
 - **范围说明**：不分发 Skills/commands，不改变用户凭证；真实媒体下载、ASR 和跨进程 TOCTOU 仍不在本次自动验证范围。版本文件、`uv.lock` 和插件元数据统一为 `0.2.1`。
+
+## 2026-09-15 — Windows 导入停顿 / ffmpeg 卡死 / GPU 转写与显存释放（本地补丁，未发版）
+
+> 本批改动**全部在本地工作区**，未提交、未发版。与上游逐字节一致性已不成立（8 文件）。
+
+- **GPU 转写（本机启用）**：`is_cuda()` 原以 `torch.cuda.is_available()` 为唯一判据，但 whisper 推理走 ctranslate2、全程不碰 torch —— 判据错位。改为先问 ctranslate2（`get_cuda_device_count()` + cuBLAS 实际可加载的双级探测），torch 仅作兜底；新实现在所有组合下返回值均为旧实现的**超集**（只修正误判，绝不把 True 判成 False）。实测 8.88x（RTX 5060，large-v3-turbo，float16 vs CPU int8）。
+- **显存空闲释放**：whisper 单例原永不释放（约 2.2GB 常驻）。新增 `VIDEONOTE_GPU_IDLE_RELEASE_SEC`（默认 180s）—— 转写结束挂计时器，空闲超时则关闭模型、下次用到自愈重建。释放只关模型**不摘单例**（摘槽位会让重建出的模型成为「游离模型」→ 永不归还 + 双份显存）；另加代次守卫、空闲复检、忙时非阻塞跳过、无锁 fail-closed、只释放 whisper。
+- **ffmpeg 管道死锁（上游真 bug）**：`local_downloader` 的 `convert_to_mp3` / `extract_cover` 传 `stdout/stderr=PIPE`，而 `run_ffmpeg_cancellable` 只 poll、从不读管道 → ffmpeg 写满缓冲即死锁（**本地视频必现**；平台视频走「下载音频」不经转码，故长期未暴露）。修 2 处调用点，并在 helper 内把 PIPE 就地降级为 DEVNULL 收口（防后续误用）；另加 `stdin=DEVNULL`（实测让该路径从 237s → 12s）。
+- **导入停顿（本地规避）**：MCP 进程首次导入 faster_whisper（连带 av / numpy / ctranslate2）会停顿 48~455s（自愈、每进程一次、只在 MCP 启动的 server 里发生；普通进程 0/10）。新增 `VIDEONOTE_PREHEAT_TRANSCRIBER`（默认开）：在 `_pool` 创建前、主线程预热整条链。同一活跃期内 A/B：无预热 total=401.3s（FROZEN）vs 有预热 4.3s（ok）。**根因未落到实证**，此为工程规避；只预热 numpy 仅覆盖约 62%，必须整条链。
+- **numpy 的 OpenBLAS 线程收口**：numpy 只被 faster_whisper 用于音频数组处理（不走 BLAS），而其 OpenBLAS 默认按核数起线程并提交内存（20 核实测 19 线程 / 685MB → 设 1 后 0 线程 / 45MB）。新增 `OPENBLAS_NUM_THREADS=1`（在 `setup_environment()` 里 setdefault，故先于任何 numpy 导入）。**刻意不设 `OMP_NUM_THREADS`**：ctranslate2 自带 libiomp5md 走 OpenMP，限它会让 CPU 回退路径慢 2.7 倍。GPU 转写实测无损失（3.19s vs 3.18s）。
+- **可观测性**：`get_whisper_transcriber()` 懒加载前后各一行日志，让上述停顿在日志里自解释（此前那几分钟完全空白，已有 2 个任务被误判卡死而取消）。
+- **验证**：新增 `tests/test_gpu_idle_release.py`（26 用例 + 13 subtest，全绿）。全量套件改动前后失败集合逐条相同（Windows 环境固有失败，与本批无关）。
