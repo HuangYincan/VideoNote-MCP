@@ -58,7 +58,18 @@ uvx videonote@latest setup
 }
 ```
 
-> 如果之前配置过旧版插件，请先停用旧配置，再连接独立 MCP，避免同一个服务重复加载。
+> [!NOTE]
+> 默认的 `uvx videonote@latest` 只含基础依赖（fast-whisper 转写 + 平台官方字幕），**不含可选引擎**。
+> macOS 想用 Apple GPU 的 `mlx-whisper` 时，注册 MCP 与终端 setup **都要带上它**（`--with` 必须写在工具名**前**）：
+>
+> ```bash
+> claude mcp add --scope user videonote -- uvx --with mlx-whisper videonote@latest
+> uvx --with mlx-whisper videonote@latest setup
+> ```
+>
+> JSON 客户端则在 `args` 开头插入 `"--with", "mlx-whisper"`。
+>
+> `funasr`（中文最优）同理，换成 `--with funasr --with torch`。
 
 > [!TIP]
 > 四种安装方式、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
