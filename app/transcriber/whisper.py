@@ -27,6 +27,15 @@ from app.utils.path_helper import get_model_dir
 '''
 logger=get_logger(__name__)
 
+
+class TranscriberRetiredError(RuntimeError):
+    """Whisper 实例已因尺寸切换退役，且当前没有**同尺寸**的受管实例可安全转交。
+
+    退役实例既不能按旧尺寸自愈重建（会生成脱离 provider 注册表、不受空闲回收管理
+    的「游离模型」），也不能静默改用不同尺寸的注册实例（会把本任务结果挂到旧尺寸的
+    缓存键上，污染后续缓存命中）。此异常让调用方明确失败/重试，而不是产出错配结果。
+    """
+
 # 历史遗留：之前用 modelscope 下载到自定义目录然后把路径传给 WhisperModel。
 # 但 faster-whisper 1.1.1 的 download_model（utils.py:76）逻辑是：
 # 只要 size_or_id 里含 "/" 就当 HF repo_id 处理，没有「本地目录直接返回」分支。
@@ -214,25 +223,33 @@ class WhisperTranscriber(Transcriber):
             # 与 funasr 的 _ensure_model() 同款设计：用到才建，把致命错误降级为一次重载。
             if self.model is None:
                 if getattr(self, "_retired", False):
-                    # 尺寸切换退役（不是空闲卸载）：绝不能按旧尺寸重建 —— 那会生出
-                    # 脱离 provider 注册表、空闲扫描再也看不到的「游离模型」，并与
-                    # 新实例双份驻留显存（R2）。转交给当前注册实例，让模型始终受管理。
+                    # 尺寸切换退役（不是空闲卸载）：既不能按旧尺寸自愈重建（会生成
+                    # 脱离 provider 注册表、空闲扫描看不到的「游离模型」），也不能
+                    # 静默改用**不同尺寸**的注册实例（会让本任务结果挂到旧尺寸的缓存
+                    # 键上，污染后续缓存命中）。只有同尺寸的受管实例才可安全转交。
                     from app.transcriber.transcriber_provider import (
                         get_current_whisper_transcriber,
                     )
 
                     current = get_current_whisper_transcriber()
-                    if current is not None and current is not self:
-                        logger.info("模型已随尺寸切换退役，转交当前注册实例")
+                    if (
+                        current is not None
+                        and current is not self
+                        and getattr(current, "model_size", None) == self.model_size
+                    ):
+                        logger.info("退役实例转交同尺寸注册实例 (%s)", self.model_size)
                         return current.transcript(file_path, cancel_event)
-                    logger.warning("退役实例找不到当前注册实例可转交，按原尺寸重建")
+                    raise TranscriberRetiredError(
+                        f"模型实例已因切换尺寸退役，且当前无同尺寸（{self.model_size}）"
+                        "受管实例可转交；为避免混用模型尺寸，请重试该任务"
+                    )
                 logger.info("模型已被空闲释放卸载，按原尺寸重建")
                 self.model = self._load_model_with_purge(self.model_size, get_model_dir("whisper"))
-            # 重建模型可能耗时数秒，期间任务可能已被取消；不在这里补检查，取消后仍会
-            # 启动一次完整 ASR（S3）。检查放在转写调用之前、重建之后。
-            check_cancel(cancel_event)
             try:
-
+                # 重建模型可能耗时数秒，期间任务可能已被取消。检查必须放在
+                # try/finally **内部**：取消时也要走 finally 重挂空闲回收计时器，
+                # 否则模型已重新加载却没有任何回调回收它（评审 Standards 1）。
+                check_cancel(cancel_event)
                 segments_raw, info = self.model.transcribe(file_path)
                 check_cancel(cancel_event)
 

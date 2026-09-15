@@ -1030,3 +1030,10 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **note.py ffmpeg 入口（R3）**：`_extract_audio_from_video` 补 `-nostdin` 与 `stdin=DEVNULL`（issue #56 缺陷 2 的遗漏入口）。
 - **Windows 预热可测（S2）**：预热逻辑抽到 `videonote_mcp/preheat.py`（零副作用），新增平台/开关/导入失败回归；另补 PIPE 降级、stdin 隔离、本地转码调用点、note 入口的回归。
 - **验证**：全量 **1322 passed, 1 skipped, 27 subtests passed**；Ruff F/I 通过。CUDA ABI 结论依据锁定 CTranslate2 4.8.1 官方 wheel 的编译期 cuBLAS 主版本（跨代不自动回退）。
+
+### 第二轮复审修复（2026-09-15，同 PR #58）
+
+- **取消后的回收遗漏（Standards 1）**：重建后的 `check_cancel` 移入 `try/finally` 内，取消时也走 finally 重挂空闲回收计时器，不再出现「模型已重建但计时器恒为 None」。
+- **退役转交的尺寸一致性（Spec 1，新回归）**：退役实例只在注册实例**同尺寸**时转交；尺寸不同则抛 `TranscriberRetiredError`，不再静默改用其他尺寸并沿用原缓存键（避免同一任务混用 large-v3/tiny 后仍以 large-v3 缓存、污染后续命中）。
+- **退役/发布交接竞态（Spec 2）**：退役实例一律不自愈重建；退役与发布窗口内 `current is self` 也走报错，不再落入「按原尺寸重建」兜底生成游离模型。相应调整原先固化「无同尺寸可转交则重建」的测试。
+- **验证**：全量 **1324 passed, 1 skipped, 27 subtests passed**；Ruff F/I、`git diff --check` 通过。

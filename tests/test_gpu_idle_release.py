@@ -661,10 +661,11 @@ class RetireAndCancelTest(unittest.TestCase):
         m.transcribe = mock.Mock(return_value=(iter([seg]), mock.Mock(language="zh")))
         return m
 
-    def test_retired_instance_delegates_instead_of_rebuilding(self):
-        """退役实例（尺寸切换）不得按旧尺寸重建游离模型，应转交当前注册实例。"""
+    def test_retired_instance_delegates_same_size_instead_of_rebuilding(self):
+        """退役实例不得按旧尺寸重建游离模型；同尺寸的受管实例可安全转交。"""
         tr = self._bare_instance(retired=True)
         delegate = mock.Mock()
+        delegate.model_size = "tiny"                     # 与任务请求尺寸一致
         delegate.transcript = mock.Mock(return_value="delegated")
         with mock.patch(
             "app.transcriber.transcriber_provider.get_current_whisper_transcriber",
@@ -676,20 +677,51 @@ class RetireAndCancelTest(unittest.TestCase):
         build.assert_not_called()
         self.assertIsNone(tr.model, "退役实例不得自己重建模型")
 
-    def test_retired_instance_without_current_falls_back_to_rebuild(self):
-        """极端情况：注册表没有可转交实例时，仍按原尺寸重建而不是报错。"""
+    def test_retired_instance_different_size_registered_raises(self):
+        """Spec 1：退化时不得静默改用**不同尺寸**的注册实例（会污染原尺寸缓存键）。"""
+        from app.transcriber.whisper import TranscriberRetiredError
+
+        tr = self._bare_instance(retired=True)           # 任务请求 tiny
+        other = mock.Mock()
+        other.model_size = "large-v3"                    # 注册表已是别的尺寸
+        with mock.patch(
+            "app.transcriber.transcriber_provider.get_current_whisper_transcriber",
+            return_value=other,
+        ), mock.patch.object(self.W, "_build_model") as build:
+            with self.assertRaises(TranscriberRetiredError):
+                tr.transcript("chunk.mp3")
+        other.transcript.assert_not_called()
+        build.assert_not_called()
+
+    def test_retired_instance_no_current_raises_not_rebuild(self):
+        """Spec 2：注册表没有可转交实例时不得自愈重建（否则发布前窗口会留下游离模型）。"""
+        from app.transcriber.whisper import TranscriberRetiredError
+
         tr = self._bare_instance(retired=True)
-        fake = self._fake_model()
         with mock.patch(
             "app.transcriber.transcriber_provider.get_current_whisper_transcriber",
             return_value=None,
-        ), mock.patch.object(self.W, "_build_model", return_value=fake), \
-             mock.patch("app.transcriber.whisper.get_model_dir", return_value="/tmp/x"):
-            result = tr.transcript("chunk.mp3")
-        self.assertEqual(result.full_text, "你好")
+        ), mock.patch.object(self.W, "_build_model") as build:
+            with self.assertRaises(TranscriberRetiredError):
+                tr.transcript("chunk.mp3")
+        build.assert_not_called()
+        self.assertIsNone(tr.model)
 
-    def test_cancel_during_rebuild_skips_asr(self):
-        """S3：任务在模型重建期间被取消时，不得继续启动一次完整 ASR。"""
+    def test_retired_instance_self_still_registered_raises(self):
+        """Spec 2：退役/发布交接窗口里 `current is self` 时必须报错，不得落入重建兜底。"""
+        from app.transcriber.whisper import TranscriberRetiredError
+
+        tr = self._bare_instance(retired=True)
+        with mock.patch(
+            "app.transcriber.transcriber_provider.get_current_whisper_transcriber",
+            return_value=tr,
+        ), mock.patch.object(self.W, "_build_model") as build:
+            with self.assertRaises(TranscriberRetiredError):
+                tr.transcript("chunk.mp3")
+        build.assert_not_called()
+
+    def test_cancel_during_rebuild_skips_asr_and_rearms_timer(self):
+        """S3 + Standards 1：重建期间取消 → 不执行 ASR，且仍要在 finally 里安排回收。"""
         from app.exceptions.task import TaskCancelledError
 
         tr = self._bare_instance()
@@ -701,10 +733,14 @@ class RetireAndCancelTest(unittest.TestCase):
             return fake
 
         with mock.patch.object(self.W, "_build_model", side_effect=build), \
-             mock.patch("app.transcriber.whisper.get_model_dir", return_value="/tmp/x"):
+             mock.patch("app.transcriber.whisper.get_model_dir", return_value="/tmp/x"), \
+             mock.patch(
+                 "app.transcriber.transcriber_provider.schedule_gpu_idle_release"
+             ) as schedule:
             with self.assertRaises(TaskCancelledError):
                 tr.transcript("chunk.mp3", cancel_event=cancel)
         fake.transcribe.assert_not_called()
+        schedule.assert_called_once()
 
 
 class SentinelLogTest(unittest.TestCase):
