@@ -68,7 +68,19 @@ For JSON-based MCP clients:
 > uvx --with mlx-whisper videonote@latest setup
 > ```
 >
-> For JSON clients, prepend `"--with", "mlx-whisper"` to `args`.
+> For JSON clients, prepend `"--with", "mlx-whisper"` to `args`:
+>
+> ```json
+> {
+>   "mcpServers": {
+>     "videonote": {
+>       "type": "stdio",
+>       "command": "uvx",
+>       "args": ["--with", "mlx-whisper", "videonote@latest"]
+>     }
+>   }
+> }
+> ```
 >
 > `funasr` (best for Chinese) works the same way: use `--with funasr --with torch` instead.
 

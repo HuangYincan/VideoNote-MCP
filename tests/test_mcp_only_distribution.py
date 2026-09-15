@@ -175,7 +175,10 @@ def test_readme_json_matches_published_example():
 
     published_config = json.loads((REPO / "examples/mcp.example.json").read_text())
     for name in ("README.md", "README_EN.md"):
-        blocks = re.findall(r"```json\n(.*?)\n```", (REPO / name).read_text(), re.DOTALL)
+        # 快速开始的 NOTE 块里也有 ```json（带 --with 的变体），引用前缀 `> ` 会让
+        # 朴素正则把整段引用连同后文一起吞掉 → 先把引用标记剥掉再收集代码块
+        text = re.sub(r"(?m)^> ?", "", (REPO / name).read_text())
+        blocks = re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)
         parsed = [json.loads(block) for block in blocks]
         assert published_config in parsed, name
 
