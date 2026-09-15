@@ -67,7 +67,19 @@ uvx videonote@latest setup
 > uvx --with mlx-whisper videonote@latest setup
 > ```
 >
-> JSON 客户端则在 `args` 开头插入 `"--with", "mlx-whisper"`。
+> JSON 客户端则在 `args` 开头插入 `"--with", "mlx-whisper"`：
+>
+> ```json
+> {
+>   "mcpServers": {
+>     "videonote": {
+>       "type": "stdio",
+>       "command": "uvx",
+>       "args": ["--with", "mlx-whisper", "videonote@latest"]
+>     }
+>   }
+> }
+> ```
 >
 > `funasr`（中文最优）同理，换成 `--with funasr --with torch`。
 
