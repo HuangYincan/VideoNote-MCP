@@ -59,8 +59,20 @@ For JSON-based MCP clients:
 }
 ```
 
-> If you previously configured the legacy plugin, disable the old configuration before connecting the standalone MCP server to avoid loading the same service twice.
+> [!NOTE]
+> The default `uvx videonote@latest` only ships the base dependencies (fast-whisper + platform subtitles); **optional engines are not included**.
+> To use `mlx-whisper` on the Apple GPU (macOS), pass it in **both** the MCP registration and the terminal setup (`--with` must come **before** the tool name):
+>
+> ```bash
+> claude mcp add --scope user videonote -- uvx --with mlx-whisper videonote@latest
+> uvx --with mlx-whisper videonote@latest setup
+> ```
+>
+> For JSON clients, prepend `"--with", "mlx-whisper"` to `args`.
+>
+> `funasr` (best for Chinese) works the same way: use `--with funasr --with torch` instead.
 
+> [!TIP]
 > All four install methods, configuration details, updating and security are in [docs/04-使用手册.md](docs/04-使用手册.md).
 
 ## Export Formats
