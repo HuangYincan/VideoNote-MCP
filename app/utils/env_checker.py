@@ -51,16 +51,38 @@ def is_torch_installed() -> bool:
 
 # ctranslate2 的 CUDA 后端同时链接 **cuBLAS 与 cuBLASLt**：只探 cuBLAS 会在缺
 # cuBLASLt 的机器上得到「探测说能用、首次 transcribe() 才 FAILED」的假阳性（正好
-# 是本次探测要避免的失败模式）。故一对库都要求可加载。CUDA 12 是当前 ctranslate2
-# wheel 的目标版本，CUDA 11 用 *_11 / .so.11 后缀，两代都试（命中任一对即可）。
-_CT2_CUDA_LIBS_WIN = (
-    ("cublas64_12.dll", "cublasLt64_12.dll"),
-    ("cublas64_11.dll", "cublasLt64_11.dll"),
-)
-_CT2_CUDA_LIBS_POSIX = (
-    ("libcublas.so.12", "libcublasLt.so.12"),
-    ("libcublas.so.11", "libcublasLt.so.11"),
-)
+# 是本次探测要避免的失败模式）。故一对库都要求可加载。
+#
+# ⚠️ 但**不能**「CUDA 12 或 CUDA 11 任一对可加载就判可用」：ctranslate2 官方 wheel
+# 的 CUDA 主版本在**编译期写死**（cuBLAS 加载函数名由 CUBLAS_VER_MAJOR 拼成，运行时
+# 不会因机器只装另一代 CUDA 而自动换 ABI）。锁定版本 4.8.1 的官方 Windows/Linux
+# wheel 用 CUDA 12.8 构建，机器上只有 CUDA 11 运行库时，GPU 路径仍会缺 CUDA 12 库
+# 而失败。故探测必须匹配**已安装 ctranslate2 的构建目标**，不兼容时回落 CPU。
+_CT2_CUDA_LIBS_WIN = {
+    12: ("cublas64_12.dll", "cublasLt64_12.dll"),
+    11: ("cublas64_11.dll", "cublasLt64_11.dll"),
+}
+_CT2_CUDA_LIBS_POSIX = {
+    12: ("libcublas.so.12", "libcublasLt.so.12"),
+    11: ("libcublas.so.11", "libcublasLt.so.11"),
+}
+
+# PyPI ctranslate2 wheel 的 CUDA 主版本随大版本演进：3.x 及更早为 CUDA 11，4.x 起
+# 切到 CUDA 12（当前锁定 4.8.1，官方构建目标 CUDA 12.8）。未知/未来版本按当前目标
+# 12 处理 —— 探测不到就回落 CPU，宁可保守也不误报 GPU 可用。
+_CT2_DEFAULT_CUDA_MAJOR = 12
+
+
+def _ct2_cuda_major() -> int:
+    """已安装 ctranslate2 的 CUDA 构建主版本（11 或 12）。"""
+    try:
+        import ctranslate2
+
+        raw = getattr(ctranslate2, "__version__", "") or ""
+        major = int(str(raw).split(".")[0])
+    except (ImportError, ValueError, TypeError, IndexError):
+        return _CT2_DEFAULT_CUDA_MAJOR
+    return 11 if major < 4 else 12
 
 
 def _load_shared_library(name: str) -> bool:
@@ -100,12 +122,16 @@ def _load_shared_library(name: str) -> bool:
 
 
 def _ct2_cuda_libs_loadable() -> bool:
-    """cuBLAS + cuBLASLt 这一对 CUDA 运行时库能否真正加载（任一代完整即可）。"""
-    pairs = _CT2_CUDA_LIBS_WIN if sys.platform == "win32" else _CT2_CUDA_LIBS_POSIX
-    for pair in pairs:
-        if all(_load_shared_library(name) for name in pair):
-            return True
-    return False
+    """与已安装 ctranslate2 构建目标匹配的 cuBLAS + cuBLASLt 能否真正加载。
+
+    只探 `_ct2_cuda_major()` 对应的那一代：跨代回退不存在，探测到「恰好装了另一代」
+    只会得到「探测可用、实跑缺库 FAILED」的假阳性。
+    """
+    libs = _CT2_CUDA_LIBS_WIN if sys.platform == "win32" else _CT2_CUDA_LIBS_POSIX
+    pair = libs.get(_ct2_cuda_major())
+    if pair is None:
+        return False
+    return all(_load_shared_library(name) for name in pair)
 
 
 def is_ct2_cuda_available() -> bool:
@@ -119,7 +145,9 @@ def is_ct2_cuda_available() -> bool:
     从「CPU 能跑」变成「GPU 一跑就 FAILED」：
       1) get_cuda_device_count() > 0：有卡且驱动就绪；**缺 CUDA 运行时库时它也返回
          1**，所以单靠它不足以判定；
-      2) cuBLAS + cuBLASLt 真能加载：见 _ct2_cuda_libs_loadable()。
+      2) 与**已安装 ctranslate2 构建目标同代**的 cuBLAS + cuBLASLt 真能加载：
+         见 _ct2_cuda_libs_loadable() / _ct2_cuda_major()。只装另一代 CUDA 运行库的
+         机器必须回落 CPU，而不是被误判成可用。
 
     任何异常一律返回 False（fail-closed），保证最坏情况是回落 CPU。
     """

@@ -167,6 +167,24 @@ class _FakeTranscriber:
         self.closed += 1
 
 
+class _BuildableCudaFake:
+    """provider 构造/替换路径用的替身：接受 model_size/device，device=cuda。"""
+
+    def __init__(self, model_size=None, device="cuda"):
+        self.device = "cuda"
+        self.model_size = model_size
+        self.model = object()
+        self._lock = threading.Lock()
+        self._retired = False
+
+    def close(self):
+        self.model = None
+
+    def retire(self):
+        self._retired = True
+        self.model = None
+
+
 class IdleReleaseTest(unittest.TestCase):
     """空闲释放的 5 条安全性质。直接调 `_release_idle_gpu` 驱动，不等真实计时器。"""
 
@@ -351,42 +369,153 @@ class IdleReleaseTest(unittest.TestCase):
         self.tp._get_or_build_transcriber(self.K, _FakeTranscriber, model_size="tiny")
         self.assertEqual(self.tp._gpu_last_touch, 0.0, "CPU 无显存可释放，不应挂计时器基准")
 
+    def test_new_gpu_instance_arms_idle_timer(self):
+        """R4：模型首次加载成功即挂计时器。此前只有 transcript() 的 finally 才挂，
+        若任务在加载后、进入 transcript() 前被取消（或预处理在 ASR 前失败），模型已
+        驻留显存却永远没有回调释放它。"""
+        self.tp._transcribers[self.K] = None
+        with mock.patch.object(self.tp, "schedule_gpu_idle_release") as sched:
+            self.tp._get_or_build_transcriber(self.K, _BuildableCudaFake, model_size="tiny")
+        sched.assert_called_once()
+
+    def test_cpu_instance_build_does_not_arm_timer(self):
+        class _CpuBuildable(_BuildableCudaFake):
+            def __init__(self, model_size=None, device="cpu"):
+                super().__init__(model_size=model_size, device=device)
+                self.device = "cpu"
+
+        self.tp._transcribers[self.K] = None
+        with mock.patch.object(self.tp, "schedule_gpu_idle_release") as sched:
+            self.tp._get_or_build_transcriber(self.K, _CpuBuildable, model_size="tiny")
+        sched.assert_not_called()
+
+    def test_size_switch_retires_old_instance(self):
+        """R2：尺寸切换必须 retire() 旧实例（区别于空闲卸载），否则旧任务下一块会按
+        旧尺寸自愈重建出脱离注册表的游离模型。"""
+        old = _BuildableCudaFake(model_size="small")
+        self.tp._transcribers[self.K] = old
+        new = self.tp._get_or_build_transcriber(self.K, _BuildableCudaFake, model_size="tiny")
+        self.assertIsNot(new, old)
+        self.assertTrue(old._retired, "旧实例必须被标记退役")
+        self.assertIsNone(old.model)
+        self.assertIs(self.tp._transcribers[self.K], new)
+
+    def test_release_rechecks_touch_after_waiting_for_cache_lock(self):
+        """S1/R5：复检通过后、真正 close 前若发生新取用，必须作废释放。
+
+        旧实现先复检再等 `_cache_lock`；等待期间的新取用不会被看到，模型会被关掉。
+        新实现把「复检 + close」收进同一把 `_idle_lock`，复检在取锁之后进行。
+        """
+        inst = _FakeTranscriber()
+        gen = self._install(inst)                      # 基准推到已超时
+        result = {}
+
+        def run():
+            self.tp._release_idle_gpu(gen)
+            result["done"] = True
+
+        with self.tp._cache_lock:                      # 卡住 release 的第一次取锁
+            th = threading.Thread(target=run, daemon=True)
+            th.start()
+            time.sleep(0.05)
+            with self.tp._idle_lock:
+                self.tp._touch_gpu_use_locked()        # 等待期间的新取用
+        th.join(5)
+        self.assertTrue(result.get("done"), "release 必须在 cache 锁释放后继续")
+        self.assertIsNotNone(inst.model, "新取用后不得关闭刚使用的模型")
+        self.assertEqual(inst.closed, 0)
+        self.assertIsNotNone(self.tp._idle_timer, "作废后必须补挂计时器")
+
+    def test_release_rechecks_generation_after_waiting_for_cache_lock(self):
+        """S1/R5：等待 `_cache_lock` 期间发生的计时器换代同样必须作废释放。"""
+        inst = _FakeTranscriber()
+        gen = self._install(inst)
+        result = {}
+
+        def run():
+            self.tp._release_idle_gpu(gen)
+            result["done"] = True
+
+        with self.tp._cache_lock:
+            th = threading.Thread(target=run, daemon=True)
+            th.start()
+            time.sleep(0.05)
+            with self.tp._idle_lock:                   # 换代：旧回调已成孤儿
+                self.tp._idle_gen += 1
+                self.tp._idle_timer = None
+        th.join(5)
+        self.assertTrue(result.get("done"))
+        self.assertIsNotNone(inst.model, "换代后旧回调不得关闭模型")
+        self.assertEqual(inst.closed, 0)
+
 
 class Ct2ProbeTest(unittest.TestCase):
-    """ctranslate2 CUDA 探测：cuBLAS 与 cuBLASLt 缺一不可（否则「探测说能用、首次
-    transcribe 才 FAILED」，正是本次探测要避免的失败模式）。"""
+    """ctranslate2 CUDA 探测有两层要求：
+
+    1. cuBLAS 与 cuBLASLt 缺一不可（否则「探测说能用、首次 transcribe 才 FAILED」）；
+    2. 探测的那一代必须**匹配已安装 ctranslate2 的构建目标** —— 官方 wheel 的 CUDA
+       主版本编译期写死，只装另一代运行库的机器必须回落 CPU，不能误判 GPU 可用。
+    """
 
     @classmethod
     def setUpClass(cls):
         import app.utils.env_checker as ec
 
         cls.ec = ec
-        cls.pairs = (
+        cls.libs = (
             ec._CT2_CUDA_LIBS_WIN if sys.platform == "win32" else ec._CT2_CUDA_LIBS_POSIX
         )
 
-    def test_requires_both_cublas_and_cublaslt(self):
-        primary = self.pairs[0]
-        # 只装到 cuBLAS（缺 cuBLASLt）→ 判不可用
-        with mock.patch.object(
-            self.ec, "_load_shared_library", side_effect=lambda n: n == primary[0]
-        ):
-            self.assertFalse(self.ec._ct2_cuda_libs_loadable())
-        # 一对齐全 → 可用
-        with mock.patch.object(
-            self.ec, "_load_shared_library", side_effect=lambda n: n in primary
-        ):
-            self.assertTrue(self.ec._ct2_cuda_libs_loadable())
+    def _loadable(self, names, major):
+        with mock.patch.object(self.ec, "_ct2_cuda_major", return_value=major), \
+             mock.patch.object(
+                 self.ec, "_load_shared_library", side_effect=lambda n: n in names
+             ):
+            return self.ec._ct2_cuda_libs_loadable()
 
-    def test_falls_back_to_other_cuda_generation(self):
-        """CUDA 12 那对缺失时，CUDA 11 那对齐全仍应判可用。"""
-        if len(self.pairs) < 2:
-            self.skipTest("当前平台只有一代候选库")
-        secondary = self.pairs[1]
-        with mock.patch.object(
-            self.ec, "_load_shared_library", side_effect=lambda n: n in secondary
-        ):
-            self.assertTrue(self.ec._ct2_cuda_libs_loadable())
+    def test_requires_both_cublas_and_cublaslt(self):
+        pair = self.libs[12]
+        # 只装到 cuBLAS（缺 cuBLASLt）→ 判不可用
+        self.assertFalse(self._loadable({pair[0]}, 12))
+        # 一对齐全 → 可用
+        self.assertTrue(self._loadable(set(pair), 12))
+
+    def test_other_cuda_generation_is_rejected(self):
+        """负例（原测试固化了错误行为）：目标是 CUDA 12，机器只装了 CUDA 11 那对
+        时必须是 False —— ctranslate2 wheel 不会跨代回退 ABI，实际 GPU 路径仍缺
+        CUDA 12 库，误判会让「CPU 能跑」变成「GPU 一跑就 FAILED」。
+
+        同一对库在目标确为 CUDA 11 时仍应判可用（不同 ctranslate2 版本目标不同）。
+        """
+        if 11 not in self.libs:
+            self.skipTest("当前平台无 CUDA 11 候选库名")
+        self.assertFalse(self._loadable(set(self.libs[11]), 12))
+        self.assertTrue(self._loadable(set(self.libs[11]), 11))
+
+    def test_major_from_installed_ct2_version(self):
+        """构建目标按已安装 ctranslate2 大版本推断：4.x → CUDA 12，3.x 及更早 → 11。"""
+        for ver, expected in {
+            "4.8.1": 12,
+            "4.0.0": 12,
+            "3.24.0": 11,
+            "2.0.0": 11,
+        }.items():
+            with self.subTest(version=ver):
+                fake = mock.Mock()
+                fake.__version__ = ver
+                with mock.patch.dict(sys.modules, {"ctranslate2": fake}):
+                    self.assertEqual(self.ec._ct2_cuda_major(), expected)
+
+    def test_major_defaults_when_version_unknown(self):
+        """拿不到版本号时按当前目标（CUDA 12）处理：探测不到就回落 CPU，不误报。"""
+
+        class _NoVersion:
+            pass
+
+        with mock.patch.dict(sys.modules, {"ctranslate2": _NoVersion()}):
+            self.assertEqual(
+                self.ec._ct2_cuda_major(), self.ec._CT2_DEFAULT_CUDA_MAJOR
+            )
 
     def test_no_device_falls_back(self):
         fake = mock.Mock()
@@ -503,6 +632,79 @@ class SelfHealTest(unittest.TestCase):
         tr.model = self._fake_model()
         result = tr.transcript("whatever.mp3")
         self.assertEqual(result.full_text, "你好")
+
+
+class RetireAndCancelTest(unittest.TestCase):
+    """尺寸切换退役（R2）与重建后取消（S3）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from app.transcriber.whisper import WhisperTranscriber
+
+        cls.W = WhisperTranscriber
+
+    def _bare_instance(self, *, retired=False):
+        tr = object.__new__(self.W)
+        tr._lock = threading.Lock()
+        tr.model_size = "tiny"
+        tr.device = "cuda"
+        tr.compute_type = "float16"
+        tr.model = None
+        tr._retired = retired
+        return tr
+
+    def _fake_model(self):
+        seg = mock.Mock()
+        seg.text = "  你好  "
+        seg.start, seg.end = 0.0, 1.0
+        m = mock.Mock()
+        m.transcribe = mock.Mock(return_value=(iter([seg]), mock.Mock(language="zh")))
+        return m
+
+    def test_retired_instance_delegates_instead_of_rebuilding(self):
+        """退役实例（尺寸切换）不得按旧尺寸重建游离模型，应转交当前注册实例。"""
+        tr = self._bare_instance(retired=True)
+        delegate = mock.Mock()
+        delegate.transcript = mock.Mock(return_value="delegated")
+        with mock.patch(
+            "app.transcriber.transcriber_provider.get_current_whisper_transcriber",
+            return_value=delegate,
+        ), mock.patch.object(self.W, "_build_model") as build:
+            result = tr.transcript("chunk.mp3")
+        self.assertEqual(result, "delegated")
+        delegate.transcript.assert_called_once_with("chunk.mp3", None)
+        build.assert_not_called()
+        self.assertIsNone(tr.model, "退役实例不得自己重建模型")
+
+    def test_retired_instance_without_current_falls_back_to_rebuild(self):
+        """极端情况：注册表没有可转交实例时，仍按原尺寸重建而不是报错。"""
+        tr = self._bare_instance(retired=True)
+        fake = self._fake_model()
+        with mock.patch(
+            "app.transcriber.transcriber_provider.get_current_whisper_transcriber",
+            return_value=None,
+        ), mock.patch.object(self.W, "_build_model", return_value=fake), \
+             mock.patch("app.transcriber.whisper.get_model_dir", return_value="/tmp/x"):
+            result = tr.transcript("chunk.mp3")
+        self.assertEqual(result.full_text, "你好")
+
+    def test_cancel_during_rebuild_skips_asr(self):
+        """S3：任务在模型重建期间被取消时，不得继续启动一次完整 ASR。"""
+        from app.exceptions.task import TaskCancelledError
+
+        tr = self._bare_instance()
+        fake = self._fake_model()
+        cancel = threading.Event()
+
+        def build(*_a, **_k):
+            cancel.set()          # 模拟重建期间用户取消
+            return fake
+
+        with mock.patch.object(self.W, "_build_model", side_effect=build), \
+             mock.patch("app.transcriber.whisper.get_model_dir", return_value="/tmp/x"):
+            with self.assertRaises(TaskCancelledError):
+                tr.transcript("chunk.mp3", cancel_event=cancel)
+        fake.transcribe.assert_not_called()
 
 
 class SentinelLogTest(unittest.TestCase):

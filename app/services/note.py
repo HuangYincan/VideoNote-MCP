@@ -95,14 +95,23 @@ def _extract_audio_from_video(
         tmp_out = Path(tmp_name)
     except OSError as exc:
         raise RuntimeError(f"创建 ffmpeg 临时音频文件失败: {src.name}") from exc
+    # stdin 隔离（issue #56 缺陷 2）：这里是与 downloaders/common.py 并列的独立 ffmpeg
+    # 入口，此前只修了公共 helper。MCP 的 stdin 是 JSON-RPC 管道，ffmpeg 在收尾阶段仍
+    # 可能触碰继承来的句柄而长时间不返回；`-nostdin` + `stdin=DEVNULL` 双保险。
     cmd = [
-        "ffmpeg", "-y", "-i", str(src), "-vn",
+        "ffmpeg", "-nostdin", "-y", "-i", str(src), "-vn",
         "-acodec", "libmp3lame", "-q:a", "4", str(tmp_out),
         "-hide_banner", "-loglevel", "error",
     ]
     try:
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
         except OSError as exc:
             raise RuntimeError(f"启动 ffmpeg 提取音频失败: {src.name}") from exc
         deadline = _time.monotonic() + 600

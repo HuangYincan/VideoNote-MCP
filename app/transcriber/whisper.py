@@ -73,6 +73,8 @@ class WhisperTranscriber(Transcriber):
 
         # 共享单例上的转写锁：模型加载前就建好，即使加载失败锁也始终存在
         self._lock = threading.Lock()
+        # 尺寸切换退役标记（见 retire()）：与「空闲卸载」区分，退役实例不得自愈重建
+        self._retired = False
 
         self.model = self._load_model_with_purge(model_size, get_model_dir("whisper"))
 
@@ -211,8 +213,24 @@ class WhisperTranscriber(Transcriber):
             # 失败；预处理分块路径更糟：异常被吞成「跳过该块」，任务 SUCCESS 但内容缺失。
             # 与 funasr 的 _ensure_model() 同款设计：用到才建，把致命错误降级为一次重载。
             if self.model is None:
+                if getattr(self, "_retired", False):
+                    # 尺寸切换退役（不是空闲卸载）：绝不能按旧尺寸重建 —— 那会生出
+                    # 脱离 provider 注册表、空闲扫描再也看不到的「游离模型」，并与
+                    # 新实例双份驻留显存（R2）。转交给当前注册实例，让模型始终受管理。
+                    from app.transcriber.transcriber_provider import (
+                        get_current_whisper_transcriber,
+                    )
+
+                    current = get_current_whisper_transcriber()
+                    if current is not None and current is not self:
+                        logger.info("模型已随尺寸切换退役，转交当前注册实例")
+                        return current.transcript(file_path, cancel_event)
+                    logger.warning("退役实例找不到当前注册实例可转交，按原尺寸重建")
                 logger.info("模型已被空闲释放卸载，按原尺寸重建")
                 self.model = self._load_model_with_purge(self.model_size, get_model_dir("whisper"))
+            # 重建模型可能耗时数秒，期间任务可能已被取消；不在这里补检查，取消后仍会
+            # 启动一次完整 ASR（S3）。检查放在转写调用之前、重建之后。
+            check_cancel(cancel_event)
             try:
 
                 segments_raw, info = self.model.transcribe(file_path)
@@ -262,7 +280,17 @@ full_text=" ".join(seg.text for seg in segments).strip(),
 
 
     def close(self) -> None:
-        """释放底层模型引用（#127 B3）：切换模型尺寸时 transcriber_provider 调
-        close 让旧 large-v3（~3GB）尽快 GC，不再双驻留撑内存。"""
+        """释放底层模型引用（#127 B3）：让旧 large-v3（~3GB）尽快 GC，不再双驻留。
+        空闲释放与尺寸切换都走这里；下次 transcript() 会按原尺寸自愈重建。"""
+        self.model = None
+
+    def retire(self) -> None:
+        """尺寸切换时由 transcriber_provider 调用：标记退役并释放模型。
+
+        与 close() 的唯一区别是 `_retired`：退役实例**不可**再按原尺寸自愈重建（见
+        `transcript()`），否则会生成脱离注册表、不受空闲回收管理的游离模型。空闲
+        释放仍走 close()，那条路径需要自愈重建。
+        """
+        self._retired = True
         self.model = None
 

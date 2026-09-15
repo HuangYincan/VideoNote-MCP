@@ -40,6 +40,7 @@ from videonote_mcp.guidance import (
     add_next_steps,
     project_info,
 )
+from videonote_mcp.preheat import preheat_transcriber_engine
 from videonote_mcp.task_artifacts import read_task_status, read_transcript
 from videonote_mcp.task_artifacts import validate_task_id as _validate_task_id
 
@@ -260,13 +261,9 @@ _MAX_WORKERS = max(1, env_int("VIDEONOTE_MAX_WORKERS", 3))
 #
 # 预热**整条链**而不是只 import numpy：链路里 av（63MB）与 ctranslate2（60MB）同样是
 # worker 里的重原生加载，只预热 numpy 会把风险留给它们（实测只暖 numpy 仅覆盖约 62%）。
-if sys.platform == "win32" and env_bool("VIDEONOTE_PREHEAT_TRANSCRIBER", True):
-    try:
-        _t0 = time.monotonic()
-        import faster_whisper  # noqa: F401  —— 只需完成原生加载，不使用
-        logger.info("预热转写引擎导入完成，用时 %.2fs", time.monotonic() - _t0)
-    except Exception as exc:  # noqa: BLE001 —— 预热失败不影响启动，任务路径会自己导入
-        logger.warning("预热转写引擎失败（忽略，不影响功能）: %s", exc)
+#
+# 平台 / 开关判定与导入逻辑在 videonote_mcp/preheat.py（可测试，见 tests）。
+preheat_transcriber_engine(logger=logger)
 
 _pool = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
 

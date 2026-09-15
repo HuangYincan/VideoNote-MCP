@@ -82,22 +82,37 @@ def _get_or_build_transcriber(key: TranscriberType, cls, *args, **kwargs):
                 new_transcriber = cls(*args, **kwargs)
                 old = inst
                 if old is not None:
-                    close = getattr(old, "close", None)
-                    if callable(close):
+                    # 优先 retire()：whisper 的退役要区别于「空闲卸载」——旧实例被
+                    # 某个仍在跑的任务持有时，下次 transcript() 不能按原尺寸自愈重建
+                    # （那会生成脱离注册表、不受空闲回收管理的游离模型，并和新实例
+                    # 双份驻留显存，R2）。没有 retire() 的转写器（bcut 等）回退 close()。
+                    # retire 只认**类上定义**的真实方法：Mock 实例会凭空给出可调用的
+                    # retire 属性，单靠 getattr 探测会把测试替身/既有 mock 路径也当成
+                    # 退役。类属性存在才走 retire，否则回退 close。
+                    if callable(getattr(old, "retire", None)) and hasattr(type(old), "retire"):
+                        action = old.retire
+                    else:
+                        action = getattr(old, "close", None)
+                    if callable(action):
                         try:
-                            # 持旧实例转写锁再 close：whisper close() 置 self.model=None，
+                            # 持旧实例转写锁再退役：whisper retire() 置 self.model=None，
                             # 若另一线程正持旧实例转写（with self._lock 内 transcribe），
                             # 无锁置空会让进行中调用读空模型异常退出（#129 B7，窄窗口）
                             lock = getattr(old, "_lock", None)
                             if lock is not None:
                                 with lock:
-                                    close()
+                                    action()
                             else:
-                                close()
+                                action()
                         except Exception as exc:
                             logger.warning(f'释放旧 {cls.__name__} 实例失败: {exc}')
                 _transcribers[key] = new_transcriber
                 inst = new_transcriber
+                # 首次加载成功即纳入空闲回收（R4）：模型的加载与「挂计时器」此前只靠
+                # transcript() 的 finally 衔接。若任务在加载后、进入 transcript() 前被
+                # 取消，或预处理在 ASR 前失败，模型已驻留显存却永远没有回调释放它。
+                if getattr(new_transcriber, "device", None) == "cuda":
+                    schedule_gpu_idle_release()
                 logger.info(f'{cls.__name__} 创建成功')
             except Exception as e:
                 logger.error(f"{cls.__name__} 创建失败: {e}")
@@ -132,10 +147,20 @@ _idle_gen = 0
 _gpu_last_touch = 0.0
 
 
-def _touch_gpu_use() -> None:
-    """标记 GPU 单例刚被使用（取用时 / 转写结束时调用）。"""
+def _touch_gpu_use_locked() -> None:
+    """标记 GPU 单例刚被使用。**调用方必须已持 `_idle_lock`**。
+
+    与 `_idle_gen` 同锁：`_release_idle_gpu` 在 `_idle_lock` 内做「代次 + 空闲」复检，
+    取用若不加锁就可能插进复检与实际关闭之间（S1/R5）。
+    """
     global _gpu_last_touch
     _gpu_last_touch = time.monotonic()
+
+
+def _touch_gpu_use() -> None:
+    """标记 GPU 单例刚被使用（取用时 / 转写结束时调用）。"""
+    with _idle_lock:
+        _touch_gpu_use_locked()
 
 
 def _arm_idle_timer(delay: float) -> None:
@@ -156,66 +181,75 @@ def schedule_gpu_idle_release() -> None:
     """
     if _GPU_IDLE_RELEASE_SEC <= 0:
         return
-    _touch_gpu_use()
     with _idle_lock:
+        _touch_gpu_use_locked()
         if _idle_timer is not None:
             _idle_timer.cancel()
         _arm_idle_timer(_GPU_IDLE_RELEASE_SEC)
 
 
 def _release_idle_gpu(gen: int) -> None:
-    """空闲超时回调：卸载占用 GPU 的转写器并清空单例，把显存还给驱动。"""
+    """空闲超时回调：卸载占用 GPU 的转写器并清空单例，把显存还给驱动。
+
+    **代次复检与空闲复检都在 `_idle_lock` 内完成，且关闭期间始终持锁**：`_hand_out`
+    与 `schedule_gpu_idle_release` 更新 `_gpu_last_touch` / `_idle_gen` 前都要先过
+    `_idle_lock`，因此没有窗口能插进「复检通过」与「真正 close」之间。旧实现先复检、
+    再释放锁去等 `_cache_lock`，等待期间的新取用/计时器换代会让它关掉刚使用的模型
+    （S1/R5：实测距最近取用约 0.02s 仍被关闭）。
+
+    锁顺序固定为 `_cache_lock → _idle_lock`；实例锁只用**非阻塞** acquire，与
+    `transcript()` 的「实例锁 → _idle_lock」不构成死锁环。
+    """
     global _idle_timer
-    with _idle_lock:
-        if gen != _idle_gen:
-            return               # 已被更新的计时器取代（孤儿回调），作废
-        _idle_timer = None
-    # 复检「真的空闲了吗」：到点之前若有任务取用过单例（_get_or_build_transcriber 会
-    # touch），本次释放作废并补挂剩余时间。实例 _lock 只能证明「没有正在进行的
-    # transcript()」，不能证明「没有任务持有实例引用」——所以必须有这一层。
-    idle_for = time.monotonic() - _gpu_last_touch
-    if idle_for < _GPU_IDLE_RELEASE_SEC:
-        with _idle_lock:
-            if _idle_timer is None:      # 期间没有新计时器才补挂
-                _arm_idle_timer(max(0.05, _GPU_IDLE_RELEASE_SEC - idle_for))
-        return
     released = []
     with _cache_lock:
-        for key, inst in list(_transcribers.items()):
-            # 只处理 whisper：计时器由 whisper.transcript() 挂载，funasr 从未挂过。
-            # 若在此顺手释放 funasr，会白白付一次分钟级的模型重载（其加载成本远高于
-            # whisper 的约 1.7s），收益/风险不成立。要覆盖 funasr，需先给它的
-            # transcript() 也挂计时器（且它已有 _ensure_model 自愈）。
-            if key is not TranscriberType.FAST_WHISPER:
-                continue
-            if inst is None or getattr(inst, "device", None) != "cuda":
-                continue
-            try:
-                # 非阻塞抢实例转写锁：抢到说明此刻没有 transcript() 在跑；抢不到说明
-                # 正在转写 —— 【跳过】而不是等待（等待会造成危险的交错）。
-                lock = getattr(inst, "_lock", None)
-                if lock is None:
-                    # 拿不到锁 = 无法确认空闲 → 不释放（fail-closed）。
-                    # 旧写法会直接 close：任何没有 _lock 的转写器都被无条件卸载，
-                    # 等于把「无法确认空闲」当成「确认空闲」。
-                    logger.warning("空闲释放跳过 %s：实例无 _lock，无法确认空闲", key.value)
+        with _idle_lock:
+            if gen != _idle_gen:
+                return               # 已被更新的计时器取代（孤儿回调），作废
+            # 复检「真的空闲了吗」：到点之前若有任务取用过单例（_hand_out 会 touch），
+            # 本次释放作废并补挂剩余时间。实例 _lock 只能证明「没有正在进行的
+            # transcript()」，不能证明「没有任务持有实例引用」——所以必须有这一层。
+            idle_for = time.monotonic() - _gpu_last_touch
+            if idle_for < _GPU_IDLE_RELEASE_SEC:
+                _idle_timer = None
+                _arm_idle_timer(max(0.05, _GPU_IDLE_RELEASE_SEC - idle_for))
+                return
+            _idle_timer = None
+            # 继续持 `_idle_lock` 完成关闭：任何新的取用/换代都要先取该锁，无法插入。
+            for key, inst in list(_transcribers.items()):
+                # 只处理 whisper：空闲计时器由 whisper 的构造/transcript() 挂载，
+                # funasr 从未挂过。若在此顺手释放 funasr，会白白付一次分钟级的模型
+                # 重载（其加载成本远高于 whisper 的约 1.7s），收益/风险不成立。
+                if key is not TranscriberType.FAST_WHISPER:
                     continue
-                if not lock.acquire(blocking=False):
+                if inst is None or getattr(inst, "device", None) != "cuda":
                     continue
                 try:
-                    if getattr(inst, "model", None) is None:
-                        continue         # 已经释放过（模型为空），无需重复
-                    # **只关模型、不摘单例**：实例留在注册表里，下次 transcript() 由
-                    # 自愈逻辑按原尺寸重建（whisper.py 的 model is None 分支，与 funasr
-                    # 的 _ensure_model 同款）。摘掉槽位会引入两个问题：
-                    #   1) 重建后的模型成了「游离模型」，释放扫描再也看不到它 → 永不归还；
-                    #   2) 新任务 get_transcriber() 见槽位为 None 会再建一个 → 双份显存。
-                    inst.close()
-                    released.append(key.value)
-                finally:
-                    lock.release()
-            except Exception as exc:  # noqa: BLE001 —— 释放失败不影响后续重建
-                logger.warning("空闲释放 %s 失败: %s", key.value, exc)
+                    # 非阻塞抢实例转写锁：抢到说明此刻没有 transcript() 在跑；抢不到说明
+                    # 正在转写 —— 【跳过】而不是等待（等待会造成危险的交错）。
+                    lock = getattr(inst, "_lock", None)
+                    if lock is None:
+                        # 拿不到锁 = 无法确认空闲 → 不释放（fail-closed）。
+                        # 旧写法会直接 close：任何没有 _lock 的转写器都被无条件卸载，
+                        # 等于把「无法确认空闲」当成「确认空闲」。
+                        logger.warning("空闲释放跳过 %s：实例无 _lock，无法确认空闲", key.value)
+                        continue
+                    if not lock.acquire(blocking=False):
+                        continue
+                    try:
+                        if getattr(inst, "model", None) is None:
+                            continue         # 已经释放过（模型为空），无需重复
+                        # **只关模型、不摘单例**：实例留在注册表里，下次 transcript() 由
+                        # 自愈逻辑按原尺寸重建（whisper.py 的 model is None 分支，与 funasr
+                        # 的 _ensure_model 同款）。摘掉槽位会引入两个问题：
+                        #   1) 重建后的模型成了「游离模型」，释放扫描再也看不到它 → 永不归还；
+                        #   2) 新任务 get_transcriber() 见槽位为 None 会再建一个 → 双份显存。
+                        inst.close()
+                        released.append(key.value)
+                    finally:
+                        lock.release()
+                except Exception as exc:  # noqa: BLE001 —— 释放失败不影响后续重建
+                    logger.warning("空闲释放 %s 失败: %s", key.value, exc)
     if released:
         # 锁外执行：全量 GC 可能有几十毫秒，不该阻塞并发任务的模型构造
         gc.collect()             # 触发 CT2 对象析构，此时显存才真正归还
@@ -235,6 +269,21 @@ def get_whisper_transcriber(model_size="small", device="cuda"):
     from app.transcriber.whisper import WhisperTranscriber
     logger.info("转写引擎导入完成，用时 %.1fs", time.monotonic() - _t0)
     return _get_or_build_transcriber(TranscriberType.FAST_WHISPER, WhisperTranscriber, model_size=model_size, device=device)
+
+def get_current_whisper_transcriber():
+    """返回当前注册的 fast-whisper 单例（不新建、不改尺寸）；无实例返回 None。
+
+    供「尺寸切换后退役」的旧实例在下次被调用时把转写**转交**回来：转写仍落在注册表
+    里的实例上，模型始终受空闲回收管理，而不是按旧尺寸重建一个脱离注册表的游离模型
+    （R2：旧任务持有退役实例 → 自愈重建 → 双模型驻留且扫描看不到旧模型）。
+    """
+    inst = _transcribers.get(TranscriberType.FAST_WHISPER)
+    if inst is None:
+        return None
+    # 与 _hand_out 同语义：取用即刷新空闲基准，避免实例刚转交就被空闲回调卸载。
+    if getattr(inst, "device", None) == "cuda":
+        _touch_gpu_use()
+    return inst
 
 def get_bcut_transcriber():
     # bcut 有请求级状态（task_id/上传分片/download_url），并发任务必须各用各的实例

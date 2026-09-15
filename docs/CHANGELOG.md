@@ -1019,3 +1019,14 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **可观测性**：`get_whisper_transcriber()` 懒加载前后各一行日志，让上述停顿在日志里自解释（此前那几分钟完全空白，已有 2 个任务被误判卡死而取消）。
 - **文档**：`docs/04` 更新 GPU 前置条件（cuBLAS/cuBLASLt 可被找到即可，不再需要 torch）与环境变量表；`docs/02` `VENDOR.md` 同步新增变量与分叉清单。
 - **验证**：新增 `tests/test_gpu_idle_release.py`（37 用例 + 13 subtest，全绿）。全量 **1302 passed, 1 skipped, 23 subtests passed**（改动前 1265 + 1 + 10，失败集合逐条相同）；Ruff F/I 通过。
+
+### 评审遗留修复（2026-09-15，同 PR #58）
+
+- **CUDA ABI 判据（P1）**：探测改为只匹配**已安装 ctranslate2 的构建目标**（按大版本推断，4.x→CUDA 12、3.x 及更早→11，未知按 12）。原实现「CUDA 12 或 11 任一对库可加载即可用」在「有卡、无 GPU torch、只装 CUDA 11 运行库」的机器上误判 GPU 可用，实跑仍缺 CUDA 12 库；现有 `test_falls_back_to_other_cuda_generation` 固化了该错误行为，已改为负例。
+- **回收竞态（S1/R5）**：空闲释放把「代次 + 空闲」复检与 `close()` 收进同一把 `_idle_lock`（锁顺序固定 `_cache_lock → _idle_lock`，实例锁仅非阻塞），等待 `_cache_lock` 期间发生的新取用/计时器换代不会再被旧回调关掉刚使用的模型。
+- **退役与空闲卸载分离（R2）**：`WhisperTranscriber.retire()` 标记尺寸切换退役；退役实例下次被调用时转交当前注册实例，不再按旧尺寸重建脱离注册表、不受回收管理的游离模型。
+- **取消边界（S3）**：模型重建结束、启动 ASR 之前补一次 `check_cancel`，避免重建期间被取消仍跑一次完整转写。
+- **首建回收（R4）**：模型首次加载成功即挂空闲计时器，覆盖「加载后、进入 transcript() 前被取消」与「预处理在 ASR 前失败」的窗口。
+- **note.py ffmpeg 入口（R3）**：`_extract_audio_from_video` 补 `-nostdin` 与 `stdin=DEVNULL`（issue #56 缺陷 2 的遗漏入口）。
+- **Windows 预热可测（S2）**：预热逻辑抽到 `videonote_mcp/preheat.py`（零副作用），新增平台/开关/导入失败回归；另补 PIPE 降级、stdin 隔离、本地转码调用点、note 入口的回归。
+- **验证**：全量 **1322 passed, 1 skipped, 27 subtests passed**；Ruff F/I 通过。CUDA ABI 结论依据锁定 CTranslate2 4.8.1 官方 wheel 的编译期 cuBLAS 主版本（跨代不自动回退）。
