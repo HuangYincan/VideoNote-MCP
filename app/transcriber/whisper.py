@@ -5,7 +5,11 @@ from pathlib import Path
 from faster_whisper import WhisperModel
 
 from app.decorators.timeit import timeit
-from app.exceptions.task import TaskCancelledError, check_cancel
+from app.exceptions.task import (
+    TaskCancelledError,
+    TranscriberRetiredError,
+    check_cancel,
+)
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.transcriber.base import Transcriber
 from app.transcriber.whisper_models import (
@@ -26,15 +30,6 @@ from app.utils.path_helper import get_model_dir
  Size of the model to use (tiny, tiny.en, base, base.en, small, small.en, distil-small.en, medium, medium.en, distil-medium.en, large-v1, large-v2, large-v3, large, distil-large-v2, distil-large-v3, large-v3-turbo, or turbo
 '''
 logger=get_logger(__name__)
-
-
-class TranscriberRetiredError(RuntimeError):
-    """Whisper 实例已因尺寸切换退役，且当前没有**同尺寸**的受管实例可安全转交。
-
-    退役实例既不能按旧尺寸自愈重建（会生成脱离 provider 注册表、不受空闲回收管理
-    的「游离模型」），也不能静默改用不同尺寸的注册实例（会把本任务结果挂到旧尺寸的
-    缓存键上，污染后续缓存命中）。此异常让调用方明确失败/重试，而不是产出错配结果。
-    """
 
 # 历史遗留：之前用 modelscope 下载到自定义目录然后把路径传给 WhisperModel。
 # 但 faster-whisper 1.1.1 的 download_model（utils.py:76）逻辑是：

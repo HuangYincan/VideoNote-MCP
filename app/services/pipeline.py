@@ -32,6 +32,7 @@ from app.downloaders.base import Downloader
 from app.exceptions.task import (
     OfficialTranscriptFetchError,
     TaskCancelledError,
+    TranscriberRetiredError,
     check_cancel,
 )
 from app.gpt.base import GPT
@@ -299,6 +300,11 @@ def _transcribe_with_preprocess(
                     tr = transcriber.transcript(file_path=chunk, cancel_event=cancel_event)
                 check_cancel(cancel_event)
             except TaskCancelledError:
+                raise
+            except TranscriberRetiredError:
+                # 退役/尺寸切换：不是「单块可跳过」的瞬时失败 —— 必须向上传播让任务
+                # 失败/重试。否则前面成功的块会让流水线返回缺块结果并写进任务缓存与
+                # 跨任务缓存，后续同模型请求直接命中这份不完整结果（评审 Spec P2）。
                 raise
             except Exception as exc:  # noqa: BLE001 —— 单块失败跳过，不阻断整段
                 logger.warning(f"预处理分块转写失败（跳过该块）: {exc}")

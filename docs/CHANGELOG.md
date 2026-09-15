@@ -1037,3 +1037,8 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **退役转交的尺寸一致性（Spec 1，新回归）**：退役实例只在注册实例**同尺寸**时转交；尺寸不同则抛 `TranscriberRetiredError`，不再静默改用其他尺寸并沿用原缓存键（避免同一任务混用 large-v3/tiny 后仍以 large-v3 缓存、污染后续命中）。
 - **退役/发布交接竞态（Spec 2）**：退役实例一律不自愈重建；退役与发布窗口内 `current is self` 也走报错，不再落入「按原尺寸重建」兜底生成游离模型。相应调整原先固化「无同尺寸可转交则重建」的测试。
 - **验证**：全量 **1324 passed, 1 skipped, 27 subtests passed**；Ruff F/I、`git diff --check` 通过。
+
+### 第三轮复审修复（2026-09-15，同 PR #58）
+
+- **退役异常传播未贯通（Spec P2）**：`TranscriberRetiredError` 移到轻量共享模块 `app/exceptions/task.py`；`pipeline._transcribe_with_preprocess` 在通用「单块失败跳过」之前显式 `except TranscriberRetiredError: raise`。此前第一块成功、第二块退役被吞成「跳过该块」，流水线返回缺块结果并写入任务/跨任务缓存，后续同模型请求命中不完整缓存。新增端到端分块回归（第一块成功、第二块退役 → 异常向上传播；同时守卫通用单块失败仍按原语义跳过）。
+- **验证**：全量 **1326 passed, 1 skipped, 27 subtests passed**；Ruff F/I、`git diff --check` 通过。

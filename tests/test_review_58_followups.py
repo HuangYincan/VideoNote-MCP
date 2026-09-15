@@ -96,6 +96,83 @@ class NoteExtractAudioStdinTest(unittest.TestCase):
         self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
 
+class PipelineRetiredPropagationTest(unittest.TestCase):
+    """退役异常必须穿过分块通用容错向上传播，不能把缺块结果当成功返回。
+
+    否则：第一块成功、第二块退役被跳过 → 流水线返回部分结果 → 写入任务/跨任务缓存
+    → 后续同模型请求命中缺块缓存（评审 Spec P2）。
+    """
+
+    def _result(self, text):
+        from app.models.transcriber_model import TranscriptResult, TranscriptSegment
+
+        return TranscriptResult(
+            language="zh",
+            full_text=text,
+            segments=[TranscriptSegment(start=0.0, end=1.0, text=text)],
+        )
+
+    def _fake(self, fn):
+        class _T:
+            def transcript(self, file_path, cancel_event=None):
+                return fn(cancel_event)
+
+        return _T()
+
+    def _patches(self):
+        return (
+            mock.patch(
+                "app.transcriber.audio_preprocess.normalize_to_wav",
+                return_value="/tmp/vn_review58.wav",
+            ),
+            mock.patch(
+                "app.transcriber.audio_preprocess.chunk_if_long",
+                return_value=["c1", "c2", "c3"],
+            ),
+            mock.patch("app.services.pipeline.chunk_duration_guess", return_value=10.0),
+            mock.patch(
+                "app.services.pipeline.apply_diarization",
+                side_effect=lambda audio_file, segments, **kw: segments,
+            ),
+        )
+
+    def test_retired_error_propagates_and_no_partial_result(self):
+        from app.exceptions.task import TranscriberRetiredError
+        from app.services import pipeline
+
+        calls = {"n": 0}
+
+        def fn(_cancel):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return self._result("第一块")
+            raise TranscriberRetiredError("retired")
+
+        p1, p2, p3, p4 = self._patches()
+        with p1, p2, p3, p4:
+            with self.assertRaises(TranscriberRetiredError):
+                pipeline._transcribe_with_preprocess("/tmp/src.mp4", self._fake(fn))
+        self.assertEqual(calls["n"], 2, "第一块成功后，第二块应触发退役异常并向上传播")
+
+    def test_generic_chunk_failure_still_skipped(self):
+        """通用单块失败仍按原语义跳过，返回 truncated 部分结果（不被本次改动放大）。"""
+        from app.services import pipeline
+
+        calls = {"n": 0}
+
+        def fn(_cancel):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("单块瞬时失败")
+            return self._result("后续块")
+
+        p1, p2, p3, p4 = self._patches()
+        with p1, p2, p3, p4:
+            result = pipeline._transcribe_with_preprocess("/tmp/src.mp4", self._fake(fn))
+        self.assertTrue(result.get("truncated"))
+        self.assertEqual(calls["n"], 3)
+
+
 class PreheatTest(unittest.TestCase):
     """Windows 预热分支：平台 + 开关判定可测，导入失败不影响启动。"""
 
