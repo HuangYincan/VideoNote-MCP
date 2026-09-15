@@ -118,3 +118,15 @@ git -C /path/to/BiliNote rev-parse HEAD
 - `app/utils/local_paths.py` 为本仓库新增的路径规整与 `LocalPathPolicy`；MCP 显式注入数据根/外部路径授权，独立预检可从环境取得相同默认策略。软链解析不绕过目录门禁，不能等同于跨进程 TOCTOU 防护。
 - `videonote_mcp/task_artifacts.py` 是自有共享读取器，不属于上游；MCP/CLI/Resource 统一缓存优先和回退规则，但保留各入口的状态准入。`export/exporter.py` 不再为默认输出路径导入 `app.services.note`，改从 task_manifest 在调用时读取目录。
 - 同步上游时保留上述依赖方向和权限语义；`tests/test_core_boundaries.py` 对隔离导入、入口回退一致性及目录访问规则做回归。未改动第三方模板原件或凭证逻辑。
+
+## Windows ffmpeg / GPU 转写与显存释放分叉（2026-09-15，未发版）
+
+- `app/downloaders/common.py`：`run_ffmpeg_cancellable` 就地收口 —— 传入 `subprocess.PIPE` 降级为 `DEVNULL` 并告警（本函数只 `poll()`、从不读管道），并显式 `stdin=DEVNULL`（子进程不再继承 MCP 的 JSON-RPC stdin）。上游若恢复无 stdin 重定向或 PIPE 用法需人工合并。
+- `app/downloaders/local_downloader.py`：移除 `convert_to_mp3` / `extract_cover` 两处 `PIPE` 传参（本地视频路径死锁根因）。与既有「本地转码改可取消 Popen」分叉同源。
+- `app/transcriber/transcriber_provider.py`：新增 GPU 显存空闲释放（`VIDEONOTE_GPU_IDLE_RELEASE_SEC`，只关模型不摘单例 + 代次守卫/空闲复检/无锁 fail-closed）、`get_whisper_transcriber` 首次导入前后日志、`get_current_whisper_transcriber`；`env_int` 改为复用 `app/utils/env_checker.env_int`。评审修复：空闲复检与 close 收进同一把 `_idle_lock`（等待 `_cache_lock` 期间的新取用/换代不会再被旧回调误关，锁顺序固定 `_cache_lock → _idle_lock`）；模型首次加载成功即挂空闲计时器；尺寸切换改用 `retire()` 区分「可自愈的空闲卸载」与「不可复活的退役」。
+- `app/transcriber/whisper.py`：`is_cuda()` 判据改为先问 ctranslate2（`is_ct2_cuda_available()`）、torch 仅兜底且探测异常按不可用；设备哨兵结构化日志；`transcript()` 在模型被空闲释放后按原尺寸自愈重建，并在 GPU 转写结束后挂空闲计时器。评审修复：新增 `retire()`/`_retired` 与 `TranscriberRetiredError`，退役实例不再重建游离模型 —— 仅当注册实例**同尺寸**时转交，否则明确报错（不静默混用模型尺寸、不污染原尺寸缓存键）；重建后的取消检查移入 `try/finally` 内，取消时也走 finally 重挂回收计时器。
+- `app/utils/env_checker.py`：新增 `env_int`（供 `transcriber_provider` / `note_cache` / `universal_gpt` 共用，已收敛三处重复实现）与 ctranslate2 CUDA 探测（`get_cuda_device_count()` + **cuBLAS/cuBLASLt 双库**可加载，fail-closed）；此前该文件为上游原样。评审修复：探测只匹配**已安装 ctranslate2 的构建目标**（按大版本推断 `_ct2_cuda_major()`，4.x→CUDA 12、3.x 及更早→11，未知按 12），不再「11/12 任一对可加载即可用」——跨代回退不存在，否则只装 CUDA 11 的机器会被误判 GPU 可用。上游同步需人工合并。
+- `app/services/note.py`：截图/视频理解路径的独立 ffmpeg 入口 `_extract_audio_from_video` 补 `-nostdin` + `stdin=DEVNULL`（issue #56 缺陷 2，与 `downloaders/common.py` 同源隔离）。
+- `app/exceptions/task.py` / `app/services/pipeline.py`：新增轻量 `TranscriberRetiredError`（放共享异常模块，分块流水线无需为此加载整个 Whisper 引擎）；`_transcribe_with_preprocess` 在通用「单块失败跳过」之前显式透传它，避免缺块结果被当成功缓存写入任务/跨任务缓存。上游同步需人工合并。
+- `app/gpt/universal_gpt.py`：`_env_int` 改复用 `app/utils/env_checker.env_int`（原为本仓库 #127 分叉，语义不变）。
+- `videonote_mcp/config.py`：`OPENBLAS_NUM_THREADS=1`（setdefault，先于任何 numpy 导入）；`videonote_mcp/preheat.py`（本仓库新增）承载 Windows `VIDEONOTE_PREHEAT_TRANSCRIBER` 主线程预热（默认开，可关）的平台/开关判定与导入逻辑，`server.py` 只调用；抽出独立模块是因为 server 顶层 import 有启动副作用、无法在测试内直接验证该分支。
