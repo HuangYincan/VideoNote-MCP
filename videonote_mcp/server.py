@@ -40,6 +40,7 @@ from videonote_mcp.guidance import (
     add_next_steps,
     project_info,
 )
+from videonote_mcp.preheat import preheat_transcriber_engine
 from videonote_mcp.task_artifacts import read_task_status, read_transcript
 from videonote_mcp.task_artifacts import validate_task_id as _validate_task_id
 
@@ -229,6 +230,41 @@ mcp._mcp_server.version = _SERVER_VERSION
 # ---------- 后台任务 ----------
 
 _MAX_WORKERS = max(1, env_int("VIDEONOTE_MAX_WORKERS", 3))
+
+# ---------- 首次转写引擎的早期预热（Windows，可选）----------
+# 背景：MCP 进程里**首次**导入 faster_whisper（连带 av / numpy / ctranslate2 三个
+# 60MB 级未签名原生 DLL）会长时间停顿 —— 实测 5 次：48s / 248s / 297s / 344s / 455s
+# （同一进程内其余约 20 次调用都是 0~1s）。停顿期间 CPU/I-O/缺页增量全为 0、线程数
+# 不变，会自行恢复，每进程只发生一次。
+#
+# 触发条件（红队实测对照）：**由 MCP 启动的那个 server 进程** —— 同一管线放进普通
+# 进程 0/10，放进 MCP 启动的 server 5/14。所以它不是"首次导入"本身的竞态，任何只
+# 针对导入语句的机制解释都不完整（根因仍未定；Defender 扫描已被三条独立证据排除：
+# Defender 不扫 F: 盘、全新文件标识的 20MB DLL 只需 0.35s、amsi/MpOav 在裸 import
+# sqlalchemy 时同样出现）。
+#
+# 为什么预热可能有效（红队 A/B）：预热 numpy 后 4 连发 0/4 停顿，而对照组（预热 PIL）
+# 紧接着又停 —— 差别只在预热对象。机制上把"首次重原生加载"从 worker 线程挪到主线程、
+# 挪到进程尚无线程竞争的时刻（6 个上游项目同款做法：QwenPaw c018ab2 / Hermes d8168f3
+# / anchor d2342214 等）。
+#
+# ⚠️ 风险与实测：若停顿未被消除、只是跟着跑到启动路径，MCP 的 initialize 握手会变成
+# 48~455s，超过客户端超时 → 整个 server 被判死，比现状更糟。为此做了对照实测（用真
+# videonote.exe 走 stdio + 真工具调用 + 真管线，同一"活跃期"内 A/B）：
+#   无预热: total=401.3s  *** FROZEN >20s
+#   有预热: total=  4.3s  ok=True  import 耗时 0.0s  max_cpu_freeze=2s
+# 且预热本身耗时仅 0.14s；MCP server 启动耗时 1.24s(关) → 1.41s(开)，即 +167ms，
+# 在所有测试中均未出现启动期停顿（8/8）。故默认**开启**。
+#
+# 关闭方式：MCP 配置的 env 块里设 VIDEONOTE_PREHEAT_TRANSCRIBER=0（或 false/off），
+# 立即退回惰性导入的旧行为。
+#
+# 预热**整条链**而不是只 import numpy：链路里 av（63MB）与 ctranslate2（60MB）同样是
+# worker 里的重原生加载，只预热 numpy 会把风险留给它们（实测只暖 numpy 仅覆盖约 62%）。
+#
+# 平台 / 开关判定与导入逻辑在 videonote_mcp/preheat.py（可测试，见 tests）。
+preheat_transcriber_engine(logger=logger)
+
 _pool = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
 
 # 任务注册表：task_id -> (Future, cancel_event)，供 task(action='cancel') 使用（thread-safe）

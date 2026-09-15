@@ -1,6 +1,5 @@
 import hashlib
 import os
-import subprocess
 import threading
 from abc import ABC
 from typing import Optional
@@ -66,8 +65,6 @@ class LocalDownloader(Downloader, ABC):
             ]
             run_ffmpeg_cancellable(
                 command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 output_path=output_path,
                 cancel_event=cancel_event,
             )
@@ -112,8 +109,6 @@ class LocalDownloader(Downloader, ABC):
             run_ffmpeg_cancellable(
                 command,
                 cancel_event=cancel_event,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 output_path=output_path,
             )
             return output_path

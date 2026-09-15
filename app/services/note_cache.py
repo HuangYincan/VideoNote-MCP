@@ -40,6 +40,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from app.utils.env_checker import env_int
 from app.utils.url_parser import extract_bilibili_p_number, extract_video_id
 
 logger = logging.getLogger(__name__)
@@ -91,26 +92,14 @@ def engine_key(transcriber_type: str, model_size: str) -> str:
     return transcriber_type
 
 
-def _env_int(name: str, default: int) -> int:
-    """解析缓存治理 env；未设置或非法回 default（不从 videonote_mcp 反向 import）。"""
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
-        return default
-    try:
-        return int(str(raw).strip())
-    except (TypeError, ValueError):
-        logger.warning("%s 非整数（%r），回退默认 %s", name, raw, default)
-        return default
-
-
 def cache_ttl_days() -> int:
     """TTL 天数；≤0 表示关闭过期。非法 env 回退 30。"""
-    return _env_int("VIDEONOTE_CACHE_TTL_DAYS", DEFAULT_CACHE_TTL_DAYS)
+    return env_int("VIDEONOTE_CACHE_TTL_DAYS", DEFAULT_CACHE_TTL_DAYS)
 
 
 def cache_max_mb() -> int:
     """总量上限 MB；≤0 表示不限制。非法 env 回退 2048。"""
-    return _env_int("VIDEONOTE_CACHE_MAX_MB", DEFAULT_CACHE_MAX_MB)
+    return env_int("VIDEONOTE_CACHE_MAX_MB", DEFAULT_CACHE_MAX_MB)
 
 
 def cache_ttl_seconds() -> Optional[float]:

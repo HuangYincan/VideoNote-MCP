@@ -16,25 +16,14 @@ from app.gpt.prompt_builder import generate_base_prompt
 from app.gpt.request_chunker import RequestChunker
 from app.models.gpt_model import GPTSource
 from app.models.transcriber_model import TranscriptSegment
+from app.utils.env_checker import env_int
 from app.utils.path_helper import get_data_dir
 
 logger = logging.getLogger(__name__)
 
 
-def _env_int(name: str, default: int) -> int:
-    """env 整数防御式解析（#127 B7）：未设置/垃圾值 warning 回退默认，不再裸 int() 崩任务。"""
-    v = os.environ.get(name)
-    if v is None or not str(v).strip():
-        return default
-    try:
-        return int(str(v).strip())
-    except ValueError:
-        logger.warning("环境变量 %s 非法（%r），回退默认 %s", name, v, default)
-        return default
-
-
 def _env_float(name: str, default: float) -> float:
-    """env 浮点防御式解析（#127 B7）：同 _env_int 语义。"""
+    """env 浮点防御式解析（#127 B7）：同 env_int 语义。"""
     v = os.environ.get(name)
     if v is None or not str(v).strip():
         return default
@@ -81,15 +70,15 @@ class UniversalGPT(GPT):
         self.client = client
         self.model = model
         self.temperature = temperature
-        self.max_request_bytes = _env_int("OPENAI_MAX_REQUEST_BYTES", 45 * 1024 * 1024)
+        self.max_request_bytes = env_int("OPENAI_MAX_REQUEST_BYTES", 45 * 1024 * 1024)
         # token 级切块上限（docs/05 #32）：按窗口切，而不是 45MB 字节一整块。
         # 汉字≈1 token 的保守估计，默认 12000 留足输出余量（8-16k 窗口兼容）。
-        self.max_tokens_per_chunk = _env_int("OPENAI_MAX_TOKENS_PER_CHUNK", 12000)
+        self.max_tokens_per_chunk = env_int("OPENAI_MAX_TOKENS_PER_CHUNK", 12000)
         # 缺省落数据目录（#127 B2）：与 task_manifest 同源，裸脚本产物不再 CWD 分裂
         self.checkpoint_dir = Path(os.getenv("NOTE_OUTPUT_DIR", str(Path(get_data_dir()) / "note_results")))
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         # 初始化时缓存重试配置，避免每次请求重复读取环境变量
-        self._max_retry_attempts = max(1, _env_int("OPENAI_RETRY_ATTEMPTS", 3))
+        self._max_retry_attempts = max(1, env_int("OPENAI_RETRY_ATTEMPTS", 3))
         self._retry_base_backoff = _env_float("OPENAI_RETRY_BACKOFF_SECONDS", 1.5)
 
     def _format_time(self, seconds: float) -> str:
