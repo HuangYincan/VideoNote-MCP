@@ -1008,7 +1008,9 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **质量与文档**：同步 README、架构/手册、贡献指南、VENDOR 和可编辑架构图；新增 66 项回归。全量 **1263 passed, 1 skipped, 10 subtests passed**；源码与 wheel 的真实 stdio、三套模板原件哈希及分发排除规则均验证通过。
 - **范围说明**：不分发 Skills/commands，不改变用户凭证；真实媒体下载、ASR 和跨进程 TOCTOU 仍不在本次自动验证范围。版本文件、`uv.lock` 和插件元数据统一为 `0.2.1`。
 
-## 2026-09-15 — Windows 导入停顿 / ffmpeg 卡死 / GPU 转写与显存释放（未发版）
+## v0.2.2 — 2026-09-15
+
+> Windows 导入停顿 / ffmpeg 卡死 / GPU 转写与显存释放
 
 - **GPU 转写**：`is_cuda()` 原以 `torch.cuda.is_available()` 为唯一判据，但 whisper 推理走 ctranslate2、全程不碰 torch —— 判据错位。改为先问 ctranslate2（`get_cuda_device_count()` + **cuBLAS 与 cuBLASLt 双库**实际可加载的两级探测，CUDA 12/11 两代都试），torch 仅作兜底且探测异常（如 torch 安装损坏抛 OSError）按不可用；新实现在所有组合下返回值均为旧实现的**超集**（只修正误判，绝不把 True 判成 False）。实测 8.88x（RTX 5060，large-v3-turbo，float16 vs CPU int8）。
 - **显存空闲释放**：whisper 单例原永不释放（约 2.2GB 常驻）。新增 `VIDEONOTE_GPU_IDLE_RELEASE_SEC`（默认 180s）—— 转写结束挂计时器，空闲超时则关闭模型、下次用到自愈重建。释放只关模型**不摘单例**（摘槽位会让重建出的模型成为「游离模型」→ 永不归还 + 双份显存）；另加代次守卫、空闲复检、忙时非阻塞跳过、无锁 fail-closed、只释放 whisper。

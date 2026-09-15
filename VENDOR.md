@@ -119,7 +119,7 @@ git -C /path/to/BiliNote rev-parse HEAD
 - `videonote_mcp/task_artifacts.py` 是自有共享读取器，不属于上游；MCP/CLI/Resource 统一缓存优先和回退规则，但保留各入口的状态准入。`export/exporter.py` 不再为默认输出路径导入 `app.services.note`，改从 task_manifest 在调用时读取目录。
 - 同步上游时保留上述依赖方向和权限语义；`tests/test_core_boundaries.py` 对隔离导入、入口回退一致性及目录访问规则做回归。未改动第三方模板原件或凭证逻辑。
 
-## Windows ffmpeg / GPU 转写与显存释放分叉（2026-09-15，未发版）
+## Windows ffmpeg / GPU 转写与显存释放分叉（v0.2.2，2026-09-15）
 
 - `app/downloaders/common.py`：`run_ffmpeg_cancellable` 就地收口 —— 传入 `subprocess.PIPE` 降级为 `DEVNULL` 并告警（本函数只 `poll()`、从不读管道），并显式 `stdin=DEVNULL`（子进程不再继承 MCP 的 JSON-RPC stdin）。上游若恢复无 stdin 重定向或 PIPE 用法需人工合并。
 - `app/downloaders/local_downloader.py`：移除 `convert_to_mp3` / `extract_cover` 两处 `PIPE` 传参（本地视频路径死锁根因）。与既有「本地转码改可取消 Popen」分叉同源。
