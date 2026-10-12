@@ -274,19 +274,16 @@ def _wizard(inq) -> None:
         choice = inq.select(
             message="选择要配置的项目",
             choices=[
-                {"name": "① LLM 供应商（填 key / 检测连接 / 默认模型）", "value": "llm"},
-                {"name": "② 语音转写引擎（选引擎 / 模型尺寸 / 下载）", "value": "transcriber"},
-                {"name": "③ 平台登录（Cookie / 当前登录状态）", "value": "cookies"},
-                {"name": "④ 其他（默认笔记位置 / 视频理解 / 评论·弹幕 / 笔记默认）", "value": "other"},
-                {"name": "⑤ 数据管理（查看 / 清理任务产物）", "value": "data"},
+                {"name": "② 语音转写引擎", "value": "transcriber"},
+                {"name": "③ 平台登录", "value": "cookies"},
+                {"name": "④ 其他", "value": "other"},
+                {"name": "⑤ 任务管理", "value": "data"},
                 {"name": "✔ 完成 / 退出", "value": "exit"},
             ],
-            default="llm",
+            default="transcriber",
             keybindings=_KB,
         ).execute()
-        if choice == "llm":
-            _wizard_llm(inq)
-        elif choice == "transcriber":
+        if choice == "transcriber":
             _wizard_transcriber(inq)
         elif choice == "cookies":
             _wizard_cookies(inq)
@@ -331,6 +328,19 @@ def _cookie_status_text(cookie_mgr, platform: str) -> str:
 
 def _cookie_platform_name(platform: str) -> str:
     return _COOKIE_LABELS.get(platform, platform)
+
+
+def _llm_status_text() -> str:
+    """返回供应商配置摘要，不暴露 API key 内容。"""
+    providers = ProviderService.get_all_providers_safe()
+    if not providers:
+        return "未配置供应商"
+    with_key = sum(bool(provider.get("api_key")) for provider in providers)
+    with_default = sum(
+        bool(get_app_config().get(f"default_model:{provider['id']}"))
+        for provider in providers
+    )
+    return f"供应商 {len(providers)} 个 / Key {with_key} 个 / 默认模型 {with_default} 个"
 
 
 def _wizard_cookies(inq) -> None:
@@ -434,7 +444,7 @@ def _wizard_cookie_platform(inq, platform: str) -> None:
 def _wizard_llm(inq) -> None:
     try:
         while True:
-            _show_header("① LLM 供应商")
+            _show_header("MLLM供应商")
             provs = ProviderService.get_all_providers_safe()
             choices = []
             for p in provs:
@@ -614,26 +624,27 @@ def _wizard_transcriber(inq) -> None:
             cur_engine = cfg["transcriber_type"]
             choices = []
             for val, base in (
-                ("fast-whisper", "fast-whisper（本地）"),
-                ("groq", "groq（云端，需 key）"),
-                ("bcut", "bcut（云端）"),
-                ("kuaishou", "kuaishou（云端）"),
-                ("mlx-whisper", "mlx-whisper（仅 macOS，GPU）"),
-                ("funasr", "funasr（中文最优，VAD+标点）"),
+                ("fast-whisper", "fast-whisper"),
+                ("groq", "groq"),
+                ("bcut", "bcut"),
+                ("kuaishou", "kuaishou"),
+                ("mlx-whisper", "mlx-whisper"),
+                ("funasr", "funasr"),
             ):
                 # 注意：InquirerPy 选择项 name 里不能嵌 ANSI 转义码（会原样显示），用纯文本
                 if val == cur_engine:
-                    mark = "  ✓ 当前"
+                    mark = "（当前"
                     if val in ("fast-whisper", "mlx-whisper"):
-                        mark += f"  尺寸 {cfg['whisper_model_size']}"
+                        mark += f" / 尺寸 {cfg['whisper_model_size']}"
+                    mark += "）"
                 else:
                     mark = ""
                 choices.append({"name": base + mark, "value": val})
             choices.append(
-                {"name": f"音频预处理（16kHz 归一 + 超长分块）：{'开' if cfg.get('enable_preprocess') else '关'}", "value": "preprocess"}
+                {"name": f"音频预处理（{'开' if cfg.get('enable_preprocess') else '关'}）", "value": "preprocess"}
             )
             choices.append(
-                {"name": f"说话人分离（pyannote，可选）：{'开' if cfg.get('diarization') else '关'}", "value": "diarization"}
+                {"name": f"说话人分离（{'开' if cfg.get('diarization') else '关'}）", "value": "diarization"}
             )
             choices.append({"name": "← 返回主菜单", "value": "back"})
             pick = inq.select(
@@ -776,7 +787,7 @@ def _wizard_transcriber(inq) -> None:
 def _wizard_other(inq) -> None:
     try:
         while True:
-            notes_dir = get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or "（默认 note_results/{task_id}/）"
+            notes_dir = get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or "默认 note_results/{task_id}/"
             vu_on = bool(get_app_config().get("video_understanding", False))
             vu_int = resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 6)
             cm_on = bool(get_app_config().get("include_comments", False))
@@ -784,13 +795,14 @@ def _wizard_other(inq) -> None:
             st_style = get_app_config().get("default_style") or "detailed"
             ss_on = bool(get_app_config().get("default_screenshot", False))
             ad_on = True if get_app_config().get("agent_direct") is None else bool(get_app_config().get("agent_direct"))
-            _show_header("④ 其他设置")
+            _show_header("④ 其他")
             pick = inq.select(
                 message="选择要配置的项（← 返回）",
                 choices=[
-                    {"name": f"默认笔记位置（图片模式）：{notes_dir}", "value": "notes"},
-                    {"name": f"视频理解默认（{'开' if vu_on else '关'} / {vu_int}s，需多模态模型）", "value": "video"},
-                    {"name": f"评论/弹幕整合默认（{'开' if cm_on else '关'} / {cm_lim}条，需 SESSDATA）", "value": "comments"},
+                    {"name": f"MLLM供应商（{_llm_status_text()}）", "value": "llm"},
+                    {"name": f"默认笔记位置（{notes_dir}）", "value": "notes"},
+                    {"name": f"视频理解默认（{'开' if vu_on else '关'} / {vu_int}s）", "value": "video"},
+                    {"name": f"评论/弹幕整合默认（{'开' if cm_on else '关'} / {cm_lim}条）", "value": "comments"},
                     {"name": f"笔记默认（风格 {st_style} / 截图 {'开' if ss_on else '关'} / AGENT直接写 {'开' if ad_on else '关'}）", "value": "note-default"},
                     {"name": f"导出格式默认（生成后自动导出：{_format_list_display(get_app_config().get('default_export_formats'))}）", "value": "export-default"},
                     {"name": "← 返回主菜单", "value": "back"},
@@ -799,7 +811,9 @@ def _wizard_other(inq) -> None:
             ).execute()
             if pick == "back":
                 return
-            if pick == "notes":
+            if pick == "llm":
+                _wizard_llm(inq)
+            elif pick == "notes":
                 cur = get_app_config().get("notes_dir") or "（默认）"
                 _show_header("默认笔记位置")
                 new_dir = inq.text(message=f"当前：{cur}。输入新目录（留空=保持默认）", keybindings=_KB).execute()
@@ -902,10 +916,10 @@ def _wizard_other(inq) -> None:
 
 
 def _wizard_data(inq) -> None:
-    """setup ④ 数据管理：查看任务列表 / 清理单任务 / 全局清理。"""
+    """setup ⑤ 任务管理：查看任务列表 / 清理单任务 / 全局清理。"""
     try:
         while True:
-            _show_header("④ 数据管理")
+            _show_header("⑤ 任务管理")
             pick = inq.select(
                 message="选择操作（← 返回）",
                 choices=[
@@ -1164,7 +1178,7 @@ def _fallback_cookie_setup() -> None:
     from app.services.cookie_manager import CookieConfigManager
 
     mgr = CookieConfigManager()
-    print("\n③ 平台登录（Cookie / 当前登录状态）：", file=sys.stdout)
+    print("\n③ 平台登录：", file=sys.stdout)
     print("   状态仅表示本地已保存登录凭证；需要时可重新扫码或粘贴。", file=sys.stdout)
     for i, platform in enumerate(_COOKIE_PLATFORMS, 1):
         print(f"   {i}) {_cookie_platform_name(platform)}：{_cookie_status_text(mgr, platform)}", file=sys.stdout)
@@ -1201,13 +1215,11 @@ def _fallback_cookie_setup() -> None:
             print(f"   ✓ 已清除 {label} 的登录态", file=sys.stdout)
 
 
-def _setup_cli_fallback() -> None:
-    """无 InquirerPy 时的纯文本兜底向导（同功能，输入编号选择）。"""
-    print("=== VideoNote-MCP 配置（纯文本模式） ===", file=sys.stdout)
-
+def _fallback_llm_setup() -> None:
+    """纯文本模式的 MLLM 供应商配置。"""
     provs = ProviderService.get_all_providers_safe()
+    print(f"\nMLLM供应商（{_llm_status_text()}）：", file=sys.stdout)
     if provs:
-        print("\n① LLM 供应商（当前）：", file=sys.stdout)
         for i, p in enumerate(provs, 1):
             dm = get_app_config().get(f"default_model:{p['id']}")
             suffix = f"  默认={dm}" if dm else ""
@@ -1237,8 +1249,13 @@ def _setup_cli_fallback() -> None:
             new_id = ProviderService.add_provider(name=name, api_key=key, base_url=base_url, logo="custom", type_="custom")
             print(f"   ✓ 已新增 → id={new_id}", file=sys.stdout)
 
+
+def _setup_cli_fallback() -> None:
+    """无 InquirerPy 时的纯文本兜底向导（同功能，输入编号选择）。"""
+    print("=== VideoNote-MCP 配置（纯文本模式） ===", file=sys.stdout)
+
     print("\n② 语音转写引擎：", file=sys.stdout)
-    print("   1) fast-whisper  2) groq  3) bcut  4) kuaishou  5) mlx-whisper  6) funasr（中文最优，VAD+标点）", file=sys.stdout)
+    print("   1) fast-whisper  2) groq  3) bcut  4) kuaishou  5) mlx-whisper  6) funasr", file=sys.stdout)
     t = _ask("   选择 [1-6]", default="1")
     engines = ("fast-whisper", "groq", "bcut", "kuaishou", "mlx-whisper", "funasr")
     eng = engines[int(t) - 1] if t.isdigit() and 1 <= int(t) <= 6 else "fast-whisper"
@@ -1277,7 +1294,8 @@ def _setup_cli_fallback() -> None:
 
     _fallback_cookie_setup()
 
-    print("\n④ 其他（视频理解默认 / 评论·弹幕整合默认 / 笔记默认）：", file=sys.stdout)
+    print("\n④ 其他：", file=sys.stdout)
+    _fallback_llm_setup()
     print("   视频理解把画面按间隔抽帧发给多模态 LLM（需 qwen-vl / gpt-4o 等；会下载整个视频、比纯转写慢）", file=sys.stdout)
     cur_on = bool(get_app_config().get("video_understanding", False))
     cur_int = resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 6)
@@ -1355,7 +1373,7 @@ def _setup_cli_fallback() -> None:
         remove_app_config("default_export_formats")
         print("   ✓ 已清除导出格式默认（任务成功不再自动导出）", file=sys.stdout)
 
-    print("\n⑤ 数据管理（查看 / 清理任务产物）：", file=sys.stdout)
+    print("\n⑤ 任务管理：", file=sys.stdout)
     try:
         from app.db.video_task_dao import list_tasks as _list_tasks
 
