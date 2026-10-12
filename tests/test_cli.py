@@ -1018,8 +1018,22 @@ class TestSetupCookieMenu:
                 return _InqResult("exit")
 
         cli._wizard(_MenuInq())
-        assert any("③ 平台登录" in name for name in captured[0])
-        assert any("⑤ 数据管理" in name for name in captured[0])
+        names = captured[0]
+        assert names == ["② 语音转写引擎", "③ 平台登录", "④ 其他", "⑤ 任务管理", "✔ 完成 / 退出"]
+        assert all("（" not in name and "）" not in name for name in names)
+        assert not any("LLM 供应商" in name for name in names)
+
+    def test_other_menu_contains_mllm_with_current_status(self):
+        captured = []
+
+        class _OtherMenuInq:
+            def select(self, message, choices=None, keybindings=None, **kwargs):
+                captured.append([choice["name"] for choice in choices])
+                return _InqResult("back")
+
+        cli._wizard_other(_OtherMenuInq())
+        assert captured[0][0] == "MLLM供应商（未配置供应商）"
+        assert "④ 其他" not in captured[0]
 
 
 class TestWizardProviderCli:
