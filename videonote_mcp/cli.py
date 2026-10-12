@@ -276,8 +276,9 @@ def _wizard(inq) -> None:
             choices=[
                 {"name": "① LLM 供应商（填 key / 检测连接 / 默认模型）", "value": "llm"},
                 {"name": "② 语音转写引擎（选引擎 / 模型尺寸 / 下载）", "value": "transcriber"},
-                {"name": "③ 其他（平台 Cookie / 默认笔记位置 / 视频理解默认 / 评论·弹幕整合默认 / 笔记默认）", "value": "other"},
-                {"name": "④ 数据管理（查看 / 清理任务产物）", "value": "data"},
+                {"name": "③ 平台登录（Cookie / 当前登录状态）", "value": "cookies"},
+                {"name": "④ 其他（默认笔记位置 / 视频理解 / 评论·弹幕 / 笔记默认）", "value": "other"},
+                {"name": "⑤ 数据管理（查看 / 清理任务产物）", "value": "data"},
                 {"name": "✔ 完成 / 退出", "value": "exit"},
             ],
             default="llm",
@@ -287,6 +288,8 @@ def _wizard(inq) -> None:
             _wizard_llm(inq)
         elif choice == "transcriber":
             _wizard_transcriber(inq)
+        elif choice == "cookies":
+            _wizard_cookies(inq)
         elif choice == "other":
             _wizard_other(inq)
         elif choice == "data":
@@ -294,6 +297,138 @@ def _wizard(inq) -> None:
         else:
             print(f"{_GREEN}✔ 配置完成。验证：`videonote providers list`、`videonote transcriber list`{_RESET}", file=sys.stdout)
             return
+
+
+_COOKIE_LABELS = {
+    "bilibili": "B 站",
+    "youtube": "YouTube",
+    "douyin": "抖音",
+    "kuaishou": "快手",
+    "xiaoyuzhou": "小宇宙",
+    "xiaohongshu": "小红书",
+}
+_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou", "xiaoyuzhou", "xiaohongshu")
+_BROWSER_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou")
+
+
+def _cookie_status_text(cookie_mgr, platform: str) -> str:
+    """返回 setup 中用于展示的平台登录态，不暴露 Cookie 内容。
+
+    这里展示的是本地是否保存了可用的登录凭证；不会在进入 setup 时发起
+    网络验证，避免向导打开就阻塞或把 Cookie 发往平台。
+    """
+    cookie = cookie_mgr.get(platform) or ""
+    browser = cookie_mgr.get_browser(platform)
+    if browser:
+        detail = f"浏览器 {browser}"
+        if cookie:
+            detail += " + 手动 Cookie"
+        return f"✓ 已登录（{detail}）"
+    if cookie:
+        return f"✓ 已登录（手动 Cookie，{len(cookie)} 字符）"
+    return "✗ 未登录"
+
+
+def _cookie_platform_name(platform: str) -> str:
+    return _COOKIE_LABELS.get(platform, platform)
+
+
+def _wizard_cookies(inq) -> None:
+    """平台登录配置入口，独立于其它 setup 默认项并显示当前登录态。"""
+    from app.services.cookie_manager import CookieConfigManager
+
+    try:
+        while True:
+            mgr = CookieConfigManager()
+            _show_header("③ 平台登录")
+            print(f"{_DIM}状态仅表示本地已保存登录凭证；需要时可在平台菜单中重新扫码或粘贴。{_RESET}", file=sys.stdout)
+            choices = [
+                {
+                    "name": f"{_cookie_platform_name(platform):<8} {_cookie_status_text(mgr, platform)}",
+                    "value": platform,
+                }
+                for platform in _COOKIE_PLATFORMS
+            ]
+            choices += [
+                {"name": "＋ 手动输入其他平台 Cookie", "value": "custom"},
+                {"name": "← 返回主菜单", "value": "back"},
+            ]
+            pick = inq.select(message="选择平台（← 返回）", choices=choices, keybindings=_KB).execute()
+            if pick == "back":
+                return
+            if pick == "custom":
+                _show_header("平台登录 · 其他平台")
+                platform = inq.text(message="平台名（留空取消）", keybindings=_KB).execute().strip()
+                if platform:
+                    _save_cookie_manually(inq, platform)
+                continue
+            _wizard_cookie_platform(inq, pick)
+    except KeyboardInterrupt:
+        return
+
+
+def _save_cookie_manually(inq, platform: str) -> None:
+    from app.services.cookie_manager import CookieConfigManager
+
+    cookie = inq.secret(message=f"{_cookie_platform_name(platform)} Cookie 值（留空取消）", keybindings=_KB).execute()
+    if cookie:
+        CookieConfigManager().set(platform, cookie.strip())
+        print(f"{_GREEN}✓ 已保存 {_cookie_platform_name(platform)} 的 Cookie（登录态已记录）{_RESET}", file=sys.stdout)
+    else:
+        print(f"{_YELLOW}⚠ 未保存（Cookie 为空）{_RESET}", file=sys.stdout)
+
+
+def _wizard_cookie_platform(inq, platform: str) -> None:
+    """管理一个平台的扫码、浏览器登录态、手动 Cookie 与清除。"""
+    from app.services.cookie_manager import CookieConfigManager
+
+    qr_platforms = {"bilibili", "xiaoyuzhou", "xiaohongshu", "douyin"}
+    try:
+        while True:
+            mgr = CookieConfigManager()
+            label = _cookie_platform_name(platform)
+            status = _cookie_status_text(mgr, platform)
+            _show_header(f"③ 平台登录 · {label}")
+            print(f"当前状态：{status}", file=sys.stdout)
+            choices = []
+            if platform in qr_platforms:
+                choices.append({"name": "扫码登录（推荐）", "value": "login"})
+            if platform in _BROWSER_COOKIE_PLATFORMS:
+                choices.append({"name": "读取浏览器登录态", "value": "browser"})
+            choices.append({"name": "手动输入 Cookie", "value": "manual"})
+            if mgr.get(platform) or mgr.get_browser(platform):
+                choices.append({"name": "清除当前登录态", "value": "clear"})
+            choices.append({"name": "← 返回平台列表", "value": "back"})
+            pick = inq.select(message=f"管理 {label}（← 返回）", choices=choices, keybindings=_KB).execute()
+            if pick == "back":
+                return
+            if pick == "login":
+                _login_cli([platform], exit_on_fail=False)
+            elif pick == "manual":
+                if platform == "xiaoyuzhou":
+                    _login_cli([platform, "--token"], exit_on_fail=False)
+                elif platform in {"xiaohongshu", "douyin"}:
+                    _login_cli([platform, "--cookie"], exit_on_fail=False)
+                else:
+                    _save_cookie_manually(inq, platform)
+            elif pick == "browser":
+                browser = inq.select(
+                    message="选择浏览器",
+                    choices=[{"name": name, "value": name} for name in ("safari", "chrome", "edge", "firefox")],
+                    keybindings=_KB,
+                ).execute()
+                if platform == "youtube":
+                    _login_cli(["youtube", "--browser", browser], exit_on_fail=False)
+                else:
+                    mgr.set_browser(platform, browser)
+                    print(f"{_GREEN}✓ 已保存 {label} 的浏览器登录态（{browser}）{_RESET}", file=sys.stdout)
+            elif pick == "clear":
+                confirmed = inq.confirm(message=f"确认清除 {label} 的登录态？", default=False, keybindings=_KB).execute()
+                if confirmed:
+                    mgr.delete(platform)
+                    print(f"{_GREEN}✓ 已清除 {label} 的登录态{_RESET}", file=sys.stdout)
+    except KeyboardInterrupt:
+        return
 
 
 def _wizard_llm(inq) -> None:
@@ -641,8 +776,6 @@ def _wizard_transcriber(inq) -> None:
 def _wizard_other(inq) -> None:
     try:
         while True:
-            from app.services.cookie_manager import CookieConfigManager
-
             notes_dir = get_app_config().get("notes_dir") or os.environ.get("VIDEONOTE_NOTES_DIR") or "（默认 note_results/{task_id}/）"
             vu_on = bool(get_app_config().get("video_understanding", False))
             vu_int = resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 6)
@@ -651,15 +784,10 @@ def _wizard_other(inq) -> None:
             st_style = get_app_config().get("default_style") or "detailed"
             ss_on = bool(get_app_config().get("default_screenshot", False))
             ad_on = True if get_app_config().get("agent_direct") is None else bool(get_app_config().get("agent_direct"))
-            _show_header("③ 其他设置")
+            _show_header("④ 其他设置")
             pick = inq.select(
                 message="选择要配置的项（← 返回）",
                 choices=[
-                    {"name": "B 站扫码登录（自动获取 SESSDATA，AI 字幕用）", "value": "bili-login"},
-                    {"name": "小宇宙扫码登录（官方文稿用，App 扫一扫）", "value": "xyz-login"},
-                    {"name": "小红书扫码登录（下载视频笔记用，App 扫一扫）", "value": "xhs-login"},
-                    {"name": "抖音扫码登录（下载视频笔记用，App 扫一扫）", "value": "dy-login"},
-                    {"name": "平台 Cookie（手动填，B 站等需登录内容）", "value": "cookie"},
                     {"name": f"默认笔记位置（图片模式）：{notes_dir}", "value": "notes"},
                     {"name": f"视频理解默认（{'开' if vu_on else '关'} / {vu_int}s，需多模态模型）", "value": "video"},
                     {"name": f"评论/弹幕整合默认（{'开' if cm_on else '关'} / {cm_lim}条，需 SESSDATA）", "value": "comments"},
@@ -671,41 +799,7 @@ def _wizard_other(inq) -> None:
             ).execute()
             if pick == "back":
                 return
-            if pick == "bili-login":
-                _login_cli([], exit_on_fail=False)
-            elif pick == "xyz-login":
-                _login_xiaoyuzhou([], exit_on_fail=False)
-            elif pick == "xhs-login":
-                _login_xiaohongshu([], exit_on_fail=False)
-            elif pick == "dy-login":
-                _login_douyin([], exit_on_fail=False)
-            elif pick == "cookie":
-                _show_header("平台 Cookie")
-                platform = inq.select(
-                    message="平台",
-                    choices=[
-                        {"name": "bilibili", "value": "bilibili"},
-                        {"name": "youtube", "value": "youtube"},
-                        {"name": "douyin", "value": "douyin"},
-                        {"name": "kuaishou", "value": "kuaishou"},
-                        {"name": "xiaoyuzhou", "value": "xiaoyuzhou"},
-                        {"name": "xiaohongshu", "value": "xiaohongshu"},
-                        {"name": "其他（手动输入）", "value": "other"},
-                        {"name": "← 返回", "value": "back"},
-                    ],
-                    keybindings=_KB,
-                ).execute()
-                if platform == "back":
-                    continue
-                if platform == "other":
-                    platform = inq.text(message="平台名", keybindings=_KB).execute()
-                cookie = inq.secret(message=f"{platform} 的 Cookie 值（留空取消）", keybindings=_KB).execute()
-                if platform and cookie:
-                    CookieConfigManager().set(platform, cookie)
-                    print(f"{_GREEN}✓ 已保存 {platform} 的 Cookie{_RESET}", file=sys.stdout)
-                else:
-                    print(f"{_YELLOW}⚠ 未保存（平台或 Cookie 为空）{_RESET}", file=sys.stdout)
-            elif pick == "notes":
+            if pick == "notes":
                 cur = get_app_config().get("notes_dir") or "（默认）"
                 _show_header("默认笔记位置")
                 new_dir = inq.text(message=f"当前：{cur}。输入新目录（留空=保持默认）", keybindings=_KB).execute()
@@ -1065,6 +1159,48 @@ def _fallback_test_and_default(pid: str) -> None:
         print("   ⚠ 无效选择，未设置", file=sys.stdout)
 
 
+def _fallback_cookie_setup() -> None:
+    """纯文本模式的平台登录配置，和方向键向导使用同一套状态文案。"""
+    from app.services.cookie_manager import CookieConfigManager
+
+    mgr = CookieConfigManager()
+    print("\n③ 平台登录（Cookie / 当前登录状态）：", file=sys.stdout)
+    print("   状态仅表示本地已保存登录凭证；需要时可重新扫码或粘贴。", file=sys.stdout)
+    for i, platform in enumerate(_COOKIE_PLATFORMS, 1):
+        print(f"   {i}) {_cookie_platform_name(platform)}：{_cookie_status_text(mgr, platform)}", file=sys.stdout)
+    custom_idx = len(_COOKIE_PLATFORMS) + 1
+    print(f"   {custom_idx}) 其他平台（手动 Cookie）", file=sys.stdout)
+    sel = _ask(f"   选择平台 [1-{custom_idx}]，0 跳过", default="0")
+    if not sel.isdigit() or int(sel) == 0:
+        return
+    index = int(sel)
+    if 1 <= index <= len(_COOKIE_PLATFORMS):
+        platform = _COOKIE_PLATFORMS[index - 1]
+    elif index == custom_idx:
+        platform = _ask("   平台名", default="").strip()
+        if not platform:
+            return
+    else:
+        print("   ⚠ 无效选择，跳过平台登录配置", file=sys.stdout)
+        return
+
+    mgr = CookieConfigManager()
+    label = _cookie_platform_name(platform)
+    print(f"   当前状态：{_cookie_status_text(mgr, platform)}", file=sys.stdout)
+    action = _ask("   操作：1=手动输入 Cookie，2=清除登录态，0=返回", default="0")
+    if action == "1":
+        cookie = _ask_secret(f"   {label} Cookie 值（留空取消）")
+        if cookie:
+            mgr.set(platform, cookie)
+            print(f"   ✓ 已保存 {label} 的 Cookie（登录态已记录）", file=sys.stdout)
+        else:
+            print("   ⚠ 未保存（Cookie 为空）", file=sys.stdout)
+    elif action == "2":
+        if _ask(f"   确认清除 {label} 的登录态？[y/N]", default="N").lower() == "y":
+            mgr.delete(platform)
+            print(f"   ✓ 已清除 {label} 的登录态", file=sys.stdout)
+
+
 def _setup_cli_fallback() -> None:
     """无 InquirerPy 时的纯文本兜底向导（同功能，输入编号选择）。"""
     print("=== VideoNote-MCP 配置（纯文本模式） ===", file=sys.stdout)
@@ -1139,7 +1275,9 @@ def _setup_cli_fallback() -> None:
     TranscriberConfigManager().update_config(eng, diarization=bool(dia))
     print(f"   ✓ 说话人分离：{'开' if dia else '关'}", file=sys.stdout)
 
-    print("\n③ 其他（视频理解默认 / 评论·弹幕整合默认 / 笔记默认）：", file=sys.stdout)
+    _fallback_cookie_setup()
+
+    print("\n④ 其他（视频理解默认 / 评论·弹幕整合默认 / 笔记默认）：", file=sys.stdout)
     print("   视频理解把画面按间隔抽帧发给多模态 LLM（需 qwen-vl / gpt-4o 等；会下载整个视频、比纯转写慢）", file=sys.stdout)
     cur_on = bool(get_app_config().get("video_understanding", False))
     cur_int = resolve_int_config("video_interval", "VIDEONOTE_VIDEO_INTERVAL", 6)
@@ -1217,7 +1355,7 @@ def _setup_cli_fallback() -> None:
         remove_app_config("default_export_formats")
         print("   ✓ 已清除导出格式默认（任务成功不再自动导出）", file=sys.stdout)
 
-    print("\n④ 数据管理（查看 / 清理任务产物）：", file=sys.stdout)
+    print("\n⑤ 数据管理（查看 / 清理任务产物）：", file=sys.stdout)
     try:
         from app.db.video_task_dao import list_tasks as _list_tasks
 
@@ -1475,10 +1613,6 @@ def _proxy_cli(argv) -> None:
     elif opts.cmd == "off":
         mgr.update_config(False)
         print("✅ 代理已关闭（回退环境变量）", file=sys.stdout)
-
-
-_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou", "xiaoyuzhou", "xiaohongshu")
-_BROWSER_COOKIE_PLATFORMS = ("youtube", "bilibili", "douyin", "kuaishou")
 
 
 def _cookie_cli(argv) -> None:
