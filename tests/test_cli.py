@@ -997,6 +997,31 @@ class _FakeInq:
         return _InqResult(self._next("secret"))
 
 
+class TestSetupCookieMenu:
+    def test_cookie_status_distinguishes_saved_login_and_empty_config(self, tmp_path):
+        from app.services.cookie_manager import CookieConfigManager
+
+        mgr = CookieConfigManager(filepath=str(tmp_path / "downloader.json"))
+        assert cli._cookie_status_text(mgr, "bilibili") == "✗ 未登录"
+        mgr.set("bilibili", "SESSDATA=test")
+        assert "✓ 已登录" in cli._cookie_status_text(mgr, "bilibili")
+        assert "SESSDATA=test" not in cli._cookie_status_text(mgr, "bilibili")
+        mgr.set_browser("youtube", "chrome")
+        assert cli._cookie_status_text(mgr, "youtube") == "✓ 已登录（浏览器 chrome）"
+
+    def test_main_menu_has_dedicated_platform_login_section(self):
+        captured = []
+
+        class _MenuInq:
+            def select(self, message, choices=None, keybindings=None, **kwargs):
+                captured.append([choice["name"] for choice in choices])
+                return _InqResult("exit")
+
+        cli._wizard(_MenuInq())
+        assert any("③ 平台登录" in name for name in captured[0])
+        assert any("⑤ 数据管理" in name for name in captured[0])
+
+
 class TestWizardProviderCli:
     """setup 向导内供应商管理：#120 的错误就地消化（重名不崩 / edit 失败如实报）。"""
 

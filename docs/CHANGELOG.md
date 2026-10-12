@@ -1044,3 +1044,8 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 
 - **退役异常传播未贯通（Spec P2）**：`TranscriberRetiredError` 移到轻量共享模块 `app/exceptions/task.py`；`pipeline._transcribe_with_preprocess` 在通用「单块失败跳过」之前显式 `except TranscriberRetiredError: raise`。此前第一块成功、第二块退役被吞成「跳过该块」，流水线返回缺块结果并写入任务/跨任务缓存，后续同模型请求命中不完整缓存。新增端到端分块回归（第一块成功、第二块退役 → 异常向上传播；同时守卫通用单块失败仍按原语义跳过）。
 - **验证**：全量 **1326 passed, 1 skipped, 27 subtests passed**；Ruff F/I、`git diff --check` 通过。
+
+## v0.2.3 — 2026-10-12
+
+- **setup 平台登录入口**：平台 Cookie、扫码和浏览器登录态独立为“③ 平台登录”，列表显示本地登录态（已登录/未登录），并支持清除；其他默认配置与数据管理顺延为④/⑤。
+- **验证**：全量 **1328 passed, 1 skipped, 27 subtests passed**；Ruff F/I 与 `git diff --check` 通过。
