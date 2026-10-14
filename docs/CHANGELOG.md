@@ -1062,3 +1062,10 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **轻量入口与分发**：console script 经 `__main__.py` 分发，install 帮助/预览不初始化 DB；新增 tomlkit 依赖及锁文件。手动注册和已有 MCP 协议保持兼容，不分发 Skills 或 commands，不触发 PyPI 发布。
 - **文档与图示**：同步中英文 README、使用手册、架构/接手指南和 VENDOR 设备选择说明；一并纳入用户提供的中英文 Mermaid 流水线图。
 - **验证**：新增 41 个安装器测试；全量 **1370 passed, 1 skipped, 27 subtests passed**；Ruff F/I、shell 语法、源码/wheel 独立 stdio、wheel 入口与分发边界检查通过。Codex 与 Claude Code 的官方 CLI 在临时配置目录完成真实注册回读，未修改实际客户端配置。CI 新增 Windows/Linux/macOS 安装器检查并纳入 Smoke test 汇总；远程三平台 CI 与实际 CUDA/MLX 模型推理尚待对应环境验收。
+
+### 安装多选界面与 setup 客户端管理（2026-10-14，待发版）
+
+- **终端 UI**：安装器与 setup 共享方向键 / 空格多选 / 回车确认界面；客户端列表标注检测状态，转写方案与模型尺寸使用菜单。帮助、预览、显式非交互安装保持轻量；缺少 InquirerPy 时回退文本交互。
+- **setup 修复**：新增“① Agent 客户端”，主菜单从①连续到⑤；修复自定义左键绑定覆盖 Ctrl-C 中断的问题，所有复用该绑定的菜单均保留 Ctrl-C。
+- **启用管理**：读取实际用户级注册，支持多选保留平台、确认后禁用其他平台。Codex 切换 enabled 并保留注释 / 参数；JSON 客户端在私有目录保存完整注册项后移除，重新勾选恢复原别名 / 参数 / env。保留其他服务；存档路径不匹配、别名占用、损坏配置、插件、重复注册及检测到的并发编辑不自动覆盖。新平台安装 / 更新复用同一安装器。
+- **文档与验证**：同步中英文 README、使用手册、架构与接手指南；CI 三平台安装器检查纳入客户端管理测试。新增35个回归，全量 **1405 passed, 1 skipped, 27 subtests passed**；Ruff F/I、diff / shell 检查、打包与源码 / wheel 独立 stdio 均通过。真实 InquirerPy 输入验证多选、左键、Ctrl-C；临时 HOME 的 PTY 验证 setup 返回与 install 取消，未改动实际 Agent 配置。远程三平台 CI 与 GPU 实机验证仍待执行。

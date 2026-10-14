@@ -46,7 +46,9 @@ uvx videonote@latest install
 
 > 此次新增的 `install` 子命令需先发布，既有 PyPI 版本不会因源码更新自动获得它。
 
-向导提供 Claude Code、Codex、Claude Desktop、Cursor 的候选列表，让你选择安装目标。Apple Silicon 推荐 MLX；NVIDIA GPU 与匹配运行库就绪时推荐 CUDA；其余推荐 CPU。已有转写设置默认保留，可选安装依赖和下载模型。配置和 MCP 使用相同运行环境。
+向导提供 Claude Code、Codex、Claude Desktop、Cursor 的候选列表，标注检测结果；用方向键移动、空格多选安装目标、回车确认，左键取消。转写方案和模型尺寸也用菜单选择。Apple Silicon 推荐 MLX；NVIDIA GPU 与匹配运行库就绪时推荐 CUDA；其余推荐 CPU。已有转写设置默认保留，可选安装依赖和下载模型。配置和 MCP 使用相同运行环境。
+
+安装后可在 `videonote setup` 的 **① Agent 客户端 → 启用的平台（多选）** 中调整：例如取消 Claude Code、只勾选 Codex，确认后即可禁用 Claude Code 中的 VideoNote。原注册可恢复，其他 MCP 和 Agent 设置会保留；也可在此安装 / 更新平台。插件与项目级注册请在 Agent 中管理，变更后重启 Agent 或重连 MCP。
 
 ```bash
 # 以下示例使用当前源码；发布后可将前缀换成 uvx videonote@latest

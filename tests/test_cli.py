@@ -1019,9 +1019,38 @@ class TestSetupCookieMenu:
 
         cli._wizard(_MenuInq())
         names = captured[0]
-        assert names == ["② 语音转写引擎", "③ 平台登录", "④ 其他", "⑤ 任务管理", "✔ 完成 / 退出"]
+        assert names == ["① Agent 客户端", "② 语音转写引擎", "③ 平台登录", "④ 其他", "⑤ 任务管理", "✔ 完成 / 退出"]
         assert all("（" not in name and "）" not in name for name in names)
         assert not any("LLM 供应商" in name for name in names)
+
+    def test_agent_menu_dispatch_returns_to_setup(self, monkeypatch):
+        from videonote_mcp import client_management
+
+        calls = []
+        monkeypatch.setattr(client_management, "wizard", lambda config, inq: calls.append((config, inq)))
+
+        class _MenuInq:
+            answers = iter(["agents", "exit"])
+
+            def select(self, **kwargs):
+                assert kwargs["default"] == "agents"
+                return _InqResult(next(self.answers))
+
+        inq = _MenuInq()
+        cli._wizard(inq)
+        assert calls == [(Path(os.environ["VIDEONOTE_CONFIG_DIR"]), inq)]
+
+    @pytest.mark.parametrize("key", ["\x03", "\x1b[D"])
+    def test_main_menu_real_interrupt_keys(self, key):
+        from InquirerPy import inquirer
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            pipe.send_text(key)
+            with pytest.raises(KeyboardInterrupt):
+                cli._wizard(inquirer)
 
     def test_other_menu_contains_mllm_with_current_status(self):
         captured = []

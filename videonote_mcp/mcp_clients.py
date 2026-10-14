@@ -165,8 +165,7 @@ def check_unchanged(path: Path, raw: bytes | None) -> None:
 
 
 def write_config(client: Client, state: State, desired: dict) -> Path | None:
-    path = client.path.resolve()  # Respect users' symlinked dotfiles.
-    check_unchanged(path, state.raw)
+    check_unchanged(client.path, state.raw)
     if client.key == "codex":
         import tomlkit
 
@@ -190,11 +189,21 @@ def write_config(client: Client, state: State, desired: dict) -> Path | None:
     if "env" not in entry:
         entry["env"] = {}
     entry["env"].update(desired["env"])
+    return save_document(client, state.raw, document)
+
+
+def save_document(client: Client, raw: bytes | None, document) -> Path | None:
+    """Validate, back up and atomically save a preserving client edit."""
+    path = client.path.resolve()  # Respect users' symlinked dotfiles.
+    check_unchanged(path, raw)
+    if client.key == "codex":
+        import tomlkit
+
     content = (tomlkit.dumps(document) if client.key == "codex" else json.dumps(document, ensure_ascii=False, indent=2) + "\n")
     # Parse the final text before touching the original file.
     (tomllib.loads if client.key == "codex" else json.loads)(content)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    saved = backup(path, state.raw)
+    saved = backup(path, raw)
     fd, staged_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
     staged = Path(staged_name)
     try:
@@ -202,7 +211,7 @@ def write_config(client: Client, state: State, desired: dict) -> Path | None:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        check_unchanged(path, state.raw)
+        check_unchanged(path, raw)
         os.replace(staged, path)
     finally:
         staged.unlink(missing_ok=True)

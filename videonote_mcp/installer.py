@@ -18,6 +18,7 @@ from videonote_mcp.mcp_clients import (
     inspect,
     register,
 )
+from videonote_mcp.terminal_ui import checkbox, header, select
 
 SIZES = ("tiny", "base", "small", "medium", "large-v3", "large-v3-turbo")
 ENGINES = ("fast-whisper", "mlx-whisper", "funasr", "groq", "bcut", "kuaishou")
@@ -148,35 +149,21 @@ async def verify_mcp(runtime: Runtime) -> None:
 
 
 def confirm(message: str, default: bool = False) -> bool:
+    from videonote_mcp.terminal_ui import confirm as prompt_confirm
+
     try:
-        answer = input(message + (" [Y/n]: " if default else " [y/N]: ")).strip().lower()
+        return prompt_confirm(message, default)
     except EOFError:
         return False
-    return default if not answer else answer in ("y", "yes")
 
 
 def choose_clients(available: list) -> list:
-    detected = [client for client in available if client.detected]
-    if not detected:
-        print("未检测到候选客户端，可通过 --client 手动指定。")
-        return []
-    print("检测到候选客户端（目录存在不保证应用仍已安装）：")
-    for index, client in enumerate(detected, 1):
-        print(f"  {index}) {client.name} — {client.path}")
-    while True:
-        try:
-            answer = input("选择目标序号，可用逗号分隔；留空取消: ").strip()
-        except EOFError:
-            return []
-        if not answer:
-            return []
-        try:
-            indexes = list(dict.fromkeys(int(item.strip()) - 1 for item in answer.split(",")))
-            if all(0 <= index < len(detected) for index in indexes):
-                return [detected[index] for index in indexes]
-        except ValueError:
-            pass
-        print("请输入列表中的序号。")
+    header("安装向导", "① Agent 客户端")
+    print("检测结果仅供参考；请勾选要安装的平台。", file=sys.stdout)
+    choices = [{"name": f"{client.name} — {'已检测到' if client.detected else '未检测到'}",
+                "value": client.key, "enabled": False} for client in available]
+    keys = checkbox("安装到哪些 Agent 平台？", choices)
+    return [client for client in available if client.key in keys]
 
 
 def choose_asr(options, hardware, existing: dict, installation: dict, interactive: bool) -> tuple[str, str, str | None, bool]:
@@ -185,12 +172,19 @@ def choose_asr(options, hardware, existing: dict, installation: dict, interactiv
     if choice is None:
         choice = "keep" if current else "auto"
         if interactive:
+            header("安装向导", "② 语音转写引擎")
             print(f"硬件检测：{hardware.detail}")
-            print(f"推荐：{hardware.recommended}。可选 auto / cpu / cuda / mlx / keep / skip")
-            try:
-                choice = input(f"转写方案 [{choice}]: ").strip().lower() or choice
-            except EOFError:
-                choice = "skip"
+            labels = {"cpu": "CPU / fast-whisper", "cuda": "NVIDIA CUDA / fast-whisper",
+                      "mlx": "Apple GPU / mlx-whisper"}
+            choices = [{"name": f"自动推荐：{labels[hardware.recommended]}", "value": "auto"},
+                       {"name": labels["cpu"], "value": "cpu"}]
+            if hardware.nvidia_present:
+                choices.append({"name": labels["cuda"], "value": "cuda"})
+            if hardware.mlx_supported:
+                choices.append({"name": labels["mlx"], "value": "mlx"})
+            choices.extend([{"name": "保留现有转写配置", "value": "keep"},
+                            {"name": "稍后设置转写", "value": "skip"}])
+            choice = select("选择转写方案", choices, choice)
     if choice not in ("auto", "cpu", "cuda", "mlx", "keep", "skip"):
         raise ConfigError("转写方案必须是 auto / cpu / cuda / mlx / keep / skip")
     if choice == "auto":
@@ -211,15 +205,10 @@ def choose_asr(options, hardware, existing: dict, installation: dict, interactiv
     if not isinstance(size, str) or not size:
         raise ConfigError("现有模型尺寸无效；请用 --model 指定")
     if interactive and engine in ("fast-whisper", "mlx-whisper") and not options.model and choice != "skip":
-        print("模型尺寸：" + " / ".join(SIZES) + "（更大通常占用更多内存和下载空间）")
-        try:
-            selected = input(f"模型尺寸 [{size}]: ").strip()
-        except EOFError:
-            selected = ""
-        if selected:
-            if selected not in SIZES:
-                raise ConfigError("请从列表选择模型尺寸，或在 setup 中配置自定义模型")
-            size = selected
+        choices = [{"name": value + ("（默认）" if value == "small" else ""), "value": value} for value in SIZES]
+        if size not in SIZES:
+            choices.insert(0, {"name": f"保留自定义模型：{size}", "value": size})
+        size = select("模型尺寸（越大通常越耗内存和下载空间）", choices, size)
     if device not in (None, "cpu", "cuda"):
         raise ConfigError("现有计算设备无效；请通过 --asr 重新选择")
     return engine, size, device, choice == "skip"
@@ -366,6 +355,6 @@ def main(argv=None) -> int:
     except (ConfigError, OSError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    except KeyboardInterrupt:
+    except (EOFError, KeyboardInterrupt):
         print("安装已取消。", file=sys.stderr)
         return 130

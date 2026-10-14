@@ -46,7 +46,9 @@ uvx videonote@latest install
 
 > The new `install` subcommand needs a release; updating the source does not add it to previously published PyPI versions.
 
-Select from detected Claude Code, Codex, Claude Desktop, and Cursor candidates. The installer recommends MLX on compatible Apple Silicon systems, CUDA when the NVIDIA GPU and runtime libraries are ready, and CPU otherwise. It preserves existing transcription settings by default and offers dependency preparation and model downloads. Terminal configuration and MCP use the same runtime.
+The terminal wizard lists Claude Code, Codex, Claude Desktop, and Cursor with detection status. Use arrow keys to move, Space to select multiple targets, Enter to confirm, and Left to cancel. Transcription and model size also use selection menus. The installer recommends MLX on compatible Apple Silicon systems, CUDA when the NVIDIA GPU and runtime libraries are ready, and CPU otherwise. It preserves existing transcription settings by default and offers dependency preparation and model downloads. Terminal configuration and MCP use the same runtime.
+
+After installation, open `videonote setup` → **① Agent 客户端 → 启用的平台（多选）** to manage enabled targets. For example, uncheck Claude Code and keep Codex checked, then confirm to disable VideoNote in Claude Code. Registrations can be restored with their original settings; other MCP servers and Agent settings are preserved. This menu also installs or updates targets. Manage plugins and project registrations inside the Agent, and restart the Agent or reconnect MCP after changes.
 
 ```bash
 # Source examples; after release, replace the prefix with uvx videonote@latest
