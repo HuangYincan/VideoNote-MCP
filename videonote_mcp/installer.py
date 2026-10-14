@@ -157,12 +157,20 @@ def confirm(message: str, default: bool = False) -> bool:
         return False
 
 
-def choose_clients(available: list) -> list:
-    header("安装向导", "① Agent 客户端")
+def choose_clients(available: list, *, inq=None, title="安装向导") -> list:
+    header(title, "① Agent 客户端")
     print("检测结果仅供参考；请勾选要安装的平台。", file=sys.stdout)
     choices = [{"name": f"{client.name} — {'已检测到' if client.detected else '未检测到'}",
-                "value": client.key, "enabled": False} for client in available]
-    keys = checkbox("安装到哪些 Agent 平台？", choices)
+                "value": client.key, "enabled": False} for client in available if client.detected]
+    undetected = [client for client in available if not client.detected]
+    if undetected:
+        choices.append({"name": "手动选择其他平台…", "value": "__manual__", "enabled": False})
+    if not choices:
+        return []
+    keys = checkbox("安装到哪些 Agent 平台？", choices, inq=inq)
+    if "__manual__" in keys:
+        keys += checkbox("手动选择平台（未检测到应用，请确认已安装）", [
+            {"name": client.name, "value": client.key, "enabled": False} for client in undetected], inq=inq)
     return [client for client in available if client.key in keys]
 
 
@@ -319,8 +327,11 @@ def run(options) -> int:
             print(f"✓ {client.name}：" + ("已核对现有注册" if state.status == "same" else "已注册并回读核对"))
             if saved:
                 print(f"  原配置备份：{saved}")
-            previous = state.document.get(client.servers_key, {}).get(state.name, {})
-            if isinstance(previous, dict) and previous.get("enabled") is False:
+            from videonote_mcp.mcp_clients import read_config
+
+            _, final_document = read_config(client)
+            final_entry = client.servers(final_document)[state.name]
+            if not client.is_enabled(final_entry, final_document):
                 print("  保留了禁用状态；请在客户端启用此服务后使用。")
         except (ConfigError, OSError) as exc:
             print(f"{client.name}：{exc}", file=sys.stderr)

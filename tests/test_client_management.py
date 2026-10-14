@@ -237,7 +237,8 @@ def test_management_left_returns_without_writes(tmp_path, config, entry, monkeyp
 
 
 def test_setup_install_reuses_installer_with_explicit_targets(tmp_path, config, monkeypatch):
-    candidates = [Client("cursor", tmp_path / "cursor.json"), Client("codex", tmp_path / "config.toml")]
+    candidates = [Client("cursor", tmp_path / "cursor.json", detected=True),
+                  Client("codex", tmp_path / "config.toml", detected=True)]
     monkeypatch.setattr(management, "clients", lambda *_: candidates)
     install = Mock(return_value=0)
     monkeypatch.setattr(installer, "main", install)
@@ -251,11 +252,13 @@ def test_setup_install_reuses_installer_with_explicit_targets(tmp_path, config, 
 def test_installer_can_select_multiple_detected_and_manual_targets(tmp_path, monkeypatch):
     candidates = [Client("codex", tmp_path / "config.toml", detected=True),
                   Client("cursor", tmp_path / "cursor.json", detected=False)]
-    inq = inquirer(["codex", "cursor"])
+    inq = inquirer()
+    inq.checkbox.return_value.execute.side_effect = [["codex", "__manual__"], ["cursor"]]
     monkeypatch.setattr(terminal_ui, "prompts", lambda: inq)
     assert installer.choose_clients(candidates) == candidates
-    choices = inq.checkbox.call_args.kwargs["choices"]
-    assert "已检测到" in choices[0]["name"] and "未检测到" in choices[1]["name"]
+    choices = inq.checkbox.call_args_list[0].kwargs["choices"]
+    assert "已检测到" in choices[0]["name"] and choices[1]["value"] == "__manual__"
+    assert [item["value"] for item in inq.checkbox.call_args_list[1].kwargs["choices"]] == ["cursor"]
     assert not any(choice["enabled"] for choice in choices)
 
 

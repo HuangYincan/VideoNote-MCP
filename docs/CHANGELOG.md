@@ -1069,3 +1069,11 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **setup 修复**：新增“① Agent 客户端”，主菜单从①连续到⑤；修复自定义左键绑定覆盖 Ctrl-C 中断的问题，所有复用该绑定的菜单均保留 Ctrl-C。
 - **启用管理**：读取实际用户级注册，支持多选保留平台、确认后禁用其他平台。Codex 切换 enabled 并保留注释 / 参数；JSON 客户端在私有目录保存完整注册项后移除，重新勾选恢复原别名 / 参数 / env。保留其他服务；存档路径不匹配、别名占用、损坏配置、插件、重复注册及检测到的并发编辑不自动覆盖。新平台安装 / 更新复用同一安装器。
 - **文档与验证**：同步中英文 README、使用手册、架构与接手指南；CI 三平台安装器检查纳入客户端管理测试。新增35个回归，全量 **1405 passed, 1 skipped, 27 subtests passed**；Ruff F/I、diff / shell 检查、打包与源码 / wheel 独立 stdio 均通过。真实 InquirerPy 输入验证多选、左键、Ctrl-C；临时 HOME 的 PTY 验证 setup 返回与 install 取消，未改动实际 Agent 配置。远程三平台 CI 与 GPU 实机验证仍待执行。
+
+### 扩展客户端检测与多选卸载（2026-10-14，待发版）
+
+- **客户端适配**：新增 OpenCode、Pi、Grok Build、Gemini CLI、Kiro、VS Code、GitHub Copilot CLI，总计11种。默认仅显示检测到 CLI / 配置的候选，另提供手动选择；支持对应用户级路径及配置目录环境变量。Pi CLI 限时检查原生 MCP 能力，旧版本要求升级。
+- **原生配置**：统一客户端服务器映射与 command / env 转换，支持 OpenCode 命令数组、不同 JSON 映射与 TOML；OpenCode / VS Code JSONC 保留无关字段、注释和服务。修改后重新解析核对。重复键、损坏配置、双份 OpenCode 配置、插件与别名冲突不自动覆盖；Gemini 的 allowed / excluded 限制保留。
+- **启用状态**：按各 Agent 原生开关或私有恢复存档管理；Gemini 处理独立启用状态文件，Grok Build 处理 enabled 与 disabled_mcp_servers。UI 改为“注册已启用 / 禁用”，仅表示磁盘配置，提示重启 / 重连，不宣称现有会话已断开。
+- **卸载入口**：setup ① 新增“卸载 VideoNote 注册（多选）”，确认后删除所选用户级注册、禁用恢复存档及对应的原生禁用标记；保留其他 MCP、程序、模型、笔记和登录配置，先创建私有备份。客户端 / 存档快照、目标路径与并发变更均核对；多文件或多平台部分失败明确报告，不擅自处理插件 / 项目 / 兼容导入来源。
+- **验证**：新增78个回归；基于上一提交、仅叠加本次功能文件的隔离全量 **1483 passed, 1 skipped, 27 subtests passed**。Ruff F/I、diff / shell 检查、打包与源码 / wheel 独立 stdio 均通过；临时 HOME 真实 PTY 完成 setup 多选卸载，官方 Codex CLI 确认 VideoNote 从列表移除，其他 MCP 保留。未修改实际 Agent 配置；远程三平台 CI、其余 Agent 实机运行及 GPU 推理待对应环境验证。
