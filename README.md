@@ -46,7 +46,7 @@ uvx videonote@latest install
 
 > 此次新增的 `install` 子命令需先发布，既有 PyPI 版本不会因源码更新自动获得它。
 
-向导支持 Claude Code、Codex、Claude Desktop、Cursor、OpenCode、Pi、Grok Build、Gemini CLI、Kiro、VS Code、GitHub Copilot CLI。默认显示通过 CLI / 配置检测到的候选，其他平台可从“手动选择其他平台”进入；用方向键移动、空格多选、回车确认，左键取消。Pi 需要支持原生 MCP 的版本，安装前检查 CLI 能力。转写方案和模型尺寸也用菜单选择。Apple Silicon 推荐 MLX；NVIDIA GPU 与匹配运行库就绪时推荐 CUDA；其余推荐 CPU。已有转写设置默认保留，可选安装依赖和下载模型。配置和 MCP 使用相同运行环境。
+向导支持 Claude Code、Codex、Claude Desktop、Cursor、OpenCode、Pi、Grok Build、Gemini CLI、Kiro、VS Code、GitHub Copilot CLI。默认显示通过 CLI / 配置检测到的候选，其他平台可从“手动选择其他平台”进入；用方向键移动、空格多选、回车确认，左键取消。Pi 需要支持原生 MCP 的版本，安装前检查 CLI 能力。转写方案和模型尺寸也用菜单选择。Apple Silicon 推荐 MLX；NVIDIA GPU 与匹配运行库就绪时推荐 CUDA；其余推荐 CPU。已有转写设置默认保留；选择前列出引擎、模型、设备、预处理、说话人分离及配置来源和路径。向导识别旧 Agent 注册与历史配置目录，多套配置时先选择；“保留”不再重新询问模型尺寸。可选安装依赖和下载模型。配置和 MCP 使用相同运行环境。
 
 安装后可在 `videonote setup` 的 **① Agent 客户端 → 启用的平台（多选）** 中调整：例如取消 Claude Code、只勾选 Codex，确认后即可禁用 Claude Code 中的 VideoNote。原注册可恢复，其他 MCP 和 Agent 设置会保留；也可在此安装 / 更新平台。**卸载 VideoNote 注册（多选）**会删除所选平台的用户级注册及禁用恢复存档，保留程序、模型和笔记，改动前创建备份。启用 / 禁用显示的是配置状态，已有会话需重启或重连；插件、项目配置及兼容导入请在 Agent 中管理。
 

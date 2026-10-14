@@ -21,7 +21,8 @@ def probe() -> dict:
             "detail": hardware.detail}
 
 
-def prepare(engine: str, size: str, device: str, download: bool, verify: bool) -> dict:
+def prepare(engine: str, size: str, device: str, download: bool, verify: bool,
+            expected_profile_hash: str | None = None) -> dict:
     from videonote_mcp.config import setup_environment
 
     setup_environment()
@@ -49,9 +50,22 @@ def prepare(engine: str, size: str, device: str, download: bool, verify: bool) -
     manager = TranscriberConfigManager()
     # Compare persisted fields, not environment-backed defaults: terminal env
     # variables are not necessarily inherited by a GUI MCP client.
-    stored = manager._read()
-    if stored.get("transcriber_type") != engine or stored.get("whisper_model_size") != size:
-        manager.update_config(engine, size)
+    if expected_profile_hash is not None:
+        from videonote_mcp.installer_profiles import profile_digest, read_settings
+
+        with manager._lock:
+            # Read strictly without the manager's corrupt-file recovery. Keep
+            # this snapshot through the write instead of reading it again.
+            stored = read_settings(manager.path.parent)
+            if profile_digest(stored) != expected_profile_hash:
+                print("转写配置在选择后发生变化；保留现有文件，请重新运行安装向导。", file=sys.stderr)
+                raise RuntimeError("Transcription profile changed during installation")
+            if stored.get("transcriber_type") != engine or stored.get("whisper_model_size") != size:
+                manager._write({**stored, "transcriber_type": engine, "whisper_model_size": size})
+    else:
+        stored = manager._read()
+        if stored.get("transcriber_type") != engine or stored.get("whisper_model_size") != size:
+            manager.update_config(engine, size)
     return {"model_ready": ready if local else None, "asr_verified": local and ready and verify}
 
 
@@ -90,10 +104,12 @@ def main(argv=None) -> int:
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--download", action="store_true")
     parser.add_argument("--no-verify", action="store_true")
+    parser.add_argument("--expected-profile-hash")
     options = parser.parse_args(argv)
     try:
         result = probe() if options.action == "probe" else prepare(
-            options.engine, options.size, options.device, options.download, not options.no_verify)
+            options.engine, options.size, options.device, options.download, not options.no_verify,
+            options.expected_profile_hash)
     except Exception as exc:
         # Native/network errors may contain signed URLs. Report only the type;
         # downloader and transcriber logs contain the detailed diagnostics.

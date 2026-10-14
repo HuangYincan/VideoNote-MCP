@@ -11,6 +11,13 @@ from pathlib import Path
 
 from videonote_mcp import __version__
 from videonote_mcp.hardware import inspect_hardware
+from videonote_mcp.installer_profiles import (
+    ASR_FIELDS,
+    asr_values,
+    pick_profile,
+    profile_digest,
+    safe_env,
+)
 from videonote_mcp.mcp_clients import (
     CLIENT_NAMES,
     ConfigError,
@@ -68,27 +75,9 @@ def directories(root: Path | None) -> tuple[Path, Path]:
     return data, config
 
 
-def read_profile(config: Path) -> tuple[dict, dict]:
-    profiles = []
-    for name in ("transcriber.json", "installation.json"):
-        path = config / name
-        try:
-            profile = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            profile = {}
-        except (OSError, ValueError) as exc:
-            raise ConfigError(f"无法读取现有设置，保留原文件：{path}") from exc
-        if not isinstance(profile, dict):
-            raise ConfigError(f"现有设置必须为对象：{path}")
-        profiles.append(profile)
-    installation = profiles[1]
-    if not isinstance(installation.get("env", {}), dict):
-        raise ConfigError("现有 installation.json 的 env 必须为对象")
-    return profiles[0], installation
-
-
-def runtime_for(root: Path | None, engine: str, device: str | None, python: str) -> Runtime:
-    data, config = directories(root)
+def runtime_for(root: Path | None, engine: str, device: str | None, python: str,
+                *, data_config=None, settings_env=None) -> Runtime:
+    data, config = data_config or directories(root)
     extra = {"mlx-whisper": "mlx", "funasr": "funasr"}.get(engine)
     if root:
         command = find_runner("uv")
@@ -101,6 +90,7 @@ def runtime_for(root: Path | None, engine: str, device: str | None, python: str)
         package = f"videonote[{extra}]" if extra else "videonote"
         args = ["--python", python, f"{package}=={__version__}"]
     env = {"VIDEONOTE_DATA_DIR": str(data), "VIDEONOTE_CONFIG_DIR": str(config), "PYTHONUTF8": "1"}
+    env.update(safe_env(settings_env or {}))
     # GUI clients do not necessarily inherit terminal paths. Carry the paths
     # used for FFmpeg and CUDA probes into their eventual MCP subprocess.
     for key in ("PATH", "CUDA_PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
@@ -174,13 +164,63 @@ def choose_clients(available: list, *, inq=None, title="安装向导") -> list:
     return [client for client in available if client.key in keys]
 
 
-def choose_asr(options, hardware, existing: dict, installation: dict, interactive: bool) -> tuple[str, str, str | None, bool]:
-    current = existing.get("transcriber_type") or os.environ.get("TRANSCRIBER_TYPE")
+def _show_asr_profile(existing, installation, env, hardware, config_path=None):
+    values = asr_values(existing, installation, env)
+    engine, engine_source = values["engine"]
+    size, size_source = values["size"]
+    print("当前转写配置：", file=sys.stdout)
+    print(f"  引擎：{engine}（{engine_source}）", file=sys.stdout)
+    if engine == "groq":
+        print(f"  当前模型：{env.get('GROQ_TRANSCRIBER_MODEL') or 'whisper-large-v3'}（Groq 云端）", file=sys.stdout)
+    elif engine == "funasr":
+        print("  当前模型：paraformer-zh / fsmn-vad / ct-punc（FunASR）", file=sys.stdout)
+    if engine not in ("fast-whisper", "mlx-whisper"):
+        print(f"  Whisper 备用尺寸：{size}（{size_source}；当前引擎不使用）", file=sys.stdout)
+    else:
+        print(f"  模型尺寸：{size}（{size_source}）", file=sys.stdout)
+    if engine == "mlx-whisper":
+        device_label = "Apple GPU / MLX（此引擎不使用 cpu / cuda 标记）"
+    elif engine in ("groq", "bcut", "kuaishou"):
+        device_label = "在线服务（不使用本地计算设备）"
+    elif values["device"]:
+        device_label = str(values["device"]).upper() + "（已有设置，实际可用性后续检查）"
+    else:
+        device_label = "未明确设置；本次安装按检测使用 " + ("CUDA" if hardware.cuda_available else "CPU")
+    print(f"  设备设置：{device_label}", file=sys.stdout)
+    for key, label in (("enable_preprocess", "音频预处理"), ("diarization", "说话人分离")):
+        enabled, source = values[key]
+        print(f"  {label}：{'开' if enabled else '关'}（{source}）", file=sys.stdout)
+    speakers = existing.get("diarization_speakers")
+    try:
+        count = int(speakers) if speakers else None
+        speaker_label = str(count) if count and count > 0 else "自动检测"
+    except (TypeError, ValueError):
+        speaker_label = "无效（请在 setup 中核对）"
+    print(f"  说话人数：{speaker_label}" + ("（分离关闭时不使用）" if not values["diarization"][0] else ""), file=sys.stdout)
+    if config_path:
+        path = config_path / "transcriber.json"
+        print(f"  配置文件：{path}" + ("" if path.is_file() else "（尚未保存，使用上方其它来源）"), file=sys.stdout)
+    if env.get("VIDEONOTE_MODEL_DIR"):
+        print(f"  模型目录：{env['VIDEONOTE_MODEL_DIR']}", file=sys.stdout)
+    print("", file=sys.stdout)
+
+
+def choose_asr(options, hardware, existing: dict, installation: dict, interactive: bool,
+               *, profile=None) -> tuple[str, str, str | None, bool]:
+    env = profile.environment if profile else safe_env(dict(os.environ))
+    values = asr_values(existing, installation, env)
+    current = existing.get("transcriber_type") or env.get("TRANSCRIBER_TYPE") or installation.get("engine")
+    has_existing = bool(current or any(key in existing for key in ASR_FIELDS)
+                        or any(key in env for key in ("WHISPER_MODEL_SIZE", "VIDEONOTE_TRANSCRIBER_DEVICE",
+                                                      "VIDEONOTE_ENABLE_PREPROCESS", "VIDEONOTE_DIARIZATION")))
     choice = options.asr
     if choice is None:
-        choice = "keep" if current else "auto"
+        choice = "keep" if has_existing else "auto"
         if interactive:
             header("安装向导", "② 语音转写引擎")
+            _show_asr_profile(existing, installation, env, hardware, profile.config if profile else None)
+            if options.model:
+                print(f"本次 --model 指定 {options.model}，将覆盖上方的当前模型尺寸。", file=sys.stdout)
             print(f"硬件检测：{hardware.detail}")
             labels = {"cpu": "CPU / fast-whisper", "cuda": "NVIDIA CUDA / fast-whisper",
                       "mlx": "Apple GPU / mlx-whisper"}
@@ -190,17 +230,20 @@ def choose_asr(options, hardware, existing: dict, installation: dict, interactiv
                 choices.append({"name": labels["cuda"], "value": "cuda"})
             if hardware.mlx_supported:
                 choices.append({"name": labels["mlx"], "value": "mlx"})
-            choices.extend([{"name": "保留现有转写配置", "value": "keep"},
+            keep_name = "保留现有转写配置" if has_existing else "使用默认转写配置（尚无保存的设置）"
+            choices.extend([{"name": f"{keep_name} — {values['engine'][0]} / {values['size'][0]}", "value": "keep"},
                             {"name": "稍后设置转写", "value": "skip"}])
             choice = select("选择转写方案", choices, choice)
+    elif choice == "keep":
+        _show_asr_profile(existing, installation, env, hardware, profile.config if profile else None)
     if choice not in ("auto", "cpu", "cuda", "mlx", "keep", "skip"):
         raise ConfigError("转写方案必须是 auto / cpu / cuda / mlx / keep / skip")
     if choice == "auto":
         choice = hardware.recommended
     old_device = installation.get("env", {}).get("VIDEONOTE_TRANSCRIBER_DEVICE")
     if choice in ("keep", "skip"):
-        engine = current or os.environ.get("TRANSCRIBER_TYPE") or "fast-whisper"
-        device = (os.environ.get("VIDEONOTE_TRANSCRIBER_DEVICE") or old_device
+        engine = current or "fast-whisper"
+        device = (env.get("VIDEONOTE_TRANSCRIBER_DEVICE") or old_device
                   or ("cuda" if hardware.cuda_available else "cpu"))
     else:
         engine = "mlx-whisper" if choice == "mlx" else "fast-whisper"
@@ -209,10 +252,10 @@ def choose_asr(options, hardware, existing: dict, installation: dict, interactiv
         raise ConfigError("现有转写引擎无法识别；请先在 setup 中核对设置")
     if engine == "mlx-whisper" and not hardware.mlx_supported:
         raise ConfigError("mlx-whisper 需要 macOS 14+、Apple Silicon 和原生 ARM Python")
-    size = options.model or existing.get("whisper_model_size") or os.environ.get("WHISPER_MODEL_SIZE") or "small"
+    size = options.model or values["size"][0]
     if not isinstance(size, str) or not size:
         raise ConfigError("现有模型尺寸无效；请用 --model 指定")
-    if interactive and engine in ("fast-whisper", "mlx-whisper") and not options.model and choice != "skip":
+    if interactive and engine in ("fast-whisper", "mlx-whisper") and not options.model and choice not in ("keep", "skip"):
         choices = [{"name": value + ("（默认）" if value == "small" else ""), "value": value} for value in SIZES]
         if size not in SIZES:
             choices.insert(0, {"name": f"保留自定义模型：{size}", "value": size})
@@ -259,10 +302,13 @@ def run(options) -> int:
         return 0 if options.dry_run or interactive else 1
     root = source_root()
     data_dir, config_dir = directories(root)
-    existing, installation = read_profile(config_dir)
+    profile = pick_profile(root, data_dir, config_dir, selected, dict(os.environ), Path.home(), interactive)
+    data_dir, config_dir = profile.data, profile.config
+    existing, installation = profile.settings, profile.installation
     hardware = inspect_hardware()
-    engine, size, device, skip_asr = choose_asr(options, hardware, existing, installation, interactive)
-    runtime = runtime_for(root, engine, device, options.python)
+    engine, size, device, skip_asr = choose_asr(options, hardware, existing, installation, interactive, profile=profile)
+    runtime = runtime_for(root, engine, device, options.python,
+                          data_config=(data_dir, config_dir), settings_env=profile.environment)
     print(f"硬件：{hardware.detail}")
     print(f"转写：{engine} / {size}" + (f" / {device}" if device else " / 保留自动设备检测"))
     print("MCP 启动命令：" + json.dumps([runtime.command, *runtime.args], ensure_ascii=False))
@@ -308,7 +354,8 @@ def run(options) -> int:
         if download is None:
             download = interactive and engine in ("fast-whisper", "mlx-whisper") and confirm(
                 f"准备 {engine} / {size} 的模型（未缓存时将从 Hugging Face 下载）？", True)
-        arguments = ["--engine", engine, "--size", size, "--device", device or "cpu"]
+        arguments = ["--engine", engine, "--size", size, "--device", device or "cpu",
+                     "--expected-profile-hash", profile_digest(existing)]
         if download:
             arguments += ["--download"]
         if options.no_verify:
@@ -350,7 +397,7 @@ def run(options) -> int:
     if not failed:
         from app.utils.json_store import write_json_atomic
 
-        profile = {"version": __version__, "command": runtime.command, "args": runtime.args,
+        profile = {**installation, "version": __version__, "command": runtime.command, "args": runtime.args,
                    "env": runtime.env, "engine": engine, "size": size}
         if installation != profile:
             write_json_atomic(config_dir / "installation.json", profile)
