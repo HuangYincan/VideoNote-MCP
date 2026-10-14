@@ -41,10 +41,31 @@ jobs:
   # 任一失败即失败（fail-fast: false 保证三个版本都跑完）。
   smoke-summary:
     name: Smoke test
-    needs: smoke
+    needs: [smoke, installer]
     runs-on: ubuntu-latest
+    if: always()
     steps:
-      - run: echo "Smoke tests passed (Python 3.11/3.12/3.13)"
+      - name: Require Python and platform checks to pass
+        run: |
+          test "${{ needs.smoke.result }}" = success
+          test "${{ needs.installer.result }}" = success
+
+  installer:
+    name: Installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - name: Install locked dependencies
+        run: uv sync --frozen --python 3.12
+      - name: Installer contracts with isolated homes and mocked clients
+        run: uv run --frozen python -m pytest -q tests/test_installer.py tests/test_installer_profiles.py tests/test_terminal_theme.py tests/test_client_management.py tests/test_mcp_clients.py tests/test_uninstall.py
+      - name: Lightweight installer entry point
+        run: uv run --frozen videonote install --help
 
   # 真实转写集成冒烟（docs/05 #139 C2）：仅手动触发（workflow_dispatch），
   # 不进 push/PR 默认门禁——模型下载有网络/时长成本。跑 tests/test_integration_transcribe.py

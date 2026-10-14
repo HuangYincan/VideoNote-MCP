@@ -28,6 +28,7 @@ from videonote_mcp.task_artifacts import (
     read_transcript,
     validate_task_id,
 )
+from videonote_mcp.terminal_ui import BACK_KEYS, ansi, prompts
 
 # 提前初始化运行时环境（数据目录、DB、输出目录）——必须在 import provider_probe / app.*
 # 之前执行。provider_probe 会连累 app.utils.logger（其日志目录依赖 VIDEONOTE_DATA_DIR），
@@ -232,31 +233,27 @@ def _show_uninstall_option(inq, pick: str, size: str, label: str) -> None:
 
 
 # 交互配色（ANSI）
-_CYAN = "\033[1;36m"
-_YELLOW = "\033[1;33m"
-_GREEN = "\033[1;32m"
-_RED = "\033[1;31m"
-_DIM = "\033[2m"
-_RESET = "\033[0m"
-# 让「← 左键」= interrupt（返回上一层，与 Ctrl-C 同）；InquirerPy 绑定需带 key 字段、
-# action 必须是已注册的（interrupt / answer / skip 等）
-_KB = {"interrupt": [{"key": "left"}]}
+_CYAN = ansi("title")
+_YELLOW = ansi("warning")
+_GREEN = ansi("success")
+_RED = ansi("error")
+_DIM = ansi("muted")
+_RESET = ansi("reset")
+# 自定义 interrupt 会覆盖默认列表，必须同时保留左键和 Ctrl-C。
+_KB = BACK_KEYS
 
 
 def _show_header(section: str = "") -> None:
     """清屏并重绘标题，避免历史信息堆积。"""
-    print("\033[2J\033[H", end="", file=sys.stdout)
-    print(f"{_CYAN}⚙  VideoNote 配置向导{_RESET}  {_DIM}↑↓ 选择 · 回车确认 · ← 返回 · Ctrl-C 退出{_RESET}", file=sys.stdout)
-    if section:
-        print(f"{_YELLOW}▶ {section}{_RESET}", file=sys.stdout)
-    print("", file=sys.stdout)
+    from videonote_mcp.terminal_ui import header
+
+    header("配置向导", section)
 
 
 def _setup_cli() -> None:
     """交互式配置向导：主菜单 + 各配置区，方向键选择、左键返回、随时可反复进入修改。"""
-    try:
-        from InquirerPy import inquirer
-    except ImportError:
+    inquirer = prompts()
+    if inquirer is None:
         print("（未安装 InquirerPy，使用纯文本提示；`uv sync` 后可启用方向键/高亮选择）", file=sys.stderr)
         _setup_cli_fallback()
         return
@@ -274,16 +271,21 @@ def _wizard(inq) -> None:
         choice = inq.select(
             message="选择要配置的项目",
             choices=[
+                {"name": "① Agent 客户端", "value": "agents"},
                 {"name": "② 语音转写引擎", "value": "transcriber"},
                 {"name": "③ 平台登录", "value": "cookies"},
                 {"name": "④ 其他", "value": "other"},
                 {"name": "⑤ 任务管理", "value": "data"},
                 {"name": "✔ 完成 / 退出", "value": "exit"},
             ],
-            default="transcriber",
+            default="agents",
             keybindings=_KB,
         ).execute()
-        if choice == "transcriber":
+        if choice == "agents":
+            from videonote_mcp.client_management import wizard
+
+            wizard(Path(os.environ["VIDEONOTE_CONFIG_DIR"]), inq)
+        elif choice == "transcriber":
             _wizard_transcriber(inq)
         elif choice == "cookies":
             _wizard_cookies(inq)
@@ -1253,6 +1255,12 @@ def _fallback_llm_setup() -> None:
 def _setup_cli_fallback() -> None:
     """无 InquirerPy 时的纯文本兜底向导（同功能，输入编号选择）。"""
     print("=== VideoNote-MCP 配置（纯文本模式） ===", file=sys.stdout)
+
+    print("\n① Agent 客户端：", file=sys.stdout)
+    if _ask("   管理安装 / 启用平台？[y/N]", default="N").lower() == "y":
+        from videonote_mcp.client_management import wizard
+
+        wizard(Path(os.environ["VIDEONOTE_CONFIG_DIR"]))
 
     print("\n② 语音转写引擎：", file=sys.stdout)
     print("   1) fast-whisper  2) groq  3) bcut  4) kuaishou  5) mlx-whisper  6) funasr", file=sys.stdout)
