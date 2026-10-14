@@ -32,7 +32,32 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
 
 ## 快速开始
 
-**配置 MCP 服务即可开始使用。**
+**自动安装：检测客户端、推荐转写方案，再注册 MCP。**
+
+Windows / Linux / macOS 均使用 Python 安装向导。先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
+
+```bash
+# 当前源码（先克隆仓库并进入目录）
+uv run --frozen videonote install
+
+# 发布包含此功能的新版本后，三个系统都可以直接使用
+uvx videonote@latest install
+```
+
+> 此次新增的 `install` 子命令需先发布，既有 PyPI 版本不会因源码更新自动获得它。
+
+向导提供 Claude Code、Codex、Claude Desktop、Cursor 的候选列表，让你选择安装目标。Apple Silicon 推荐 MLX；NVIDIA GPU 与匹配运行库就绪时推荐 CUDA；其余推荐 CPU。已有转写设置默认保留，可选安装依赖和下载模型。配置和 MCP 使用相同运行环境。
+
+```bash
+# 以下示例使用当前源码；发布后可将前缀换成 uvx videonote@latest
+uv run --frozen videonote install --dry-run
+uv run --frozen videonote install --client codex --client cursor
+uv run --frozen videonote install --yes --client codex --asr auto --download
+```
+
+`--dry-run` 不写配置、不下载依赖或模型；非交互安装必须显式指定 `--yes` 和目标。已有不同启动配置需要确认或 `--replace`；旧插件和同名其它服务不会自动覆盖。FFmpeg 仍需单独准备。
+
+**手动注册（已发布版本可用）：**
 
 ```bash
 # 1) 注册独立 MCP（PyPI 已发布版本）
@@ -84,7 +109,7 @@ uvx videonote@latest setup
 > `funasr`（中文最优）同理，换成 `--with funasr --with torch`。
 
 > [!TIP]
-> 四种安装方式、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
+> 自动安装、手动注册、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
 
 ## 导出格式
 
@@ -101,7 +126,7 @@ uvx videonote@latest setup
 
 - [文档索引](docs/00-文档索引.md)
 - [架构设计](docs/02-架构设计.md) · [可编辑架构图](docs/videonote-mcp-architecture.excalidraw)
-- [使用手册](docs/04-使用手册.md) —— 安装（4 种方式）· 配置（setup 向导 + CLI）· 环境变量 · 更新 · 安全
+- [使用手册](docs/04-使用手册.md) —— 自动安装 / 手动注册 · 配置（setup 向导 + CLI）· 环境变量 · 更新 · 安全
 - [更新日志](docs/CHANGELOG.md)
 
 ---
@@ -141,9 +166,60 @@ uvx videonote@latest setup
 
 ## 流水线地图
 
-<img src="assets/pipeline.svg" alt="VideoNote-Mcp 流水线地图" width="100%"/>
+```mermaid
+flowchart TB
+    SOURCE(["视频链接 / 本地文件"])
 
-实线为主流程：一条 `prepare_note_material` 出素材，由当前对话助手整理笔记；`generate_note` 是后备（对话助手无法看图时走配置 LLM）。虚线为可选能力（视频理解 / 弹幕评论）。各阶段细节见 [docs/02-架构设计.md](docs/02-架构设计.md)。
+    subgraph COLLECT["01 · 素材准备"]
+        FETCH["平台识别与下载"]
+        TRANSCRIPT["字幕 / 转写<br/>字幕优先 · 无字幕时 ASR"]
+        VISION["画面理解<br/>关键帧 / 多模态"]
+        COMMENTS["弹幕与评论"]
+
+        FETCH --> TRANSCRIPT
+        FETCH -.-> VISION
+        FETCH -.-> COMMENTS
+    end
+
+    subgraph WRITE["02 · 笔记生成"]
+        MATERIAL["素材包<br/>转写 · 帧图 · 可选评论"]
+        AGENT["当前对话助手<br/>直接整理 · 无需 LLM Key"]
+        LLM["配置的 LLM<br/>generate_note · 后备路径"]
+
+        MATERIAL -->|prepare_note_material| AGENT
+        MATERIAL -.-> LLM
+    end
+
+    subgraph OUTPUT["03 · 成果输出"]
+        NOTE["便携笔记<br/>note.md + Assets/ 截图"]
+        DOCUMENT["助手按需制作<br/>LaTeX / Typst / 思维导图"]
+        SUBTITLE["字幕导出<br/>SRT / VTT / JSON"]
+
+        NOTE -.-> DOCUMENT
+    end
+
+    SOURCE --> FETCH
+    TRANSCRIPT --> MATERIAL
+    VISION -.-> MATERIAL
+    COMMENTS -.-> MATERIAL
+    AGENT --> NOTE
+    LLM -.-> NOTE
+    TRANSCRIPT -.->|process_media · export| SUBTITLE
+
+    classDef entry fill:#4f46e5,stroke:#4338ca,color:#fff
+    classDef primary fill:#eef2ff,stroke:#818cf8,color:#312e81
+    classDef optional fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:5 4
+    classDef result fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
+    class SOURCE entry
+    class MATERIAL,AGENT primary
+    class VISION,COMMENTS,LLM,DOCUMENT,SUBTITLE optional
+    class NOTE result
+    style COLLECT fill:transparent,stroke:#cbd5e1,rx:12,ry:12
+    style WRITE fill:transparent,stroke:#cbd5e1,rx:12,ry:12
+    style OUTPUT fill:transparent,stroke:#cbd5e1,rx:12,ry:12
+```
+
+实线为默认流程：`prepare_note_material` 准备素材，由当前对话助手整理笔记。虚线为可选能力或后备路径：对话助手无法看图或用户指定时，使用 `generate_note` 调用配置的 LLM；字幕可独立导出，其他格式由助手按需制作。各阶段细节见 [docs/02-架构设计.md](docs/02-架构设计.md)。
 
 ## 任务管理
 

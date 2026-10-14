@@ -1054,3 +1054,11 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 
 - **setup 菜单层级**：一级菜单去掉功能说明括号，LLM 配置移入“④ 其他”并改名为“MLLM供应商”；其括号显示当前供应商、Key 和默认模型配置状态。
 - **菜单状态与任务管理**：二级选项括号统一展示当前配置状态；“⑤ 数据管理”改为“⑤ 任务管理”；纯文本 fallback、使用手册和回归测试同步更新。
+
+## 2026-10-14 — 跨平台安装向导（待发版）
+
+- **安装入口**：新增 `videonote install`，支持 Claude Code / Codex / Claude Desktop / Cursor；提供目标选择、显式非交互安装、只读预览、现有注册更新和唯一备份。Codex TOML 注释、其它服务与自定义设置保留；启用的旧插件、同名其它服务、损坏配置和检测到的并发编辑不自动覆盖。源码 shell 入口委托同一 Python 向导。
+- **ASR 推荐与运行一致性**：Apple Silicon 推荐 MLX，CTranslate2 的 GPU/匹配运行库可用时推荐 CUDA，否则 CPU；保留既有引擎/尺寸，支持可选模型下载。终端配置和 MCP 使用相同 Python/extras、绝对运行路径、数据/配置/模型目录与 GPU 库搜索路径。已缓存模型执行实际短音频推理，关闭 VAD 并消费惰性生成器；注册前校验 MCP 握手，注册后回读配置。
+- **轻量入口与分发**：console script 经 `__main__.py` 分发，install 帮助/预览不初始化 DB；新增 tomlkit 依赖及锁文件。手动注册和已有 MCP 协议保持兼容，不分发 Skills 或 commands，不触发 PyPI 发布。
+- **文档与图示**：同步中英文 README、使用手册、架构/接手指南和 VENDOR 设备选择说明；一并纳入用户提供的中英文 Mermaid 流水线图。
+- **验证**：新增 41 个安装器测试；全量 **1370 passed, 1 skipped, 27 subtests passed**；Ruff F/I、shell 语法、源码/wheel 独立 stdio、wheel 入口与分发边界检查通过。Codex 与 Claude Code 的官方 CLI 在临时配置目录完成真实注册回读，未修改实际客户端配置。CI 新增 Windows/Linux/macOS 安装器检查并纳入 Smoke test 汇总；远程三平台 CI 与实际 CUDA/MLX 模型推理尚待对应环境验收。

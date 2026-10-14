@@ -8,7 +8,9 @@ import tomllib
 from pathlib import Path
 from unittest import mock
 
-from videonote_mcp import server
+from videonote_mcp import installer, server
+from videonote_mcp.hardware import Hardware
+from videonote_mcp.mcp_clients import Client
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -59,35 +61,33 @@ def _installer(tmp_path):
 
 
 def test_installer_registers_mcp_without_installing_or_linking_skills(tmp_path):
-    repo, cli, fakebin, home, env = _installer(tmp_path)
-    calls = tmp_path / "claude-args"
-    env["CLAUDE_CALLS"] = str(calls)
-    claude = fakebin / "claude"
-    claude.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$CLAUDE_CALLS"\n')
-    claude.chmod(0o755)
+    repo, cli, _, home, env = _installer(tmp_path)
+    calls = tmp_path / "videonote-args"
+    env["INSTALL_CALLS"] = str(calls)
+    cli.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$INSTALL_CALLS"\n')
 
     result = subprocess.run(
-        ["/bin/bash", str(repo / "install.sh")], cwd=repo, env=env,
+        ["/bin/bash", str(repo / "install.sh"), "--yes", "--client", "codex"], cwd=repo, env=env,
         stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True,
     )
 
-    assert calls.read_text().splitlines() == [
-        "plugin", "list", "mcp", "add", "--scope", "user", "videonote", "--", str(cli),
-    ]
+    assert calls.read_text().splitlines() == ["install", "--yes", "--client", "codex"]
     assert not (home / ".claude/skills").exists()
     assert "/videonote-setup" not in result.stdout
 
 
-def test_installer_without_claude_prints_standalone_json(tmp_path):
+def test_installer_without_claude_still_delegates_to_python_preview(tmp_path):
     repo, cli, _, home, env = _installer(tmp_path)
+    calls = tmp_path / "videonote-args"
+    env["INSTALL_CALLS"] = str(calls)
+    cli.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$INSTALL_CALLS"\n')
     result = subprocess.run(
-        ["/bin/bash", str(repo / "install.sh")], cwd=repo, env=env,
+        ["/bin/bash", str(repo / "install.sh"), "--dry-run"], cwd=repo, env=env,
         stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True,
     )
 
-    payload = next(line for line in result.stdout.splitlines() if line.startswith("{"))
-    params = json.loads(payload)["mcpServers"]["videonote"]
-    assert params == {"type": "stdio", "command": str(cli), "args": []}
+    assert calls.read_text().splitlines() == ["install", "--dry-run"]
+    assert "安装 Python 依赖" in result.stdout
     assert not (home / ".claude/skills").exists()
 
 
@@ -106,27 +106,21 @@ def test_example_config_works_without_a_source_checkout():
     }
 
 
-def test_existing_mcp_is_not_removed_or_overwritten_by_installer(tmp_path):
-    repo, _, fakebin, home, env = _installer(tmp_path)
-    calls = tmp_path / "claude-args"
-    env["CLAUDE_CALLS"] = str(calls)
-    claude = fakebin / "claude"
-    claude.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$CLAUDE_CALLS"\nexit 1\n')
-    claude.chmod(0o755)
-
-    result = subprocess.run(
-        ["/bin/bash", str(repo / "install.sh")], cwd=repo, env=env,
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True,
-    )
-
-    args = calls.read_text().splitlines()
-    assert args[:4] == ["plugin", "list", "mcp", "add"]
-    assert args.count("mcp") == 1
-    assert "remove" not in args
-    assert "install" not in args
-    assert "uninstall" not in args
-    assert "未自动移除或覆盖" in result.stderr
-    assert not (home / ".claude/skills").exists()
+def test_existing_mcp_is_not_removed_or_overwritten_by_installer(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("VIDEONOTE_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(installer, "find_runner", lambda _: "uvx")
+    monkeypatch.setattr(installer, "inspect_hardware", lambda: Hardware("linux", "x86_64", False, False, False, "CPU"))
+    path = tmp_path / "mcp.json"
+    original = '{"mcpServers":{"videonote":{"command":"uvx","args":["videonote@latest"]}}}'
+    path.write_text(original)
+    monkeypatch.setattr(installer, "clients", lambda *_: [Client("cursor", path)])
+    with mock.patch.object(installer, "runtime_action") as prepare, mock.patch.object(installer, "register") as register:
+        assert installer.main(["--yes", "--client", "cursor", "--asr", "cpu"]) == 1
+    prepare.assert_not_called()
+    register.assert_not_called()
+    assert path.read_text() == original
+    assert not (tmp_path / ".claude/skills").exists()
 
 
 def test_provider_preflight_uses_cli_instead_of_deleted_skill_command():
@@ -137,25 +131,19 @@ def test_provider_preflight_uses_cli_instead_of_deleted_skill_command():
     assert "/videonote-setup" not in detail
 
 
-def test_installer_does_not_shadow_an_existing_plugin_mcp(tmp_path):
-    repo, _, fakebin, _, env = _installer(tmp_path)
-    calls = tmp_path / "claude-args"
-    env["CLAUDE_CALLS"] = str(calls)
-    claude = fakebin / "claude"
-    claude.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "$@" >> "$CLAUDE_CALLS"\n'
-        'if [ "$1" = plugin ] && [ "$2" = list ]; then\n'
-        '  printf "videonote@videonote\\n"\n  exit 0\nfi\nexit 97\n'
-    )
-    claude.chmod(0o755)
-
-    result = subprocess.run(
-        ["/bin/bash", str(repo / "install.sh")], cwd=repo, env=env,
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True,
-    )
-
-    assert calls.read_text().splitlines() == ["plugin", "list"]
-    assert "避免遮蔽插件配置" in result.stdout
+def test_installer_does_not_shadow_an_existing_plugin_mcp(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / ".claude"))
+    monkeypatch.setenv("VIDEONOTE_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(installer, "find_runner", lambda _: "uvx")
+    monkeypatch.setattr(installer, "inspect_hardware", lambda: Hardware("linux", "x86_64", False, False, False, "CPU"))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"enabledPlugins":{"videonote@videonote":true}}')
+    monkeypatch.setattr(installer, "clients", lambda *_: [Client("claude-code", tmp_path / ".claude/.claude.json", "claude")])
+    with mock.patch.object(installer, "runtime_action") as prepare, mock.patch.object(installer, "register") as register:
+        assert installer.main(["--yes", "--client", "claude-code", "--asr", "cpu"]) == 1
+    prepare.assert_not_called()
+    register.assert_not_called()
 
 
 def test_source_config_pins_checkout_without_personal_configuration():

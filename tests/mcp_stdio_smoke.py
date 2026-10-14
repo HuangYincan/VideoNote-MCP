@@ -63,7 +63,7 @@ async def smoke_artifacts(session: ClientSession, data: Path):
 
 async def smoke(package_root: Path, data: Path):
     params = StdioServerParameters(
-        command=sys.executable, args=["-m", "videonote_mcp.cli"], cwd=str(data.parent),
+        command=sys.executable, args=["-m", "videonote_mcp"], cwd=str(data.parent),
         env={"PYTHONPATH": str(package_root), "PATH": os.environ.get("PATH", ""),
              "VIDEONOTE_DATA_DIR": str(data), "VIDEONOTE_CONFIG_DIR": str(data / "config"),
              "NOTE_OUTPUT_DIR": str(data / "note_results"),

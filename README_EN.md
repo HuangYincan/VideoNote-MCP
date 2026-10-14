@@ -32,7 +32,32 @@ It works **end-to-end (one link → one note)** and is **also decoupled**: pick 
 
 ## Quick Start
 
-**Configure the MCP server directly to get started.**
+**Automatic installation: detect clients, recommend transcription, and register MCP.**
+
+The Python installer works on Windows, Linux, and macOS. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first.
+
+```bash
+# Current source checkout (clone the repository and enter its directory first)
+uv run --frozen videonote install
+
+# Once a version containing the installer is published, use on all three systems
+uvx videonote@latest install
+```
+
+> The new `install` subcommand needs a release; updating the source does not add it to previously published PyPI versions.
+
+Select from detected Claude Code, Codex, Claude Desktop, and Cursor candidates. The installer recommends MLX on compatible Apple Silicon systems, CUDA when the NVIDIA GPU and runtime libraries are ready, and CPU otherwise. It preserves existing transcription settings by default and offers dependency preparation and model downloads. Terminal configuration and MCP use the same runtime.
+
+```bash
+# Source examples; after release, replace the prefix with uvx videonote@latest
+uv run --frozen videonote install --dry-run
+uv run --frozen videonote install --client codex --client cursor
+uv run --frozen videonote install --yes --client codex --asr auto --download
+```
+
+`--dry-run` writes no configuration and downloads no dependencies or models. Unattended installation requires `--yes` and explicit targets. Changing an existing VideoNote registration needs confirmation or `--replace`; existing plugins and unrelated servers with the same name are preserved. Install FFmpeg separately.
+
+**Manual registration (available in published versions):**
 
 ```bash
 # 1) Register the standalone MCP server (published PyPI version)
@@ -85,7 +110,7 @@ For JSON-based MCP clients:
 > `funasr` (best for Chinese) works the same way: use `--with funasr --with torch` instead.
 
 > [!TIP]
-> All four install methods, configuration details, updating and security are in [docs/04-使用手册.md](docs/04-使用手册.md).
+> Automatic installation, manual registration, configuration, updates, and security are covered in [docs/04-使用手册.md](docs/04-使用手册.md).
 
 ## Export Formats
 
@@ -143,9 +168,60 @@ Full run record: [`examples/note-generation-example/README.md`](examples/note-ge
 
 ## Pipeline Map
 
-<img src="assets/pipeline-en.svg" alt="VideoNote-Mcp pipeline map" width="100%"/>
+```mermaid
+flowchart TB
+    SOURCE(["Video link / local file"])
 
-Solid lines are the main flow: `prepare_note_material` produces the pack, and the conversation assistant organizes the note. `generate_note` is the fallback when image understanding requires the configured LLM. Dashed lines are optional capabilities (video understanding / danmaku + comments). Stage details live in [docs/02-架构设计.md](docs/02-架构设计.md).
+    subgraph COLLECT["01 · Material preparation"]
+        FETCH["Platform detection & download"]
+        TRANSCRIPT["Subtitles / transcription<br/>Subtitles first; ASR otherwise"]
+        VISION["Visual understanding<br/>Keyframes / multimodal analysis"]
+        COMMENTS["Danmaku & comments"]
+
+        FETCH --> TRANSCRIPT
+        FETCH -.-> VISION
+        FETCH -.-> COMMENTS
+    end
+
+    subgraph WRITE["02 · Note generation"]
+        MATERIAL["Material pack<br/>Transcript · frames · optional comments"]
+        AGENT["Conversation assistant<br/>Direct writing · no LLM key"]
+        LLM["Configured LLM<br/>generate_note · fallback"]
+
+        MATERIAL -->|prepare_note_material| AGENT
+        MATERIAL -.-> LLM
+    end
+
+    subgraph OUTPUT["03 · Outputs"]
+        NOTE["Portable note<br/>note.md + Assets/ screenshots"]
+        DOCUMENT["Assistant-created formats<br/>LaTeX / Typst / mind map"]
+        SUBTITLE["Subtitle export<br/>SRT / VTT / JSON"]
+
+        NOTE -.-> DOCUMENT
+    end
+
+    SOURCE --> FETCH
+    TRANSCRIPT --> MATERIAL
+    VISION -.-> MATERIAL
+    COMMENTS -.-> MATERIAL
+    AGENT --> NOTE
+    LLM -.-> NOTE
+    TRANSCRIPT -.->|process_media · export| SUBTITLE
+
+    classDef entry fill:#4f46e5,stroke:#4338ca,color:#fff
+    classDef primary fill:#eef2ff,stroke:#818cf8,color:#312e81
+    classDef optional fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:5 4
+    classDef result fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
+    class SOURCE entry
+    class MATERIAL,AGENT primary
+    class VISION,COMMENTS,LLM,DOCUMENT,SUBTITLE optional
+    class NOTE result
+    style COLLECT fill:transparent,stroke:#cbd5e1,rx:12,ry:12
+    style WRITE fill:transparent,stroke:#cbd5e1,rx:12,ry:12
+    style OUTPUT fill:transparent,stroke:#cbd5e1,rx:12,ry:12
+```
+
+Solid lines show the default flow: `prepare_note_material` prepares the pack, and the conversation assistant organizes the note. Dashed lines show optional capabilities or fallback paths: use `generate_note` with the configured LLM when the assistant cannot view images or the user requests it. Subtitles can be exported independently; the assistant creates other formats on demand. Stage details live in [docs/02-架构设计.md](docs/02-架构设计.md).
 
 ## Task Management
 
