@@ -32,7 +32,34 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
 
 ## 快速开始
 
-**配置 MCP 服务即可开始使用。**
+**自动安装：检测客户端、推荐转写方案，再注册 MCP。**
+
+Windows / Linux / macOS 均使用 Python 安装向导。先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
+
+```bash
+# Windows / Linux / macOS（v0.2.5 起）
+uvx videonote@latest install
+
+# 当前源码（先克隆仓库并进入目录）
+uv run --frozen videonote install
+```
+
+> `install` 从 v0.2.5 起提供。如果旧安装提示没有此命令，请更新到 v0.2.5 或更高版本，或使用上方的源码入口。
+
+向导支持 Claude Code、Codex、Claude Desktop、Cursor、OpenCode、Pi、Grok Build、Gemini CLI、Kiro、VS Code、GitHub Copilot CLI。默认显示通过 CLI / 配置检测到的候选，其他平台可从“手动选择其他平台”进入；用方向键移动、空格多选、回车确认，左键取消。Pi 需要支持原生 MCP 的版本，安装前检查 CLI 能力。安装与 setup 统一使用彩色终端主题：当前选项高亮，字段、状态和说明分色；支持 `NO_COLOR`，重定向输出使用纯文本。多套历史配置的路径只展示一次，选择菜单使用短摘要，MLX 设备显示为 Apple GPU。转写方案和模型尺寸也用菜单选择。Apple Silicon 推荐 MLX；NVIDIA GPU 与匹配运行库就绪时推荐 CUDA；其余推荐 CPU。已有转写设置默认保留；选择前列出引擎、模型、设备、预处理、说话人分离及配置来源和路径。向导识别旧 Agent 注册与历史配置目录，多套配置时先选择；“保留”不再重新询问模型尺寸。可选安装依赖和下载模型。配置和 MCP 使用相同运行环境。
+
+安装后可在 `videonote setup` 的 **① Agent 客户端 → 启用的平台（多选）** 中调整：例如取消 Claude Code、只勾选 Codex，确认后即可禁用 Claude Code 中的 VideoNote。原注册可恢复，其他 MCP 和 Agent 设置会保留；也可在此安装 / 更新平台。**卸载 VideoNote 注册（多选）**会删除所选平台的用户级注册及禁用恢复存档，保留程序、模型和笔记，改动前创建备份。启用 / 禁用显示的是配置状态，已有会话需重启或重连；插件、项目配置及兼容导入请在 Agent 中管理。
+
+```bash
+# 以下示例使用当前源码；也可将前缀换成 uvx videonote@latest
+uv run --frozen videonote install --dry-run
+uv run --frozen videonote install --client codex --client cursor
+uv run --frozen videonote install --yes --client codex --asr auto --download
+```
+
+`--dry-run` 不写配置、不下载依赖或模型；非交互安装必须显式指定 `--yes` 和目标。已有不同启动配置需要确认或 `--replace`；旧插件和同名其它服务不会自动覆盖。FFmpeg 仍需单独准备。
+
+**手动注册（已发布版本可用）：**
 
 ```bash
 # 1) 注册独立 MCP（PyPI 已发布版本）
@@ -84,7 +111,7 @@ uvx videonote@latest setup
 > `funasr`（中文最优）同理，换成 `--with funasr --with torch`。
 
 > [!TIP]
-> 四种安装方式、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
+> 自动安装、手动注册、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
 
 ## 导出格式
 
@@ -101,7 +128,7 @@ uvx videonote@latest setup
 
 - [文档索引](docs/00-文档索引.md)
 - [架构设计](docs/02-架构设计.md) · [可编辑架构图](docs/videonote-mcp-architecture.excalidraw)
-- [使用手册](docs/04-使用手册.md) —— 安装（4 种方式）· 配置（setup 向导 + CLI）· 环境变量 · 更新 · 安全
+- [使用手册](docs/04-使用手册.md) —— 自动安装 / 手动注册 · 配置（setup 向导 + CLI）· 环境变量 · 更新 · 安全
 - [更新日志](docs/CHANGELOG.md)
 
 ---
@@ -141,9 +168,60 @@ uvx videonote@latest setup
 
 ## 流水线地图
 
-<img src="assets/pipeline.svg" alt="VideoNote-Mcp 流水线地图" width="100%"/>
+```mermaid
+flowchart TB
+    SOURCE(["视频链接 / 本地文件"])
 
-实线为主流程：一条 `prepare_note_material` 出素材，由当前对话助手整理笔记；`generate_note` 是后备（对话助手无法看图时走配置 LLM）。虚线为可选能力（视频理解 / 弹幕评论）。各阶段细节见 [docs/02-架构设计.md](docs/02-架构设计.md)。
+    subgraph COLLECT["01 · 素材准备"]
+        FETCH["平台识别与下载"]
+        TRANSCRIPT["字幕 / 转写<br/>字幕优先 · 无字幕时 ASR"]
+        VISION["画面理解<br/>关键帧 / 多模态"]
+        COMMENTS["弹幕与评论"]
+
+        FETCH --> TRANSCRIPT
+        FETCH -.-> VISION
+        FETCH -.-> COMMENTS
+    end
+
+    subgraph WRITE["02 · 笔记生成"]
+        MATERIAL["素材包<br/>转写 · 帧图 · 可选评论"]
+        AGENT["当前对话助手<br/>直接整理 · 无需 LLM Key"]
+        LLM["配置的 LLM<br/>generate_note · 后备路径"]
+
+        MATERIAL -->|prepare_note_material| AGENT
+        MATERIAL -.-> LLM
+    end
+
+    subgraph OUTPUT["03 · 成果输出"]
+        NOTE["便携笔记<br/>note.md + Assets/ 截图"]
+        DOCUMENT["助手按需制作<br/>LaTeX / Typst / 思维导图"]
+        SUBTITLE["字幕导出<br/>SRT / VTT / JSON"]
+
+        NOTE -.-> DOCUMENT
+    end
+
+    SOURCE --> FETCH
+    TRANSCRIPT --> MATERIAL
+    VISION -.-> MATERIAL
+    COMMENTS -.-> MATERIAL
+    AGENT --> NOTE
+    LLM -.-> NOTE
+    TRANSCRIPT -.->|process_media · export| SUBTITLE
+
+    classDef entry fill:#4f46e5,stroke:#4338ca,color:#fff
+    classDef primary fill:#eef2ff,stroke:#818cf8,color:#312e81
+    classDef optional fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:5 4
+    classDef result fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
+    class SOURCE entry
+    class MATERIAL,AGENT primary
+    class VISION,COMMENTS,LLM,DOCUMENT,SUBTITLE optional
+    class NOTE result
+    style COLLECT fill:transparent,stroke:#cbd5e1,rx:12,ry:12
+    style WRITE fill:transparent,stroke:#cbd5e1,rx:12,ry:12
+    style OUTPUT fill:transparent,stroke:#cbd5e1,rx:12,ry:12
+```
+
+实线为默认流程：`prepare_note_material` 准备素材，由当前对话助手整理笔记。虚线为可选能力或后备路径：对话助手无法看图或用户指定时，使用 `generate_note` 调用配置的 LLM；字幕可独立导出，其他格式由助手按需制作。各阶段细节见 [docs/02-架构设计.md](docs/02-架构设计.md)。
 
 ## 任务管理
 

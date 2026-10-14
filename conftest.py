@@ -10,13 +10,14 @@ engine 单例被先收集到的测试文件锁定到某个 DB，后跑的测试�
 """
 import glob
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
 
 # 固定 /tmp/videonote_pytest 会被并行 pytest / 多 checkout 撞库（docs/05 #66）：
 # 按 pid 隔离，同一进程内所有测试共享，跨进程互不干扰
-_TEST_ROOT = Path(f"/tmp/videonote_pytest_{os.getpid()}")
+_TEST_ROOT = Path(tempfile.gettempdir()) / f"videonote_pytest_{os.getpid()}"
 _TEST_ROOT.mkdir(parents=True, exist_ok=True)
 _TEST_DB = _TEST_ROOT / "video_note.db"
 # 数据目录与 NOTE_OUTPUT_DIR 同生产布局（config.setup_environment：note_results 在

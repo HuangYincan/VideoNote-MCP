@@ -1054,3 +1054,53 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 
 - **setup 菜单层级**：一级菜单去掉功能说明括号，LLM 配置移入“④ 其他”并改名为“MLLM供应商”；其括号显示当前供应商、Key 和默认模型配置状态。
 - **菜单状态与任务管理**：二级选项括号统一展示当前配置状态；“⑤ 数据管理”改为“⑤ 任务管理”；纯文本 fallback、使用手册和回归测试同步更新。
+
+## 2026-10-14 — 跨平台安装向导（待发版）
+
+- **安装入口**：新增 `videonote install`，支持 Claude Code / Codex / Claude Desktop / Cursor；提供目标选择、显式非交互安装、只读预览、现有注册更新和唯一备份。Codex TOML 注释、其它服务与自定义设置保留；启用的旧插件、同名其它服务、损坏配置和检测到的并发编辑不自动覆盖。源码 shell 入口委托同一 Python 向导。
+- **ASR 推荐与运行一致性**：Apple Silicon 推荐 MLX，CTranslate2 的 GPU/匹配运行库可用时推荐 CUDA，否则 CPU；保留既有引擎/尺寸，支持可选模型下载。终端配置和 MCP 使用相同 Python/extras、绝对运行路径、数据/配置/模型目录与 GPU 库搜索路径。已缓存模型执行实际短音频推理，关闭 VAD 并消费惰性生成器；注册前校验 MCP 握手，注册后回读配置。
+- **轻量入口与分发**：console script 经 `__main__.py` 分发，install 帮助/预览不初始化 DB；新增 tomlkit 依赖及锁文件。手动注册和已有 MCP 协议保持兼容，不分发 Skills 或 commands，不触发 PyPI 发布。
+- **文档与图示**：同步中英文 README、使用手册、架构/接手指南和 VENDOR 设备选择说明；一并纳入用户提供的中英文 Mermaid 流水线图。
+- **验证**：新增 41 个安装器测试；全量 **1370 passed, 1 skipped, 27 subtests passed**；Ruff F/I、shell 语法、源码/wheel 独立 stdio、wheel 入口与分发边界检查通过。Codex 与 Claude Code 的官方 CLI 在临时配置目录完成真实注册回读，未修改实际客户端配置。CI 新增 Windows/Linux/macOS 安装器检查并纳入 Smoke test 汇总；远程三平台 CI 与实际 CUDA/MLX 模型推理尚待对应环境验收。
+
+### 安装多选界面与 setup 客户端管理（2026-10-14，待发版）
+
+- **终端 UI**：安装器与 setup 共享方向键 / 空格多选 / 回车确认界面；客户端列表标注检测状态，转写方案与模型尺寸使用菜单。帮助、预览、显式非交互安装保持轻量；缺少 InquirerPy 时回退文本交互。
+- **setup 修复**：新增“① Agent 客户端”，主菜单从①连续到⑤；修复自定义左键绑定覆盖 Ctrl-C 中断的问题，所有复用该绑定的菜单均保留 Ctrl-C。
+- **启用管理**：读取实际用户级注册，支持多选保留平台、确认后禁用其他平台。Codex 切换 enabled 并保留注释 / 参数；JSON 客户端在私有目录保存完整注册项后移除，重新勾选恢复原别名 / 参数 / env。保留其他服务；存档路径不匹配、别名占用、损坏配置、插件、重复注册及检测到的并发编辑不自动覆盖。新平台安装 / 更新复用同一安装器。
+- **文档与验证**：同步中英文 README、使用手册、架构与接手指南；CI 三平台安装器检查纳入客户端管理测试。新增35个回归，全量 **1405 passed, 1 skipped, 27 subtests passed**；Ruff F/I、diff / shell 检查、打包与源码 / wheel 独立 stdio 均通过。真实 InquirerPy 输入验证多选、左键、Ctrl-C；临时 HOME 的 PTY 验证 setup 返回与 install 取消，未改动实际 Agent 配置。远程三平台 CI 与 GPU 实机验证仍待执行。
+
+### 扩展客户端检测与多选卸载（2026-10-14，待发版）
+
+- **客户端适配**：新增 OpenCode、Pi、Grok Build、Gemini CLI、Kiro、VS Code、GitHub Copilot CLI，总计11种。默认仅显示检测到 CLI / 配置的候选，另提供手动选择；支持对应用户级路径及配置目录环境变量。Pi CLI 限时检查原生 MCP 能力，旧版本要求升级。
+- **原生配置**：统一客户端服务器映射与 command / env 转换，支持 OpenCode 命令数组、不同 JSON 映射与 TOML；OpenCode / VS Code JSONC 保留无关字段、注释和服务。修改后重新解析核对。重复键、损坏配置、双份 OpenCode 配置、插件与别名冲突不自动覆盖；Gemini 的 allowed / excluded 限制保留。
+- **启用状态**：按各 Agent 原生开关或私有恢复存档管理；Gemini 处理独立启用状态文件，Grok Build 处理 enabled 与 disabled_mcp_servers。UI 改为“注册已启用 / 禁用”，仅表示磁盘配置，提示重启 / 重连，不宣称现有会话已断开。
+- **卸载入口**：setup ① 新增“卸载 VideoNote 注册（多选）”，确认后删除所选用户级注册、禁用恢复存档及对应的原生禁用标记；保留其他 MCP、程序、模型、笔记和登录配置，先创建私有备份。客户端 / 存档快照、目标路径与并发变更均核对；多文件或多平台部分失败明确报告，不擅自处理插件 / 项目 / 兼容导入来源。
+- **验证**：新增78个回归；基于上一提交、仅叠加本次功能文件的隔离全量 **1483 passed, 1 skipped, 27 subtests passed**。Ruff F/I、diff / shell 检查、打包与源码 / wheel 独立 stdio 均通过；临时 HOME 真实 PTY 完成 setup 多选卸载，官方 Codex CLI 确认 VideoNote 从列表移除，其他 MCP 保留。未修改实际 Agent 配置；远程三平台 CI、其余 Agent 实机运行及 GPU 推理待对应环境验证。
+
+### 安装时展示现有转写配置并兼容旧用户（2026-10-14，待发版）
+
+- **配置详情**：转写选择前列出引擎、模型、设备、预处理、说话人分离 / 人数、配置来源及文件 / 模型目录。区分保存值与程序默认；Groq 显示实际云端模型，MLX 显示 Apple GPU。“保留”不再重新询问模型尺寸，显式 `--model` 仍可覆盖。
+- **历史配置发现**：独立轻量模块只读检查当前目录、所选 Agent 的旧注册、安装包用户目录与源码旧 `config/`；沿用原数据 / 配置 / 模型目录及有效转写环境默认值，不迁移文件或凭证。多套配置交互选择，非交互要求明确路径 / 环境；旧相对路径只在已知启动目录时解析。
+- **原件保护**：引擎 / 尺寸未变时保持转写 JSON 原字节；改变时保留未知字段；安装记录保留未知顶层字段。不打印任意 env 或凭证；损坏、重复键、BOM 转写文件停止并保留原件。写入前严格回读并核对选择时的摘要，检测到变化停止，避免通用损坏恢复将原件重命名；此检查不构成跨进程事务。
+- **验证**：新增30项回归；仅叠加本次文件的隔离全量 **1513 passed, 1 skipped, 27 subtests passed**。Ruff F/I、shell / diff 检查、打包与源码 / wheel stdio 均通过。临时 HOME 的真实 PTY 验证历史配置选择、详情显示与 Ctrl-C 取消，转写及 Agent 注册原字节保持不变；未修改实际客户端配置。远程三平台 CI 与 GPU 实机验证未执行；未发版。
+
+### 统一终端配色与精简历史配置选择（2026-10-14，待发版）
+
+- **共享主题**：install / setup 通过共享提示代理设置 InquirerPy 主题，标题 / 字段青色，当前值 / 成功绿色，当前选项黑字黄底，提醒黄色，错误红色，说明灰色。选项名称 / 值保持纯文本，勾选、默认选择、隐藏输入及左键 / Ctrl-C 绑定不变。客户端注册状态与安装进度使用语义配色。
+- **终端兼容**：非 TTY、NO_COLOR、TERM=dumb 关闭颜色与标题清屏；Windows 检查并启用控制台 VT 能力，不支持时用纯文本。setup 原有输出也遵循同一颜色开关，未添加依赖。
+- **历史配置选择**：详情区只显示一次配置 / 数据 / 模型目录，菜单改为来源与引擎 / 模型短摘要。MLX 在历史选择、转写详情和安装汇总中统一显示 Apple GPU / MLX；旧 cpu 是通用安装参数，不参与 MLX 设备选择，保留运行参数兼容。
+- **验证**：新增11项回归；本次改动的隔离全量 **1524 passed, 1 skipped, 27 subtests passed**，Ruff F/I、diff / shell 检查、打包与源码 / wheel stdio 通过。临时 HOME 真实 PTY 验证 install / setup 配色、高亮、选择、左键返回与 Ctrl-C 取消，原转写及客户端注册保持原字节。三平台 CI 纳入主题回归；远程 CI 与 Windows 实机显示未验收，未发布。
+
+## v0.2.5 — 2026-10-14
+
+- **跨平台安装**：发布 `uvx videonote@latest install`，支持 Windows / Linux / macOS、11种 Agent 客户端检测与多选注册、只读预览和显式非交互安装；源码与注册后的 MCP 共用运行环境。
+- **转写与旧用户**：推荐 Apple Silicon MLX / NVIDIA CUDA / CPU；安装前详细展示现有转写设置，沿用历史数据 / 配置 / 模型目录，多套配置先选择，保留现有模型与未知配置字段；损坏或检测到变化的转写文件不自动覆盖。
+- **setup 与 UI**：主菜单编号修复，共享彩色多选界面；可管理 Agent 注册启用状态与多选卸载，卸载保留程序、模型、笔记和登录配置。路径详情只展示一次，MLX 设备显示 Apple GPU；普通日志与 NO_COLOR 输出纯文本。
+- **验证**：本次发布范围的隔离全量 **1524 passed, 1 skipped, 27 subtests passed**；本地 Ruff F/I、shell / diff、打包与源码 / wheel 独立 stdio 已通过；真实临时 HOME 验证终端交互及 Codex 注册卸载。CI 增加 Windows / Linux / macOS 安装器矩阵。GPU 实际模型推理和其余客户端实机运行仍需对应环境验证。
+- **分发**：项目、Python 包、插件与锁文件统一版本 `0.2.5`；安装说明改为 v0.2.5 起可用。
+
+### v0.2.5 发布门禁：Windows 重定向输出编码（2026-10-14）
+
+- 远程 Windows 安装器矩阵发现中文帮助 / 预览在旧代码页重定向输出时触发 UnicodeEncodeError；入口在 Windows 将 stdout / stderr 配置为 UTF-8，保留 stdlib 轻量分发。
+- 原隔离子进程测试显式按 UTF-8 读取输出，并设置 USERPROFILE 隔离 Windows 用户目录；新增2项强制 cp1252 重定向的帮助 / 预览回归。最终隔离全量 **1526 passed, 1 skipped, 27 subtests passed**。

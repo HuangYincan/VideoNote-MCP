@@ -304,7 +304,7 @@ def get_funasr_transcriber(device="cpu"):
     return _get_or_build_transcriber(TranscriberType.FUNASR, FunASRTranscriber, device=device)
 
 # 通用入口
-def get_transcriber(transcriber_type="fast-whisper", model_size=None, device="cuda"):
+def get_transcriber(transcriber_type="fast-whisper", model_size=None, device=None):
     """
     获取指定类型的转录器实例
 
@@ -313,7 +313,7 @@ def get_transcriber(transcriber_type="fast-whisper", model_size=None, device="cu
         model_size: 模型大小，适用于 whisper 类；显式传入优先于环境变量
             （WHISPER_MODEL_SIZE 仅作兜底，避免 setup/CLI 配置的
             模型尺寸被环境变量覆盖——那是此前模型切换不生效的根因）
-        device: 设备类型（如 cuda / cpu），仅 whisper 使用
+        device: 显式设备优先；否则 VIDEONOTE_TRANSCRIBER_DEVICE，缺省 cuda（可回落 CPU）
 
     返回:
         对应类型的转录器实例
@@ -327,6 +327,10 @@ def get_transcriber(transcriber_type="fast-whisper", model_size=None, device="cu
         transcriber_enum = TranscriberType.FAST_WHISPER
 
     whisper_model_size = model_size or os.environ.get("WHISPER_MODEL_SIZE") or "small"
+    if device is None:
+        device = os.environ.get("VIDEONOTE_TRANSCRIBER_DEVICE") or "cuda"
+        if transcriber_enum in (TranscriberType.FAST_WHISPER, TranscriberType.FUNASR) and device not in ("cpu", "cuda"):
+            raise ValueError("VIDEONOTE_TRANSCRIBER_DEVICE 必须为 cpu 或 cuda")
 
     if transcriber_enum == TranscriberType.FAST_WHISPER:
         return get_whisper_transcriber(whisper_model_size, device=device)
