@@ -37,14 +37,14 @@ It works **end-to-end (one link → one note)** and is **also decoupled**: pick 
 The Python installer works on Windows, Linux, and macOS. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first.
 
 ```bash
+# Windows / Linux / macOS (v0.2.5 and later)
+uvx videonote@latest install
+
 # Current source checkout (clone the repository and enter its directory first)
 uv run --frozen videonote install
-
-# Once a version containing the installer is published, use on all three systems
-uvx videonote@latest install
 ```
 
-> The new `install` subcommand needs a release; updating the source does not add it to previously published PyPI versions.
+> The `install` subcommand is available from v0.2.5. If an older installation does not recognize it, update to v0.2.5 or later, or use the source command above.
 
 The terminal wizard supports Claude Code, Codex, Claude Desktop, Cursor, OpenCode, Pi, Grok Build, Gemini CLI, Kiro, VS Code, and GitHub Copilot CLI. It lists candidates detected through CLI executables or configuration by default, with a manual selection entry for other targets. Use arrow keys to move, Space to select multiple targets, Enter to confirm, and Left to cancel. Pi needs a version with native MCP support; the installer checks CLI capabilities first. Installation and setup share a colored terminal theme with highlighted choices and distinct fields, statuses, and hints. `NO_COLOR` and redirected output use plain text. Legacy profile paths appear once above a compact selection menu, and MLX devices are labeled as Apple GPU. Transcription and model size also use selection menus. The installer recommends MLX on compatible Apple Silicon systems, CUDA when the NVIDIA GPU and runtime libraries are ready, and CPU otherwise. Before selection, it displays the existing engine, model, device, preprocessing, diarization, configuration sources, and paths. It recognizes previous Agent registrations and legacy configuration directories, asks which profile to use when several are found, and keeps the saved model without prompting for its size again. It preserves existing transcription settings by default and offers dependency preparation and model downloads. Terminal configuration and MCP use the same runtime.
 

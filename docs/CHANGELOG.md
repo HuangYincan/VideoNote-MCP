@@ -1091,3 +1091,11 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **终端兼容**：非 TTY、NO_COLOR、TERM=dumb 关闭颜色与标题清屏；Windows 检查并启用控制台 VT 能力，不支持时用纯文本。setup 原有输出也遵循同一颜色开关，未添加依赖。
 - **历史配置选择**：详情区只显示一次配置 / 数据 / 模型目录，菜单改为来源与引擎 / 模型短摘要。MLX 在历史选择、转写详情和安装汇总中统一显示 Apple GPU / MLX；旧 cpu 是通用安装参数，不参与 MLX 设备选择，保留运行参数兼容。
 - **验证**：新增11项回归；本次改动的隔离全量 **1524 passed, 1 skipped, 27 subtests passed**，Ruff F/I、diff / shell 检查、打包与源码 / wheel stdio 通过。临时 HOME 真实 PTY 验证 install / setup 配色、高亮、选择、左键返回与 Ctrl-C 取消，原转写及客户端注册保持原字节。三平台 CI 纳入主题回归；远程 CI 与 Windows 实机显示未验收，未发布。
+
+## v0.2.5 — 2026-10-14
+
+- **跨平台安装**：发布 `uvx videonote@latest install`，支持 Windows / Linux / macOS、11种 Agent 客户端检测与多选注册、只读预览和显式非交互安装；源码与注册后的 MCP 共用运行环境。
+- **转写与旧用户**：推荐 Apple Silicon MLX / NVIDIA CUDA / CPU；安装前详细展示现有转写设置，沿用历史数据 / 配置 / 模型目录，多套配置先选择，保留现有模型与未知配置字段；损坏或检测到变化的转写文件不自动覆盖。
+- **setup 与 UI**：主菜单编号修复，共享彩色多选界面；可管理 Agent 注册启用状态与多选卸载，卸载保留程序、模型、笔记和登录配置。路径详情只展示一次，MLX 设备显示 Apple GPU；普通日志与 NO_COLOR 输出纯文本。
+- **验证**：本次发布范围的隔离全量 **1524 passed, 1 skipped, 27 subtests passed**；本地 Ruff F/I、shell / diff、打包与源码 / wheel 独立 stdio 已通过；真实临时 HOME 验证终端交互及 Codex 注册卸载。CI 增加 Windows / Linux / macOS 安装器矩阵。GPU 实际模型推理和其余客户端实机运行仍需对应环境验证。
+- **分发**：项目、Python 包、插件与锁文件统一版本 `0.2.5`；安装说明改为 v0.2.5 起可用。
