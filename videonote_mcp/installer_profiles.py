@@ -8,7 +8,7 @@ from pathlib import Path
 
 from videonote_mcp.json_config import strict_loads
 from videonote_mcp.mcp_clients import ConfigError, read_config
-from videonote_mcp.terminal_ui import select
+from videonote_mcp.terminal_ui import field, message, select
 
 ASR_ENV = ("TRANSCRIBER_TYPE", "WHISPER_MODEL_SIZE", "VIDEONOTE_TRANSCRIBER_DEVICE",
            "VIDEONOTE_ENABLE_PREPROCESS", "VIDEONOTE_DIARIZATION", "GROQ_TRANSCRIBER_MODEL",
@@ -41,6 +41,14 @@ def asr_values(existing, installation, env):
         enabled = raw.strip().lower() in ("1", "true", "yes", "on") if isinstance(raw, str) else bool(raw)
         result[key] = enabled, source
     return result
+
+
+def device_label(engine, device):
+    if engine == "mlx-whisper":
+        return "Apple GPU / MLX"
+    if engine in ("groq", "bcut", "kuaishou"):
+        return "在线服务（不使用本地计算设备）"
+    return str(device).upper() if device else "未指定（安装时检测）"
 
 
 def safe_env(env: dict) -> dict:
@@ -217,9 +225,9 @@ def discover_profiles(root, data, config, selected, env, home) -> list[Profile]:
         # File-backed values shadow env; irrelevant env defaults must not create
         # false conflicts when clients point to the same actual profile.
         effective = dict(item.environment)
-        for field, variable in (("transcriber_type", "TRANSCRIBER_TYPE"), ("whisper_model_size", "WHISPER_MODEL_SIZE"),
+        for setting, variable in (("transcriber_type", "TRANSCRIBER_TYPE"), ("whisper_model_size", "WHISPER_MODEL_SIZE"),
                                 ("enable_preprocess", "VIDEONOTE_ENABLE_PREPROCESS"), ("diarization", "VIDEONOTE_DIARIZATION")):
-            if item.settings.get(field) is not None:
+            if item.settings.get(setting) is not None:
                 effective.pop(variable, None)
         fingerprint = (item.data.absolute(), item.config.absolute(), tuple(sorted(effective.items())))
         if fingerprint not in unique:
@@ -232,19 +240,26 @@ def pick_profile(root, data, config, selected, env, home, interactive) -> Profil
     if len(candidates) == 1:
         result = candidates[0]
         if result.detected:
-            print(f"沿用配置：{result.source} — {result.config}", file=sys.stdout)
+            field("沿用配置", result.source)
+            field("配置目录", result.config)
         return result
-    print("检测到多套现有配置，请选择本次安装使用的配置目录 / 环境。", file=sys.stdout)
+    message("检测到多套现有配置，请选择本次安装使用的配置目录 / 环境。", "warning")
     choices = []
     for index, item in enumerate(candidates):
         values = asr_values(item.settings, item.installation, item.environment)
-        summary = f"{values['engine'][0]} / {values['size'][0]} · 设备标记 {values['device'] or '未指定'}"
-        summary += f" · 预处理 {'开' if values['enable_preprocess'][0] else '关'} · 分离 {'开' if values['diarization'][0] else '关'}"
-        label = f"{item.source} — {item.config} — {summary}"
+        engine, size = values['engine'][0], values['size'][0]
+        message(f"\n  {index + 1}. {item.source}", "section")
+        field("配置目录", item.config, indent="     ")
+        field("数据目录", item.data, indent="     ")
+        field("转写引擎", engine, indent="     ")
+        field("模型尺寸" if engine in ("mlx-whisper", "fast-whisper") else "Whisper 备用尺寸", size, indent="     ")
+        field("设备", device_label(engine, values['device']), indent="     ")
+        field("音频预处理", "开" if values['enable_preprocess'][0] else "关", indent="     ")
+        field("说话人分离", "开" if values['diarization'][0] else "关", indent="     ")
         if item.environment.get("VIDEONOTE_MODEL_DIR"):
-            label += " · 模型目录 " + item.environment["VIDEONOTE_MODEL_DIR"]
-        choices.append({"name": label, "value": index})
-        print(f"  {label}", file=sys.stdout)
+            field("模型目录", item.environment["VIDEONOTE_MODEL_DIR"], indent="     ")
+        choices.append({"name": f"{index + 1}. {item.source} — {engine} / {size}", "value": index})
+    print("", file=sys.stdout)
     if not interactive:
         raise ConfigError("多套历史转写设置不一致；请先用 VIDEONOTE_CONFIG_DIR / VIDEONOTE_DATA_DIR 指定目录，"
                           "并用 TRANSCRIBER_TYPE / WHISPER_MODEL_SIZE 指定冲突的环境默认值")

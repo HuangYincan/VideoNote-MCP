@@ -14,10 +14,13 @@ from videonote_mcp.mcp_clients import (
     read_config,
     save_document,
 )
-from videonote_mcp.terminal_ui import checkbox, confirm, header, select
+from videonote_mcp.terminal_ui import checkbox, confirm, header, message, select
+from videonote_mcp.terminal_ui import field as ui_field
 
 LABELS = {"enabled": "注册已启用", "disabled": "注册已禁用，可恢复", "new": "无独立注册",
           "plugin": "插件管理，请在 Agent 中设置", "conflict": "注册名称冲突"}
+STATUS_ROLES = {"enabled": "success", "disabled": "warning", "new": "muted",
+                "plugin": "warning", "conflict": "error"}
 
 
 @dataclass
@@ -197,20 +200,20 @@ def manage_uninstall(registrations: list[Registration], config: Path, inq=None) 
         try:
             plans.append(prepare_uninstall(item, config))
         except (ConfigError, OSError) as exc:
-            print(f"{item.client.name}：{exc}", file=sys.stdout)
+            message(f"{item.client.name}：{exc}", "error")
     if not plans:
-        print("没有可卸载的独立用户级注册。", file=sys.stdout)
+        message("没有可卸载的独立用户级注册。", "muted")
         return
     selected = checkbox("选择要卸载 VideoNote 注册的平台", [
         {"name": f"{plan.registration.client.name} — {LABELS[plan.registration.status]}",
          "value": plan.registration.client.key, "enabled": False} for plan in plans], inq=inq)
     chosen = [plan for plan in plans if plan.registration.client.key in selected]
     if not chosen:
-        print("未选择卸载平台。", file=sys.stdout)
+        message("未选择卸载平台。", "muted")
         return
     for plan in chosen:
-        print(f"  {plan.registration.client.name}：删除用户级注册及禁用恢复存档", file=sys.stdout)
-    print("保留 VideoNote 程序、模型和笔记。", file=sys.stdout)
+        ui_field(plan.registration.client.name, "删除用户级注册及禁用恢复存档", role="warning")
+    message("保留 VideoNote 程序、模型和笔记。", "muted")
     if not confirm("卸载以上平台的 VideoNote 注册？", inq=inq):
         return
     for plan in chosen:
@@ -220,19 +223,19 @@ def manage_uninstall(registrations: list[Registration], config: Path, inq=None) 
     for plan in chosen:
         try:
             saved, archive_saved = uninstall(plan, config)
-            print(f"✓ {plan.registration.client.name} 用户级注册已卸载", file=sys.stdout)
+            message(f"✓ {plan.registration.client.name} 用户级注册已卸载", "success")
             for path in (saved, archive_saved):
                 if path:
-                    print(f"  原配置备份：{path}", file=sys.stdout)
+                    ui_field("原配置备份", path, role="muted")
         except (ConfigError, OSError) as exc:
-            print(f"{plan.registration.client.name}：{exc}", file=sys.stdout)
-    print("请重启对应 Agent 或重新连接 MCP；插件、项目配置及兼容导入需在 Agent 中核对。", file=sys.stdout)
+            message(f"{plan.registration.client.name}：{exc}", "error")
+    message("请重启对应 Agent 或重新连接 MCP；插件、项目配置及兼容导入需在 Agent 中核对。")
 
 
 def manage_enabled(registrations: list[Registration], config: Path, inq=None) -> None:
     managed = [item for item in registrations if item.status in ("enabled", "disabled")]
     if not managed:
-        print("没有可管理的独立注册，请先选择安装平台。", file=sys.stdout)
+        message("没有可管理的独立注册，请先选择安装平台。", "muted")
         return
     choices = [{"name": f"{item.client.name} — {LABELS[item.status]}", "value": item.client.key,
                 "enabled": item.status == "enabled"} for item in managed]
@@ -240,10 +243,10 @@ def manage_enabled(registrations: list[Registration], config: Path, inq=None) ->
     changes = [(item, item.client.key in selected) for item in managed
                if (item.client.key in selected) != (item.status == "enabled")]
     if not changes:
-        print("启用状态未变化。", file=sys.stdout)
+        message("启用状态未变化。", "muted")
         return
     for item, enabled in changes:
-        print(f"  {item.client.name}：{'启用' if enabled else '禁用'} VideoNote", file=sys.stdout)
+        ui_field(item.client.name, f"{'启用' if enabled else '禁用'} VideoNote", role="success" if enabled else "warning")
     if not confirm("应用以上变更？", inq=inq):
         return
     # Validate every selected snapshot before beginning any writes.
@@ -252,12 +255,12 @@ def manage_enabled(registrations: list[Registration], config: Path, inq=None) ->
     for item, enabled in changes:
         try:
             saved = set_enabled(item, enabled, config)
-            print(f"✓ {item.client.name} 注册已{'启用' if enabled else '禁用'}", file=sys.stdout)
+            message(f"✓ {item.client.name} 注册已{'启用' if enabled else '禁用'}", "success" if enabled else "warning")
             if saved:
-                print(f"  原配置备份：{saved}", file=sys.stdout)
+                ui_field("原配置备份", saved, role="muted")
         except (ConfigError, OSError) as exc:
-            print(f"{item.client.name}：{exc}", file=sys.stdout)
-    print("请重启对应 Agent 或重新连接 MCP。", file=sys.stdout)
+            message(f"{item.client.name}：{exc}", "error")
+    message("请重启对应 Agent 或重新连接 MCP。")
 
 
 def wizard(config: Path, inq=None) -> None:
@@ -270,10 +273,10 @@ def wizard(config: Path, inq=None) -> None:
                 item = inspect_registration(client, config)
                 registrations.append(item)
                 if client.detected or item.status != "new":
-                    print(f"  {client.name}：{LABELS[item.status]}", file=sys.stdout)
+                    ui_field(client.name, LABELS[item.status], role=STATUS_ROLES[item.status])
             except (ConfigError, OSError) as exc:
-                print(f"  {client.name}：{exc}", file=sys.stdout)
-        print("\n管理当前用户的 VideoNote MCP；项目注册和插件请在 Agent 中管理。", file=sys.stdout)
+                message(f"  {client.name}：{exc}", "error")
+        message("\n管理当前用户的 VideoNote MCP；项目注册和插件请在 Agent 中管理。", "muted")
         try:
             action = select("Agent 客户端设置", [
                 {"name": "启用的平台（多选）", "value": "manage"},
@@ -290,7 +293,7 @@ def wizard(config: Path, inq=None) -> None:
             else:
                 candidates = [item for item in registrations if item.status in ("new", "enabled")]
                 if not candidates:
-                    print("没有可安装的平台；已禁用的平台可从启用菜单恢复。", file=sys.stdout)
+                    message("没有可安装的平台；已禁用的平台可从启用菜单恢复。", "muted")
                     continue
                 from videonote_mcp.installer import choose_clients, main
 
@@ -301,11 +304,11 @@ def wizard(config: Path, inq=None) -> None:
                     for client in selected:
                         arguments.extend(["--client", client.key])
                     if main(arguments):
-                        print("部分平台安装失败；请查看上方诊断。", file=sys.stdout)
+                        message("部分平台安装失败；请查看上方诊断。", "warning")
         except (EOFError, KeyboardInterrupt):
             return
         except (ConfigError, OSError) as exc:
-            print(str(exc), file=sys.stdout)
+            message(str(exc), "error")
         try:
             select("继续", [{"name": "返回 Agent 客户端设置", "value": "back"}], "back", inq=inq)
         except (EOFError, KeyboardInterrupt):

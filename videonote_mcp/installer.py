@@ -14,6 +14,7 @@ from videonote_mcp.hardware import inspect_hardware
 from videonote_mcp.installer_profiles import (
     ASR_FIELDS,
     asr_values,
+    device_label,
     pick_profile,
     profile_digest,
     safe_env,
@@ -25,7 +26,7 @@ from videonote_mcp.mcp_clients import (
     inspect,
     register,
 )
-from videonote_mcp.terminal_ui import checkbox, header, select
+from videonote_mcp.terminal_ui import checkbox, field, header, message, select
 
 SIZES = ("tiny", "base", "small", "medium", "large-v3", "large-v3-turbo")
 ENGINES = ("fast-whisper", "mlx-whisper", "funasr", "groq", "bcut", "kuaishou")
@@ -149,7 +150,7 @@ def confirm(message: str, default: bool = False) -> bool:
 
 def choose_clients(available: list, *, inq=None, title="安装向导") -> list:
     header(title, "① Agent 客户端")
-    print("检测结果仅供参考；请勾选要安装的平台。", file=sys.stdout)
+    message("检测结果仅供参考；请勾选要安装的平台。", "muted")
     choices = [{"name": f"{client.name} — {'已检测到' if client.detected else '未检测到'}",
                 "value": client.key, "enabled": False} for client in available if client.detected]
     undetected = [client for client in available if not client.detected]
@@ -168,40 +169,40 @@ def _show_asr_profile(existing, installation, env, hardware, config_path=None):
     values = asr_values(existing, installation, env)
     engine, engine_source = values["engine"]
     size, size_source = values["size"]
-    print("当前转写配置：", file=sys.stdout)
-    print(f"  引擎：{engine}（{engine_source}）", file=sys.stdout)
+    message("当前转写配置：", "section")
+    field("引擎", engine, f"（{engine_source}）")
     if engine == "groq":
-        print(f"  当前模型：{env.get('GROQ_TRANSCRIBER_MODEL') or 'whisper-large-v3'}（Groq 云端）", file=sys.stdout)
+        field("当前模型", env.get('GROQ_TRANSCRIBER_MODEL') or 'whisper-large-v3', "（Groq 云端）")
     elif engine == "funasr":
-        print("  当前模型：paraformer-zh / fsmn-vad / ct-punc（FunASR）", file=sys.stdout)
+        field("当前模型", "paraformer-zh / fsmn-vad / ct-punc", "（FunASR）")
     if engine not in ("fast-whisper", "mlx-whisper"):
-        print(f"  Whisper 备用尺寸：{size}（{size_source}；当前引擎不使用）", file=sys.stdout)
+        field("Whisper 备用尺寸", size, f"（{size_source}；当前引擎不使用）")
     else:
-        print(f"  模型尺寸：{size}（{size_source}）", file=sys.stdout)
+        field("模型尺寸", size, f"（{size_source}）")
     if engine == "mlx-whisper":
-        device_label = "Apple GPU / MLX（此引擎不使用 cpu / cuda 标记）"
+        device_text = device_label(engine, values["device"])
     elif engine in ("groq", "bcut", "kuaishou"):
-        device_label = "在线服务（不使用本地计算设备）"
+        device_text = device_label(engine, values["device"])
     elif values["device"]:
-        device_label = str(values["device"]).upper() + "（已有设置，实际可用性后续检查）"
+        device_text = device_label(engine, values["device"]) + "（已有设置，实际可用性后续检查）"
     else:
-        device_label = "未明确设置；本次安装按检测使用 " + ("CUDA" if hardware.cuda_available else "CPU")
-    print(f"  设备设置：{device_label}", file=sys.stdout)
+        device_text = "未明确设置；本次安装按检测使用 " + ("CUDA" if hardware.cuda_available else "CPU")
+    field("设备设置", device_text)
     for key, label in (("enable_preprocess", "音频预处理"), ("diarization", "说话人分离")):
         enabled, source = values[key]
-        print(f"  {label}：{'开' if enabled else '关'}（{source}）", file=sys.stdout)
+        field(label, '开' if enabled else '关', f"（{source}）", role="success" if enabled else "muted")
     speakers = existing.get("diarization_speakers")
     try:
         count = int(speakers) if speakers else None
         speaker_label = str(count) if count and count > 0 else "自动检测"
     except (TypeError, ValueError):
         speaker_label = "无效（请在 setup 中核对）"
-    print(f"  说话人数：{speaker_label}" + ("（分离关闭时不使用）" if not values["diarization"][0] else ""), file=sys.stdout)
+    field("说话人数", speaker_label, "（分离关闭时不使用）" if not values["diarization"][0] else "")
     if config_path:
         path = config_path / "transcriber.json"
-        print(f"  配置文件：{path}" + ("" if path.is_file() else "（尚未保存，使用上方其它来源）"), file=sys.stdout)
+        field("配置文件", path, "" if path.is_file() else "（尚未保存，使用上方其它来源）")
     if env.get("VIDEONOTE_MODEL_DIR"):
-        print(f"  模型目录：{env['VIDEONOTE_MODEL_DIR']}", file=sys.stdout)
+        field("模型目录", env['VIDEONOTE_MODEL_DIR'])
     print("", file=sys.stdout)
 
 
@@ -220,10 +221,11 @@ def choose_asr(options, hardware, existing: dict, installation: dict, interactiv
             header("安装向导", "② 语音转写引擎")
             _show_asr_profile(existing, installation, env, hardware, profile.config if profile else None)
             if options.model:
-                print(f"本次 --model 指定 {options.model}，将覆盖上方的当前模型尺寸。", file=sys.stdout)
-            print(f"硬件检测：{hardware.detail}")
+                message(f"本次 --model 指定 {options.model}，将覆盖上方的当前模型尺寸。", "warning")
+            field("硬件检测", hardware.detail)
             labels = {"cpu": "CPU / fast-whisper", "cuda": "NVIDIA CUDA / fast-whisper",
                       "mlx": "Apple GPU / mlx-whisper"}
+            field("推荐方案", labels[hardware.recommended])
             choices = [{"name": f"自动推荐：{labels[hardware.recommended]}", "value": "auto"},
                        {"name": labels["cpu"], "value": "cpu"}]
             if hardware.nvidia_present:
@@ -309,17 +311,18 @@ def run(options) -> int:
     engine, size, device, skip_asr = choose_asr(options, hardware, existing, installation, interactive, profile=profile)
     runtime = runtime_for(root, engine, device, options.python,
                           data_config=(data_dir, config_dir), settings_env=profile.environment)
-    print(f"硬件：{hardware.detail}")
-    print(f"转写：{engine} / {size}" + (f" / {device}" if device else " / 保留自动设备检测"))
-    print("MCP 启动命令：" + json.dumps([runtime.command, *runtime.args], ensure_ascii=False))
-    print(f"数据目录：{data_dir}")
+    field("硬件", hardware.detail, indent="")
+    field("转写", f"{engine} / {size} / {device_label(engine, device)}", indent="")
+    field("MCP 启动命令", json.dumps([runtime.command, *runtime.args], ensure_ascii=False), indent="")
+    field("数据目录", data_dir, indent="")
     pending, failed = [], False
     for client in selected:
         try:
             state = inspect(client, runtime.entry)
             status = {"new": "新增注册", "same": "配置相同，跳过", "update": "已有 VideoNote，需更新启动环境",
                       "conflict": "同名其他服务，跳过", "plugin": "已有 VideoNote 插件，跳过"}[state.status]
-            print(f"{client.name}：{status} — {client.path}")
+            field(client.name, status, f" — {client.path}", indent="",
+                  role="error" if state.status in ("plugin", "conflict") else "info")
             if state.status in ("plugin", "conflict"):
                 failed = True
                 continue
@@ -327,20 +330,20 @@ def run(options) -> int:
                 raise ConfigError("未找到 claude CLI，请先安装 Claude Code")
             if state.status == "update" and not options.replace:
                 if options.dry_run:
-                    print("  更新需要 --replace，或在交互安装中选择更新。")
+                    message("  更新需要 --replace，或在交互安装中选择更新。", "warning")
                 elif not interactive or not confirm(f"更新 {client.name} 的 VideoNote 启动环境？"):
                     failed = True
                     continue
             pending.append((client, state))
         except ConfigError as exc:
-            print(str(exc), file=sys.stderr)
+            message(str(exc), "error", file=sys.stderr)
             failed = True
     if options.dry_run:
-        print("预览完成：未写配置、未下载依赖或模型。")
+        message("预览完成：未写配置、未下载依赖或模型。", "success")
         return 0
     if not pending:
         return 1 if failed else 0
-    print("准备同一套运行环境（首次下载依赖可能需要几分钟）…", flush=True)
+    message("准备同一套运行环境（首次下载依赖可能需要几分钟）…", flush=True)
     environment = runtime_action(runtime, "probe")
     if environment.get("version") != __version__:
         raise ConfigError("运行环境版本与安装器不一致；请重新安装同一版本")
@@ -360,10 +363,10 @@ def run(options) -> int:
             arguments += ["--download"]
         if options.no_verify:
             arguments += ["--no-verify"]
-        print("准备转写配置和模型…", flush=True)
+        message("准备转写配置和模型…", flush=True)
         model_state = runtime_action(runtime, "prepare", arguments)
     if not options.no_verify:
-        print("验证 MCP 启动与握手…", flush=True)
+        message("验证 MCP 启动与握手…", flush=True)
         try:
             asyncio.run(verify_mcp(runtime))
         except Exception as exc:
@@ -371,29 +374,29 @@ def run(options) -> int:
     for client, state in pending:
         try:
             saved = register(client, state, runtime.entry)
-            print(f"✓ {client.name}：" + ("已核对现有注册" if state.status == "same" else "已注册并回读核对"))
+            message(f"✓ {client.name}：" + ("已核对现有注册" if state.status == "same" else "已注册并回读核对"), "success")
             if saved:
-                print(f"  原配置备份：{saved}")
+                field("原配置备份", saved, role="muted")
             from videonote_mcp.mcp_clients import read_config
 
             _, final_document = read_config(client)
             final_entry = client.servers(final_document)[state.name]
             if not client.is_enabled(final_entry, final_document):
-                print("  保留了禁用状态；请在客户端启用此服务后使用。")
+                message("  保留了禁用状态；请在客户端启用此服务后使用。", "warning")
         except (ConfigError, OSError) as exc:
-            print(f"{client.name}：{exc}", file=sys.stderr)
+            message(f"{client.name}：{exc}", "error", file=sys.stderr)
             failed = True
-    print("请重启客户端或开启新会话，再调用 health_check。")
+    message("请重启客户端或开启新会话，再调用 health_check。")
     if model_state["model_ready"] is False:
-        print("本地模型尚未下载；重新运行 install --download，或使用同一启动命令运行 transcriber download。")
+        message("本地模型尚未下载；重新运行 install --download，或使用同一启动命令运行 transcriber download。", "warning")
     elif skip_asr:
-        print("本次跳过了转写配置；可稍后进入 setup。")
+        message("本次跳过了转写配置；可稍后进入 setup。", "muted")
     elif model_state["asr_verified"]:
-        print("所选设备的 ASR 短音频推理已通过。")
+        message("所选设备的 ASR 短音频推理已通过。", "success")
     if not shutil.which("ffmpeg"):
-        print("未找到 FFmpeg：视频下载/处理仍需安装它。")
+        message("未找到 FFmpeg：视频下载/处理仍需安装它。", "warning")
     if options.no_verify:
-        print("本次跳过了 ASR 与 MCP 运行验证。")
+        message("本次跳过了 ASR 与 MCP 运行验证。", "muted")
     if not failed:
         from app.utils.json_store import write_json_atomic
 
@@ -411,8 +414,8 @@ def main(argv=None) -> int:
     try:
         return run(options)
     except (ConfigError, OSError) as exc:
-        print(str(exc), file=sys.stderr)
+        message(str(exc), "error", file=sys.stderr)
         return 1
     except (EOFError, KeyboardInterrupt):
-        print("安装已取消。", file=sys.stderr)
+        message("安装已取消。", "muted", file=sys.stderr)
         return 130

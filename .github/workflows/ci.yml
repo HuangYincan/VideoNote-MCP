@@ -63,7 +63,7 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --frozen --python 3.12
       - name: Installer contracts with isolated homes and mocked clients
-        run: uv run --frozen python -m pytest -q tests/test_installer.py tests/test_installer_profiles.py tests/test_client_management.py tests/test_mcp_clients.py tests/test_uninstall.py
+        run: uv run --frozen python -m pytest -q tests/test_installer.py tests/test_installer_profiles.py tests/test_terminal_theme.py tests/test_client_management.py tests/test_mcp_clients.py tests/test_uninstall.py
       - name: Lightweight installer entry point
         run: uv run --frozen videonote install --help
 
