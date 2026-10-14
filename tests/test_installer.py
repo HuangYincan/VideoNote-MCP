@@ -344,8 +344,8 @@ def test_changed_registration_requires_explicit_replace(home, monkeypatch):
 def test_installer_help_imports_without_third_party_packages(home):
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run([sys.executable, "-S", "-m", "videonote_mcp", "install", "--help"],
-                            cwd=root, env={**os.environ, "HOME": str(home)}, capture_output=True,
-                            text=True, timeout=15)
+                            cwd=root, env={**os.environ, "HOME": str(home), "USERPROFILE": str(home)}, capture_output=True,
+                            text=True, encoding="utf-8", timeout=15)
     assert result.returncode == 0 and "--dry-run" in result.stdout
     assert not Path(os.environ["VIDEONOTE_DATA_DIR"]).exists()
 
@@ -354,12 +354,31 @@ def test_installer_preview_in_isolated_process_does_not_initialize_db(home, tmp_
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run([sys.executable, "-S", "-m", "videonote_mcp", "install", "--client", "cursor",
                              "--dry-run", "--asr", "cpu"], cwd=root,
-                            env={**os.environ, "HOME": str(home), "DATABASE_URL": "sqlite:///" + str(tmp_path / "never.db")},
-                            capture_output=True, text=True, timeout=30)
+                            env={**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+                                 "DATABASE_URL": "sqlite:///" + str(tmp_path / "never.db")},
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0
     assert not (tmp_path / "never.db").exists()
     assert not Path(os.environ["VIDEONOTE_DATA_DIR"]).exists()
     assert not (home / ".cursor").exists()
+
+
+@pytest.mark.parametrize("arguments, expected", [(["--help"], "检测 MCP 客户端"),
+    (["--client", "cursor", "--dry-run", "--asr", "cpu"], "预览完成")])
+def test_windows_entry_uses_utf8_with_legacy_redirected_streams(home, arguments, expected):
+    root = Path(__file__).resolve().parents[1]
+    # Simulate only the entry point's platform, keeping native stdlib imports
+    # and client inspection functional when this regression runs on POSIX.
+    script = ("import sys; from types import SimpleNamespace; "
+              "from videonote_mcp import __main__ as entry; "
+              f"entry.sys = SimpleNamespace(platform='win32', argv={['videonote', 'install', *arguments]!r}, "
+              "stdout=sys.stdout, stderr=sys.stderr); entry.main()")
+    result = subprocess.run([sys.executable, "-S", "-c", script], cwd=root,
+                            env={**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+                                 "PYTHONIOENCODING": "cp1252"}, capture_output=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stdout and "UnicodeEncodeError" not in result.stderr
+    assert not Path(os.environ["VIDEONOTE_DATA_DIR"]).exists()
 
 
 def test_asr_verification_consumes_lazy_inference_with_vad_disabled(monkeypatch, tmp_path):

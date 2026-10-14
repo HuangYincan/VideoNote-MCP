@@ -1099,3 +1099,8 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **setup 与 UI**：主菜单编号修复，共享彩色多选界面；可管理 Agent 注册启用状态与多选卸载，卸载保留程序、模型、笔记和登录配置。路径详情只展示一次，MLX 设备显示 Apple GPU；普通日志与 NO_COLOR 输出纯文本。
 - **验证**：本次发布范围的隔离全量 **1524 passed, 1 skipped, 27 subtests passed**；本地 Ruff F/I、shell / diff、打包与源码 / wheel 独立 stdio 已通过；真实临时 HOME 验证终端交互及 Codex 注册卸载。CI 增加 Windows / Linux / macOS 安装器矩阵。GPU 实际模型推理和其余客户端实机运行仍需对应环境验证。
 - **分发**：项目、Python 包、插件与锁文件统一版本 `0.2.5`；安装说明改为 v0.2.5 起可用。
+
+### v0.2.5 发布门禁：Windows 重定向输出编码（2026-10-14）
+
+- 远程 Windows 安装器矩阵发现中文帮助 / 预览在旧代码页重定向输出时触发 UnicodeEncodeError；入口在 Windows 将 stdout / stderr 配置为 UTF-8，保留 stdlib 轻量分发。
+- 原隔离子进程测试显式按 UTF-8 读取输出，并设置 USERPROFILE 隔离 Windows 用户目录；新增2项强制 cp1252 重定向的帮助 / 预览回归。最终隔离全量 **1526 passed, 1 skipped, 27 subtests passed**。

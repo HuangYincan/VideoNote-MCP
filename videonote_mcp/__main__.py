@@ -3,6 +3,13 @@ import sys
 
 
 def main() -> None:
+    # Windows consoles use Unicode, but redirected streams can default to a
+    # legacy code page. Keep Chinese CLI output and MCP stdio UTF-8 there too.
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is not None:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
     if len(sys.argv) > 1 and sys.argv[1] == "install":
         from videonote_mcp.installer import main as install
 
