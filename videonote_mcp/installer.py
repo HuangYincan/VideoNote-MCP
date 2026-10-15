@@ -77,7 +77,7 @@ def directories(root: Path | None) -> tuple[Path, Path]:
 
 
 def runtime_for(root: Path | None, engine: str, device: str | None, python: str,
-                *, data_config=None, settings_env=None) -> Runtime:
+                *, data_config=None, settings_env=None, pin_version: bool = True) -> Runtime:
     data, config = data_config or directories(root)
     extra = {"mlx-whisper": "mlx", "funasr": "funasr"}.get(engine)
     if root:
@@ -89,7 +89,8 @@ def runtime_for(root: Path | None, engine: str, device: str | None, python: str,
     else:
         command = find_runner("uvx")
         package = f"videonote[{extra}]" if extra else "videonote"
-        args = ["--python", python, f"{package}=={__version__}"]
+        requirement = f"{package}=={__version__}" if pin_version else f"{package}@latest"
+        args = ["--python", python, requirement]
     env = {"VIDEONOTE_DATA_DIR": str(data), "VIDEONOTE_CONFIG_DIR": str(config), "PYTHONUTF8": "1"}
     env.update(safe_env(settings_env or {}))
     # GUI clients do not necessarily inherit terminal paths. Carry the paths
@@ -275,6 +276,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--yes", action="store_true", help="非交互安装；必须显式指定 --client 或 --all")
     result.add_argument("--dry-run", action="store_true", help="只预览，不写配置、不下载依赖或模型")
     result.add_argument("--replace", action="store_true", help="更新已识别的 VideoNote 注册；保留其他设置")
+    result.add_argument("--pin-version", action="store_true",
+                        help="将发布包的 MCP 注册固定到当前安装器版本；默认重启 MCP 时获取最新版")
     result.add_argument("--asr", choices=("auto", "cpu", "cuda", "mlx", "keep", "skip"), help="硬件推荐或手动选择，已有配置默认保留")
     result.add_argument("--model", choices=SIZES, help="模型尺寸，默认保留现有值或 small")
     downloads = result.add_mutually_exclusive_group()
@@ -311,14 +314,21 @@ def run(options) -> int:
     engine, size, device, skip_asr = choose_asr(options, hardware, existing, installation, interactive, profile=profile)
     runtime = runtime_for(root, engine, device, options.python,
                           data_config=(data_dir, config_dir), settings_env=profile.environment)
+    registration = runtime_for(root, engine, device, options.python,
+                               data_config=(data_dir, config_dir), settings_env=profile.environment,
+                               pin_version=options.pin_version)
+    update_policy = "source" if root else "pinned" if options.pin_version else "latest"
     field("硬件", hardware.detail, indent="")
     field("转写", f"{engine} / {size} / {device_label(engine, device)}", indent="")
-    field("MCP 启动命令", json.dumps([runtime.command, *runtime.args], ensure_ascii=False), indent="")
+    policy_label = {"source": "源码工作区（跟随本地代码）", "pinned": f"固定版本 {__version__}",
+                    "latest": f"自动更新（下次启动 MCP 时检查最新版；本次验证 {__version__}）"}[update_policy]
+    field("更新策略", policy_label, indent="")
+    field("MCP 启动命令", json.dumps([registration.command, *registration.args], ensure_ascii=False), indent="")
     field("数据目录", data_dir, indent="")
     pending, failed = [], False
     for client in selected:
         try:
-            state = inspect(client, runtime.entry)
+            state = inspect(client, registration.entry)
             status = {"new": "新增注册", "same": "配置相同，跳过", "update": "已有 VideoNote，需更新启动环境",
                       "conflict": "同名其他服务，跳过", "plugin": "已有 VideoNote 插件，跳过"}[state.status]
             field(client.name, status, f" — {client.path}", indent="",
@@ -343,7 +353,7 @@ def run(options) -> int:
         return 0
     if not pending:
         return 1 if failed else 0
-    message("准备同一套运行环境（首次下载依赖可能需要几分钟）…", flush=True)
+    message(f"准备当前版本 {__version__} 的运行环境（首次下载依赖可能需要几分钟）…", flush=True)
     environment = runtime_action(runtime, "probe")
     if environment.get("version") != __version__:
         raise ConfigError("运行环境版本与安装器不一致；请重新安装同一版本")
@@ -373,7 +383,7 @@ def run(options) -> int:
             raise ConfigError(f"MCP 启动验证失败（{type(exc).__name__}）；尚未注册客户端。日志：{data_dir / 'logs'}") from exc
     for client, state in pending:
         try:
-            saved = register(client, state, runtime.entry)
+            saved = register(client, state, registration.entry)
             message(f"✓ {client.name}：" + ("已核对现有注册" if state.status == "same" else "已注册并回读核对"), "success")
             if saved:
                 field("原配置备份", saved, role="muted")
@@ -400,8 +410,8 @@ def run(options) -> int:
     if not failed:
         from app.utils.json_store import write_json_atomic
 
-        profile = {**installation, "version": __version__, "command": runtime.command, "args": runtime.args,
-                   "env": runtime.env, "engine": engine, "size": size}
+        profile = {**installation, "version": __version__, "command": registration.command, "args": registration.args,
+                   "env": registration.env, "engine": engine, "size": size, "update_policy": update_policy}
         if installation != profile:
             write_json_atomic(config_dir / "installation.json", profile)
         if interactive and confirm("打开设置向导，配置平台登录或其它选项？"):
