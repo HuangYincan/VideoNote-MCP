@@ -261,11 +261,15 @@ def test_runtime_and_client_share_dependencies_directories_and_device(home, monk
     assert installer.main(["--yes", "--client", "cursor", "--asr", "cpu", "--no-verify", "--download"]) == 0
     registered = json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]["videonote"]
     assert [operation for _, operation, _ in actions] == ["probe", "prepare"]
-    assert all(runtime.entry == registered for runtime, _, _ in actions)
+    assert registered["args"][-1] == "videonote@latest"
+    assert all(runtime.args[-1] == "videonote==" + __version__ for runtime, _, _ in actions)
+    assert all(runtime.command == registered["command"] and runtime.args[:-1] == registered["args"][:-1]
+               and runtime.env == registered["env"] for runtime, _, _ in actions)
     assert "--download" in actions[1][2]
     profile = json.loads((Path(os.environ["VIDEONOTE_CONFIG_DIR"]) / "installation.json").read_text())
     assert profile["env"] == registered["env"]
-    assert profile["args"][-1] == "videonote==" + __version__
+    assert profile["args"] == registered["args"]
+    assert profile["update_policy"] == "latest" and profile["version"] == __version__
 
 
 def test_mlx_optional_dependency_is_part_of_all_runtime_commands(home, monkeypatch):
@@ -279,6 +283,138 @@ def test_mlx_optional_dependency_is_part_of_all_runtime_commands(home, monkeypat
     monkeypatch.setattr(installer, "runtime_action", action)
     assert installer.main(["--yes", "--client", "cursor", "--asr", "auto", "--no-verify"]) == 0
     assert all(runtime.args[-1] == "videonote[mlx]==" + __version__ for runtime, _, _ in actions)
+    registered = json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]["videonote"]
+    assert registered["args"][-1] == "videonote[mlx]@latest"
+
+
+@pytest.mark.parametrize("engine,package", [
+    ("fast-whisper", "videonote"), ("groq", "videonote"),
+    ("mlx-whisper", "videonote[mlx]"), ("funasr", "videonote[funasr]"),
+])
+def test_update_policy_keeps_python_extras_and_environment(home, monkeypatch, engine, package):
+    monkeypatch.setattr(installer, "find_runner", lambda name: str(home / name))
+    common = dict(data_config=(home / "data", home / "config"),
+                  settings_env={"WHISPER_MODEL_SIZE": "medium"})
+    verified = installer.runtime_for(None, engine, "cpu", "3.13", **common)
+    registered = installer.runtime_for(None, engine, "cpu", "3.13", pin_version=False, **common)
+    assert verified.args == ["--python", "3.13", f"{package}=={__version__}"]
+    assert registered.args == ["--python", "3.13", f"{package}@latest"]
+    assert verified.command == registered.command == str(home / "uvx")
+    assert verified.env == registered.env
+
+
+def test_pin_version_registers_exact_verified_runtime(home, monkeypatch):
+    actions = fake_install(monkeypatch, home)
+    assert installer.main(["--yes", "--client", "cursor", "--asr", "cpu", "--python", "3.13",
+                           "--pin-version", "--no-verify"]) == 0
+    registered = json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]["videonote"]
+    assert registered["args"] == ["--python", "3.13", "videonote==" + __version__]
+    assert all(runtime.entry == registered for runtime, _, _ in actions)
+    profile = json.loads((Path(os.environ["VIDEONOTE_CONFIG_DIR"]) / "installation.json").read_text())
+    assert profile["update_policy"] == "pinned" and profile["args"] == registered["args"]
+
+
+def test_latest_registration_still_requires_current_version_handshake(home, monkeypatch):
+    fake_install(monkeypatch, home)
+    verified = []
+
+    async def handshake(runtime):
+        verified.append(runtime)
+
+    monkeypatch.setattr(installer, "verify_mcp", handshake)
+    assert installer.main(["--yes", "--client", "cursor", "--asr", "cpu"]) == 0
+    assert verified[0].args[-1] == "videonote==" + __version__
+    registered = json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]["videonote"]
+    assert registered["args"][-1] == "videonote@latest"
+
+
+def test_version_mismatch_does_not_register_latest(home, monkeypatch):
+    fake_install(monkeypatch, home)
+    monkeypatch.setattr(installer, "runtime_action", lambda *_: {"version": "different"})
+    assert installer.main(["--yes", "--client", "cursor", "--asr", "cpu", "--no-verify"]) == 1
+    assert not (home / ".cursor" / "mcp.json").exists()
+
+
+def test_existing_pin_migrates_to_latest_only_with_replace(home, monkeypatch):
+    fake_install(monkeypatch, home)
+    path = home / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    unrelated = {"command": "other-mcp", "args": ["serve"]}
+    original = {"mcpServers": {"lecture-notes": {"command": str(home / "uvx"),
+                "args": ["--python", "3.12", "videonote==0.2.5"], "env": {"CUSTOM_OPT": "keep"},
+                "timeout": 700, "disabled": True}, "other": unrelated}, "user_setting": "keep"}
+    path.write_text(json.dumps(original), encoding="utf-8")
+    before = path.read_bytes()
+    arguments = ["--yes", "--client", "cursor", "--asr", "cpu", "--no-verify"]
+    assert installer.main(arguments) == 1
+    assert path.read_bytes() == before
+    assert installer.main([*arguments, "--replace"]) == 0
+    document = json.loads(path.read_text())
+    assert document["mcpServers"]["lecture-notes"]["args"][-1] == "videonote@latest"
+    assert document["mcpServers"]["lecture-notes"]["env"]["CUSTOM_OPT"] == "keep"
+    assert document["mcpServers"]["lecture-notes"]["timeout"] == 700
+    assert document["mcpServers"]["lecture-notes"]["disabled"] is True
+    assert document["mcpServers"]["other"] == unrelated and document["user_setting"] == "keep"
+    assert any(backup.read_bytes() == before for backup in path.parent.glob("*.bak"))
+
+
+def test_latest_registration_survives_new_installer_version_without_rewrite(home, monkeypatch):
+    fake_install(monkeypatch, home)
+
+    def action(runtime, operation, arguments=None):
+        if operation == "probe":
+            assert runtime.args[-1] == "videonote==" + installer.__version__
+            return {"version": installer.__version__, "cuda": False, "mlx": False}
+        return {"model_ready": False, "asr_verified": False}
+
+    monkeypatch.setattr(installer, "runtime_action", action)
+    arguments = ["--yes", "--client", "cursor", "--asr", "cpu", "--no-verify"]
+    assert installer.main(arguments) == 0
+    path = home / ".cursor" / "mcp.json"
+    before = path.read_bytes()
+    monkeypatch.setattr(installer, "__version__", "9.9.9")
+    assert installer.main(arguments) == 0  # No --replace needed: the registration is still @latest.
+    assert path.read_bytes() == before
+
+
+def test_switching_from_latest_to_pin_requires_replace(home, monkeypatch):
+    fake_install(monkeypatch, home)
+    arguments = ["--yes", "--client", "cursor", "--asr", "cpu", "--no-verify"]
+    assert installer.main(arguments) == 0
+    path = home / ".cursor" / "mcp.json"
+    before = path.read_bytes()
+    assert installer.main([*arguments, "--pin-version"]) == 1
+    assert path.read_bytes() == before
+    assert installer.main([*arguments, "--pin-version", "--replace"]) == 0
+    assert json.loads(path.read_text())["mcpServers"]["videonote"]["args"][-1] == "videonote==" + __version__
+
+
+def test_source_install_keeps_checkout_command_for_both_policies(home, monkeypatch):
+    actions = fake_install(monkeypatch, home)
+    source = home / "source checkout"
+    source.mkdir()
+    monkeypatch.setattr(installer, "source_root", lambda: source)
+    monkeypatch.setattr(installer, "find_runner", lambda name: str(home / name))
+    assert installer.main(["--yes", "--client", "cursor", "--asr", "cpu", "--no-verify"]) == 0
+    registered = json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]["videonote"]
+    assert registered["args"] == ["--directory", str(source), "run", "--frozen", "--python", "3.12", "videonote"]
+    assert all(runtime.entry == registered for runtime, _, _ in actions)
+    assert installer.runtime_for(source, "fast-whisper", "cpu", "3.12", pin_version=False).args == registered["args"]
+    profile = json.loads((Path(os.environ["VIDEONOTE_CONFIG_DIR"]) / "installation.json").read_text())
+    assert profile["update_policy"] == "source"
+
+
+def test_preview_explains_policy_without_side_effects(home, monkeypatch, capsys):
+    fake_install(monkeypatch, home)
+    arguments = ["--client", "cursor", "--dry-run", "--asr", "cpu"]
+    assert installer.main(arguments) == 0
+    output = capsys.readouterr().out
+    assert "自动更新" in output and "videonote@latest" in output
+    assert installer.main([*arguments, "--pin-version"]) == 0
+    output = capsys.readouterr().out
+    assert "固定版本" in output and "videonote==" + __version__ in output
+    assert not (home / ".cursor").exists()
+    assert not Path(os.environ["VIDEONOTE_CONFIG_DIR"]).exists()
 
 
 def test_custom_model_directory_is_shared_with_gui_runtime(home, monkeypatch):

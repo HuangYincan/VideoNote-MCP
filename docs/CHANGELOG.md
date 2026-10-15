@@ -1120,3 +1120,11 @@ v0.1.1 → v0.1.2 的主要变更（详见下方各「维护」节点块；稳�
 - **语义任务名**：Agent 写完笔记后根据内容命名，通过 task(action="rename", title=...) 回写；列表、详情与状态查询使用统一名称，任务 ID、原始来源及产物保持稳定。
 - **分发**：项目、Python 包、插件与锁文件统一为 0.2.6。这批功能此前未包含在 v0.2.5 中，旧版本用户需升级并重启客户端或重连 MCP。
 - **验证范围**：完整回归 1565 passed, 1 skipped, 27 subtests passed；功能交付 PR 的 Python 3.11 / 3.12 / 3.13、Windows / Linux / macOS 安装器与汇总 CI 通过；源码及构建 wheel 的独立 stdio 验证任务命名协议与资源。未重新运行真实平台登录、媒体下载或 GPU 模型推理。
+
+## install 默认随新版更新（2026-10-15，未发布）
+
+- 发布包的 MCP 注册默认使用 `videonote@latest`（保留 MLX / FunASR extras、Python 与运行环境），在后续启动时检查新版；`--pin-version` 可选择当前精确版本，源码工作区仍使用本地 `uv run --frozen`。
+- 环境准备、ASR 检查、MCP 握手及安装后 setup 固定当前安装器版本；最终注册和 installation.json 保存所选更新策略，并区分本次验证版本与后续实际运行版本。预览展示最终命令和策略，保持无写入、无下载。
+- 旧固定注册需使用新版 install 确认更新一次；迁移保留别名、启用状态、自定义 env、超时及其它服务，沿用备份 / 原子替换 / 回读保护。`@latest` 注册在安装器版本变化后保持稳定，无需再次替换启动命令。
+- 本批变更未包含在已发布的 v0.2.6 中。
+- 验证：新增12项更新策略回归，完整回归 **1577 passed, 1 skipped, 27 subtests passed**；Ruff F/I、diff / shell、构建及源码 / wheel 独立 stdio 通过。真实 uvx 用本地无依赖 wheel 离线验证精确版本、`@latest` 及 MLX extras 的选择；解包 wheel 在临时 HOME 中验证默认 / 固定策略的安装预览无配置写入。未修改实际 Agent 配置或重新执行媒体下载 / ASR。
