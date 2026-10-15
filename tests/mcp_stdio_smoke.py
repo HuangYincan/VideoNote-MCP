@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import zipfile
@@ -45,6 +46,17 @@ async def smoke_artifacts(session: ClientSession, data: Path):
     transcript = {"language": "zh", "full_text": "离线共享转写",
                   "segments": [{"start": 0, "end": 1, "text": "离线共享转写"}]}
     (task_dir / "result.json").write_text(json.dumps({"transcript": transcript}), encoding="utf-8")
+    with sqlite3.connect(data / "video_note.db") as db:
+        db.execute("INSERT INTO video_tasks (video_id, platform, task_id, title, status, note_dir) VALUES (?, ?, ?, ?, ?, ?)",
+                   (task_id, "local", task_id, "旧任务名", "SUCCESS", str(task_dir)))
+    renamed = payload(await session.call_tool("task", {
+        "task_id": task_id, "action": "rename", "title": "离线转写素材整理",
+    }))
+    assert renamed == {"ok": True, "task_id": task_id, "title": "离线转写素材整理"}
+    status = payload(await session.call_tool("task", {"task_id": task_id}))
+    assert status["result"]["title"] == renamed["title"]
+    listed = payload(await session.call_tool("list_tasks"))
+    assert next(task for task in listed if task["task_id"] == task_id)["title"] == renamed["title"]
     read = payload(await session.call_tool("task", {"task_id": task_id, "action": "transcript"}))
     assert read["ok"] and read["full_text"] == transcript["full_text"]
     resource = await session.read_resource(f"videonote://task/{task_id}/transcript")
@@ -78,6 +90,9 @@ async def smoke(package_root: Path, data: Path):
             assert sorted(t.name for t in tools.tools) == EXPECTED
             process = next(t for t in tools.tools if t.name == "process_media")
             assert "template" in process.inputSchema["properties"]["action"]["enum"]
+            task_tool = next(t for t in tools.tools if t.name == "task")
+            assert "rename" in task_tool.inputSchema["properties"]["action"]["enum"]
+            assert "title" in task_tool.inputSchema["properties"]
             health = payload(await session.call_tool("health_check"))
             config = payload(await session.call_tool("get_config"))
             assert health["project"]["repository"] == config["project"]["repository"] == REPOSITORY

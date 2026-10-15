@@ -925,7 +925,7 @@ def _wizard_data(inq) -> None:
             pick = inq.select(
                 message="选择操作（← 返回）",
                 choices=[
-                    {"name": "查看任务列表（task_id | 标题 | 状态）", "value": "list"},
+                    {"name": "浏览任务（查看笔记、来源与素材）", "value": "list"},
                     {"name": "清理单个任务", "value": "cleanup-one"},
                     {"name": "全局清理（清空所有任务产物）", "value": "cleanup-all"},
                     {"name": "← 返回主菜单", "value": "back"},
@@ -945,21 +945,191 @@ def _wizard_data(inq) -> None:
 
 
 def _wizard_data_list(inq) -> None:
-    """列出全局索引里的任务（带语义标题/状态）。"""
+    """Browse tasks and return to the same list after viewing a task."""
     from app.db.video_task_dao import list_tasks as _list
+    from app.utils.task_manifest import get_note_dir
+    from videonote_mcp.task_details import status_label
 
-    tasks = _list()
-    if not tasks:
-        print(f"{_DIM}暂无任务记录（尚未生成过笔记/素材）{_RESET}", file=sys.stdout)
-        _press_any_key()
+    try:
+        while True:
+            tasks = _list()
+            _show_header("任务列表 · 回车查看详情")
+            if not tasks:
+                print(f"{_DIM}暂无任务记录（尚未生成过笔记/素材）{_RESET}", file=sys.stdout)
+                _press_any_key()
+                return
+            choices = []
+            for task in tasks:
+                tid = task["task_id"]
+                try:
+                    state = read_task_status(get_note_dir() / validate_task_id(tid))
+                except ValueError:
+                    state = "UNKNOWN"
+                if state == "UNKNOWN":
+                    state = task.get("status") or "UNKNOWN"
+                title = (task.get("title") or "（无标题）")[:50]
+                created = (task.get("created_at") or "")[:16].replace("T", " ")
+                choices.append({"name": f"[{status_label(state)}] {title}  · {created}  · {tid[:8]}", "value": tid})
+            choices.extend([
+                {"name": "↻ 刷新任务列表", "value": "refresh"},
+                {"name": "← 返回任务管理", "value": "back"},
+            ])
+            print(f"{_DIM}共 {len(tasks)} 个任务 · ↑↓ 选择，回车查看笔记、原始来源和素材{_RESET}", file=sys.stdout)
+            pick = _task_select(inq, "选择任务（← 返回）", choices)
+            if pick == "back":
+                return
+            if pick == "refresh":
+                continue
+            task = next((task for task in tasks if task["task_id"] == pick), None)
+            if task:
+                try:
+                    _wizard_task_detail(inq, task)
+                except ValueError as exc:
+                    print(f"{_YELLOW}{exc}{_RESET}", file=sys.stdout)
+                    _press_any_key()
+    except KeyboardInterrupt:
         return
-    _show_header("任务列表")
-    for t in tasks:
-        created = (t.get("created_at") or "")[:16]
-        title = (t.get("title") or "（无标题）")[:50]
-        print(f"  {t['task_id'][:8]}  {t.get('status','')[:9]:9}  {created}  {title}", file=sys.stdout)
-    print(f"{_DIM}共 {len(tasks)} 个任务（task_id 显示前 8 位）{_RESET}", file=sys.stdout)
-    _press_any_key()
+
+
+def _task_select(inq, message: str, choices: list[dict]):
+    """Task navigation also works in setup's plain-text fallback."""
+    if inq is not None:
+        return inq.select(message=message, choices=choices, keybindings=_KB).execute()
+    for index, choice in enumerate(choices, 1):
+        print(f"  {index}) {choice['name']}", file=sys.stdout)
+    while True:
+        value = _ask(f"{message}（序号，0/q 返回）", default="0")
+        if value.lower() in ("0", "q"):
+            return "back"
+        if value.isdigit() and 1 <= int(value) <= len(choices):
+            return choices[int(value) - 1]["value"]
+        print("请输入列表中的序号。", file=sys.stdout)
+
+
+def _task_preview(inq, title: str, content: str) -> None:
+    """Page long notes/transcripts without launching an editor or shell pager."""
+    import shutil
+    import textwrap
+
+    width, height = shutil.get_terminal_size((90, 30))
+    lines = [wrapped for line in content.splitlines()
+             for wrapped in (textwrap.wrap(line, width=max(20, width - 4), replace_whitespace=False,
+                                           break_long_words=False, break_on_hyphens=False) or [""])]
+    page_size = max(5, height - 12)
+    pages = [lines[start:start + page_size] for start in range(0, len(lines), page_size)] or [["（内容为空）"]]
+    index = 0
+    try:
+        while True:
+            _show_header(f"{title} · {index + 1}/{len(pages)} 页")
+            print("\n".join(pages[index]), file=sys.stdout)
+            choices = []
+            if index + 1 < len(pages):
+                choices.append({"name": "下一页 →", "value": "next"})
+            if index:
+                choices.append({"name": "← 上一页", "value": "prev"})
+            choices.append({"name": "← 返回任务详情", "value": "back"})
+            pick = _task_select(inq, "阅读操作（← 返回详情）", choices)
+            if pick == "back":
+                return
+            index += 1 if pick == "next" else -1
+    except KeyboardInterrupt:
+        return
+
+
+def _wizard_task_detail(inq, task: dict) -> None:
+    from app.db.video_task_dao import list_tasks as _list
+    from app.utils.task_manifest import get_note_dir
+    from videonote_mcp.task_details import (
+        KIND_LABELS,
+        read_task_details,
+        status_label,
+        transcript_text,
+    )
+
+    try:
+        while True:
+            detail = read_task_details(task, get_note_dir())
+            _show_header("任务详情")
+            print(f"{_CYAN}{detail['title']}{_RESET}", file=sys.stdout)
+            print(f"  任务 ID：{detail['task_id']}", file=sys.stdout)
+            print(f"  任务类型：{KIND_LABELS.get(detail['kind'], '旧任务（类型未记录）')}", file=sys.stdout)
+            state = detail["status"]
+            suffix = "（索引记录，磁盘状态不可用）" if detail["status_from_index"] else ""
+            print(f"  状态：{status_label(state)} [{state}]{suffix}", file=sys.stdout)
+            if detail["message"]:
+                print(f"  处理信息：{detail['message']}", file=sys.stdout)
+            print(f"  创建时间：{detail['created_at'].replace('T', ' ') or '未记录'}", file=sys.stdout)
+            print(f"  来源平台：{detail['platform'] or '未记录'}", file=sys.stdout)
+            print(f"  原始来源：{detail['source'] or '旧任务未记录来源；可查看原始音视频文件'}", file=sys.stdout)
+            if detail["source_hint"]:
+                print(f"  {detail['source_hint']}", file=sys.stdout)
+            if detail["video_id"]:
+                print(f"  视频 ID：{detail['video_id']}", file=sys.stdout)
+            if isinstance(detail["duration"], (int, float)) and detail["duration"] >= 0:
+                print(f"  原始时长：{detail['duration']:g} 秒", file=sys.stdout)
+            print(f"  任务目录：{detail['task_dir']}", file=sys.stdout)
+            print(f"\n{_YELLOW}生成结果{_RESET}", file=sys.stdout)
+            if detail["markdown"]:
+                for path in detail["note_paths"]:
+                    print(f"  笔记文件：{path}", file=sys.stdout)
+                if not detail["note_paths"]:
+                    print("  笔记文件已缺失，仍可预览结果中保存的内容。", file=sys.stdout)
+                snippet = "\n".join(line[:110] for line in detail["markdown"].splitlines()[:6])
+                print(f"{_DIM}{snippet}{_RESET}", file=sys.stdout)
+            elif detail["kind"] == "material":
+                print("  此任务准备转写与素材，供 Agent 撰写笔记；任务本身不生成最终笔记。", file=sys.stdout)
+            elif state in ("FAILED", "CANCELLED"):
+                print("  未生成可用笔记；下方可查看已保留的转写与素材。", file=sys.stdout)
+            elif state in ("PENDING", "PARSING", "DOWNLOADING", "TRANSCRIBING", "SUMMARIZING", "FORMATTING", "SAVING"):
+                print("  暂无可用笔记，处理期间可刷新查看新产物。", file=sys.stdout)
+            else:
+                print("  暂无笔记文件或内容，可能已清理；可查看其余产物。", file=sys.stdout)
+            transcript = detail["transcript"]
+            if detail["has_transcript"]:
+                print(f"  转写：{len(transcript.get('segments') or [])} 个片段"
+                      f" · 语言 {transcript.get('language') or '未记录'}"
+                      + (" · 内容已截断" if transcript.get("truncated") else ""), file=sys.stdout)
+            else:
+                print("  转写：尚未生成或已清理", file=sys.stdout)
+            print(f"  素材与产物：{len(detail['files'])} 个文件（含音视频、帧图、字幕等）", file=sys.stdout)
+            for warning in detail["warnings"]:
+                print(f"{_YELLOW}⚠ {warning}{_RESET}", file=sys.stdout)
+            choices = []
+            if detail["markdown"]:
+                choices.append({"name": "阅读生成的笔记", "value": "note"})
+            if detail["has_transcript"]:
+                choices.append({"name": "查看原始转写（时间轴）", "value": "transcript"})
+            if detail["comments"]:
+                choices.append({"name": "查看评论与弹幕", "value": "comments"})
+            choices.extend([
+                {"name": "查看原始音视频与产物文件", "value": "files"},
+                {"name": "↻ 刷新任务详情", "value": "refresh"},
+                {"name": "← 返回任务列表", "value": "back"},
+            ])
+            pick = _task_select(inq, "查看内容（← 返回列表）", choices)
+            if pick == "back":
+                return
+            if pick == "refresh":
+                task = next((item for item in _list() if item["task_id"] == task["task_id"]), task)
+            elif pick in ("note", "transcript", "comments"):
+                content = {"note": detail["markdown"], "transcript": transcript_text(transcript), "comments": detail["comments"]}[pick]
+                _task_preview(inq, {"note": "笔记预览", "transcript": "原始转写", "comments": "评论与弹幕"}[pick], content)
+            elif pick == "files":
+                content = [f"原始来源：{detail['source'] or '未记录'}"]
+                for label, key in (("原始音频", "audio_path"), ("原始视频", "video_path")):
+                    value = detail[key]
+                    if value:
+                        path = coerce_local_path(value)
+                        content.append(f"{label}：{path}" + ("" if path.is_file() else "（文件缺失或已清理）"))
+                    else:
+                        content.append(f"{label}：未下载或未记录（使用平台字幕时可能无需下载）")
+                content.append("\n文件清单（raw/ 为原始媒体，gen/ 为笔记、转写、帧图及导出）：")
+                content.extend(str(path) for path in detail["files"])
+                if not detail["files"]:
+                    content.append("暂无可用文件，可能尚未生成或已清理。")
+                _task_preview(inq, "原始数据与产物文件", "\n".join(content))
+    except KeyboardInterrupt:
+        return
 
 
 _TERMINAL_STATUSES = ("SUCCESS", "FAILED", "CANCELLED")
@@ -1389,6 +1559,8 @@ def _setup_cli_fallback() -> None:
         if not tasks:
             print("   暂无任务记录（尚未生成过笔记/素材）", file=sys.stdout)
         else:
+            _wizard_data_list(None)
+            tasks = _list_tasks()
             print(f"   共 {len(tasks)} 个任务：", file=sys.stdout)
             for i, t in enumerate(tasks, 1):
                 title = (t.get("title") or "（无标题）")[:40]

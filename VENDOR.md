@@ -72,6 +72,7 @@
 - `app/services/note.py`：取消事件贯穿字幕获取、下载和转写；`TaskCancelledError` 不被 fallback 吞掉；ffmpeg 使用同目录临时文件并在成功后原子替换；`publish_success` 只在结果与 manifest 持久化完成后发布成功；metadata 索引写入失败向上抛出。
 - `app/db/engine.py` / `app/db/init_db.py` / `app/db/models/models.py`：每连接开启 SQLite 外键；旧 `models.provider_id` schema 迁移为字符串外键；为历史孤儿 provider 建立 disabled 占位记录；模型插入要求 provider 存在；补充任务索引。
 - `app/db/model_dao.py` / `app/db/provider_dao.py` / `app/db/video_task_dao.py`：写失败 rollback 后重新抛出；provider 删除显式清理关联 model；provider/model 一致性和任务索引错误不再静默吞掉。
+- `app/db/video_task_dao.py`：按 task_id 查询 / 更新语义任务名；更新只修改已存在索引行的 title，不新建任务或改变状态、来源及产物。供 Agent 完成笔记后的 `task(action="rename")` 使用。
 - `app/utils/task_manifest.py`：strict manifest 写入后回读校验；当前清理仍以 `resolve()` 做数据根边界检查，仅适用于受信任的本机数据目录。
 - `app/utils/video_reader.py`：ffprobe 增加 120 秒超时，并拒绝 NaN、Inf 和负数时长。
 - `videonote_mcp/server.py`：自有任务 admission、Future/Event 登记、状态发布和提交失败回滚语义；普通任务受 worker admission 限制，batch 单次最多 50 条并由线程池排队。成功顺序固定为 `result.json → manifest → SUCCESS`。

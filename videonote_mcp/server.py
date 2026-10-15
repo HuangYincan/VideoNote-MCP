@@ -128,6 +128,7 @@ from app.utils.task_manifest import (
 )
 from app.utils.url_safety import (
     assert_public_http_url,
+    public_replay_url,
     sanitize_error_text,
     sanitize_error_url,
     sanitize_url,
@@ -725,6 +726,15 @@ def _submit_registered_task(task_id: str, cancel_event: threading.Event, **param
             if active >= _MAX_WORKERS:
                 raise _concurrency_error(active)
 
+        # Persist the source before the worker starts, so queued/failed tasks remain understandable.
+        source_input = str(params.get("video_url") or "")
+        if source_input.startswith(("http://", "https://")):
+            source_input = public_replay_url(source_input)
+        _atomic_write_json(NOTE_OUTPUT_DIR / task_id / "source.json", {
+            "kind": "material" if params.get("material_only") else "note",
+            "platform": params.get("platform") or "generic",
+            "input": source_input,
+        })
         _task_events[task_id] = cancel_event
         try:
             future = _pool.submit(_run_note_task, task_id, cancel_event, **params)
@@ -1128,6 +1138,8 @@ def prepare_note_material(
     之后用 task(task_id) 轮询；SUCCESS 时 result 含
     {kind: material, title, transcript, frames, comments_danmaku, video_path, audio_path}。
     transcript 优先来自平台官方字幕（YouTube/B 站人工+自动字幕、小宇宙官方文稿），无字幕才走转写引擎。
+    Agent 写完笔记后必须根据内容拟定简短具体的任务名（优先采用笔记标题），
+    调用 task(task_id, action="rename", title="语义任务名") 回写名称，再向用户交付。
     这是默认路径（当前对话 Agent 写笔记）。配置 LLM 后备请用 generate_note。
     """
     if platform is None:
@@ -1310,6 +1322,21 @@ def _task_status(task_id: str) -> str:
         "task_id": task_id,
         "result": result,
     }
+    if status == "SUCCESS" and isinstance(result, dict):
+        # The index owns the display name; renaming never rewrites raw results or source metadata.
+        from app.db.video_task_dao import get_task_title
+
+        try:
+            title = get_task_title(task_id)
+            if title:
+                result["title"] = title
+        except Exception as exc:
+            logger.warning("读取任务名称失败 task_id=%s: %s", task_id, sanitize_error_text(exc))
+        if result.get("kind") == "material":
+            payload["next_steps"] = [
+                "读取素材并撰写笔记；写完后根据内容拟定简短具体的语义任务名（优先采用笔记标题），"
+                f"调用 task(task_id='{task_id}', action='rename', title='语义任务名') 回写名称，再向用户交付。"
+            ]
     if result_error:
         payload["result_error"] = result_error
     if result_pending:
@@ -1552,24 +1579,55 @@ def _task_cancel(task_id: str) -> str:
     )
 
 
+def _task_rename(task_id: str, title: str) -> str:
+    """Update the index only after the worker has published SUCCESS."""
+    from app.db.video_task_dao import update_task_title
+
+    if not isinstance(title, str):
+        raise ValueError("任务名须为文本")
+    title = title.strip()
+    if not title or len(title) > 120 or any(ord(char) < 32 or ord(char) == 127 for char in title):
+        raise ValueError("任务名须为 1–120 个字符的单行文本，不能包含控制字符")
+    status = _read_task_status(task_id)
+    if status != "SUCCESS":
+        return json.dumps({
+            "ok": False, "task_id": task_id, "status": status,
+            "message": "仅支持为成功完成的任务命名；请等待任务成功后再回写名称。",
+        }, ensure_ascii=False)
+    try:
+        updated = update_task_title(task_id, title)
+    except Exception as exc:
+        raise ValueError(f"保存任务名失败: {sanitize_error_text(exc)}") from exc
+    if not updated:
+        return json.dumps({
+            "ok": False, "task_id": task_id, "status": "NOT_FOUND",
+            "message": "任务索引不存在或已清理，名称未保存。",
+        }, ensure_ascii=False)
+    return json.dumps({"ok": True, "task_id": task_id, "title": title}, ensure_ascii=False)
+
+
 @mcp.tool()
 def task(
     task_id: str,
-    action: Literal["status", "transcript", "cancel"] = "status",
+    action: Literal["status", "transcript", "cancel", "rename"] = "status",
     segment_range: str = "",
+    title: str = "",
 ) -> str:
-    """查询/取消单个任务（任务控制面，合并自 get_task_status / get_task_transcript / cancel_note，#138）。
+    """查询、取消或命名单个任务。
 
     - action="status"（默认）：轻量状态快照——SUCCESS 时 result 含 markdown / note_dir / title。
       默认不含完整转写（数万 token 会撑爆 context）；需转写走 action="transcript"；
     - action="transcript"：按需分段读取已完成任务的转写（segment_range 空=前 50 段、
       "all"=全文、"50-"续取，meta.truncated 提示续取）；任务未成功/无转写时 ok:false；
     - action="cancel"：协作式取消进行中/排队任务（在下一阶段边界生效，LLM 总结每 chunk 检查）。
+    - action="rename"：为 SUCCESS 任务保存语义名称，title 必填（1–120 个字符的单行文本）。
+      Agent 写完笔记后必须根据内容拟名（优先采用笔记标题），回写后再交付。
+      仅更新展示名称，task_id、目录、原始来源及生成内容保持稳定；可重复调用修改名称。
 
-    segment_range 仅 transcript 分支生效，其余分支忽略。返回结构随 action 不同：
+    segment_range 仅 transcript 分支生效，title 仅 rename 分支生效。返回结构随 action 不同：
     status → {status, stage, elapsed_secs, message, task_id, result}；
     transcript → {task_id, ok, language, segments, full_text, meta}；
-    cancel → {ok, task_id, status, message?}。
+    cancel → {ok, task_id, status, message?}；rename → {ok, task_id, title} 或 {ok:false, task_id, status, message}。
     """
     task_id = _validate_task_id(task_id)
     if action == "status":
@@ -1578,8 +1636,10 @@ def task(
         return _task_transcript(task_id, segment_range=segment_range)
     if action == "cancel":
         return _task_cancel(task_id)
+    if action == "rename":
+        return _task_rename(task_id, title)
     # schema Literal 已约束 action；直接调用/老客户端仍可能传非法值（#138 入口显式报错）
-    raise ValueError(f"action 必须是 status / transcript / cancel，收到: {action!r}")
+    raise ValueError(f"action 必须是 status / transcript / cancel / rename，收到: {action!r}")
 
 
 @mcp.tool()
