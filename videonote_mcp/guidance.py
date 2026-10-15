@@ -8,6 +8,9 @@ MANUAL_PATH = "docs/04-使用手册.md"
 SERVER_INSTRUCTIONS = f"""VideoNote-MCP：视频转写与笔记，官方仓库 {REPOSITORY_URL}。无需安装 Skills。
 首次使用或异常时先 health_check、get_config，按 checks[].next_steps 处理；默认当前 Agent 写笔记，
 不因未配置 LLM key 阻塞：inspect_video → prepare_note_material → task 轮询 → 读取转写/帧写笔记。
+写完笔记后必须根据内容拟定简短、具体的语义任务名（优先采用笔记标题，如「Transformer 自注意力机制讲解」），
+调用 task(task_id, action='rename', title='语义任务名') 回写名称后再交付。名称需描述主题，避免只用 ID、平台名或「视频笔记」；
+task_id 是稳定标识，名称存入 title 并显示在任务列表与详情；不额外调用后备 LLM 起名。
 初始化在用户终端运行同版本 videonote setup；登录用 videonote login <平台>。
 CLI 与 MCP 须同版本、同 VIDEONOTE_DATA_DIR / VIDEONOTE_CONFIG_DIR。
 API Key、Cookie、短信/刷脸验证只在用户终端或官方页面处理，不经 Agent 对话。
