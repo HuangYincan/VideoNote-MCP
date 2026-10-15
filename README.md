@@ -32,86 +32,15 @@ VideoNote-Mcp 把「视频链接 → 多格式笔记」整条流水线打包成 
 
 ## 快速开始
 
-**自动安装：检测客户端、推荐转写方案，再注册 MCP。**
-
-Windows / Linux / macOS 均使用 Python 安装向导。先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
+Windows / Linux / macOS：准备 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和 [FFmpeg](docs/04-使用手册.md#前提)，运行安装向导：
 
 ```bash
-# Windows / Linux / macOS（v0.2.5 起）
 uvx videonote@latest install
-
-# 当前源码（先克隆仓库并进入目录）
-uv run --frozen videonote install
 ```
 
-> `install` 从 v0.2.5 起提供。如果旧安装提示没有此命令，请更新到 v0.2.5 或更高版本，或使用上方的源码入口。
+按提示选择客户端和转写方案，安装后重启客户端或重连 MCP，即可发送视频链接生成笔记。默认流程无需 LLM API Key。
 
-向导支持 Claude Code、Codex、Claude Desktop、Cursor、OpenCode、Pi、Grok Build、Gemini CLI、Kiro、VS Code、GitHub Copilot CLI。默认显示通过 CLI / 配置检测到的候选，其他平台可从“手动选择其他平台”进入；用方向键移动、空格多选、回车确认，左键取消。Pi 需要支持原生 MCP 的版本，安装前检查 CLI 能力。安装与 setup 统一使用彩色终端主题：当前选项高亮，字段、状态和说明分色；支持 `NO_COLOR`，重定向输出使用纯文本。多套历史配置的路径只展示一次，选择菜单使用短摘要，MLX 设备显示为 Apple GPU。转写方案和模型尺寸也用菜单选择。Apple Silicon 推荐 MLX；NVIDIA GPU 与匹配运行库就绪时推荐 CUDA；其余推荐 CPU。已有转写设置默认保留；选择前列出引擎、模型、设备、预处理、说话人分离及配置来源和路径。向导识别旧 Agent 注册与历史配置目录，多套配置时先选择；“保留”不再重新询问模型尺寸。可选安装依赖和下载模型。配置和 MCP 使用相同运行环境。
-
-安装后可在 `videonote setup` 的 **① Agent 客户端 → 启用的平台（多选）** 中调整：例如取消 Claude Code、只勾选 Codex，确认后即可禁用 Claude Code 中的 VideoNote。原注册可恢复，其他 MCP 和 Agent 设置会保留；也可在此安装 / 更新平台。**卸载 VideoNote 注册（多选）**会删除所选平台的用户级注册及禁用恢复存档，保留程序、模型和笔记，改动前创建备份。启用 / 禁用显示的是配置状态，已有会话需重启或重连；插件、项目配置及兼容导入请在 Agent 中管理。
-
-```bash
-# 以下示例使用当前源码；也可将前缀换成 uvx videonote@latest
-uv run --frozen videonote install --dry-run
-uv run --frozen videonote install --client codex --client cursor
-uv run --frozen videonote install --yes --client codex --asr auto --download
-```
-
-`--dry-run` 不写配置、不下载依赖或模型；非交互安装必须显式指定 `--yes` 和目标。已有不同启动配置需要确认或 `--replace`；旧插件和同名其它服务不会自动覆盖。FFmpeg 仍需单独准备。
-
-**手动注册（已发布版本可用）：**
-
-```bash
-# 1) 注册独立 MCP（PyPI 已发布版本）
-claude mcp add --scope user videonote -- uvx videonote@latest
-
-# 2) 在终端配置转写 / 平台登录；默认笔记流程无需 LLM Key
-uvx videonote@latest setup
-
-# 3) 重启或重连 MCP，然后发送视频链接
-```
-
-支持 JSON 的 MCP 客户端也可使用：
-
-```json
-{
-  "mcpServers": {
-    "videonote": {
-      "type": "stdio",
-      "command": "uvx",
-      "args": ["videonote@latest"]
-    }
-  }
-}
-```
-
-> [!NOTE]
-> 默认的 `uvx videonote@latest` 只含基础依赖（fast-whisper 转写 + 平台官方字幕），**不含可选引擎**。
-> macOS 想用 Apple GPU 的 `mlx-whisper` 时，注册 MCP 与终端 setup **都要带上它**（`--with` 必须写在工具名**前**）：
->
-> ```bash
-> claude mcp add --scope user videonote -- uvx --with mlx-whisper videonote@latest
-> uvx --with mlx-whisper videonote@latest setup
-> ```
->
-> JSON 客户端则在 `args` 开头插入 `"--with", "mlx-whisper"`：
->
-> ```json
-> {
->   "mcpServers": {
->     "videonote": {
->       "type": "stdio",
->       "command": "uvx",
->       "args": ["--with", "mlx-whisper", "videonote@latest"]
->     }
->   }
-> }
-> ```
->
-> `funasr`（中文最优）同理，换成 `--with funasr --with torch`。
-
-> [!TIP]
-> 自动安装、手动注册、配置细节、更新与安全见 [docs/04-使用手册.md](docs/04-使用手册.md)。
+[完整安装指南](docs/04-使用手册.md#安装) · [配置与平台登录](docs/04-使用手册.md#配置装完必做)
 
 ## 导出格式
 
