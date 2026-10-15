@@ -158,17 +158,19 @@ def test_source_config_pins_checkout_without_personal_configuration():
     }
 
 
-def test_readme_json_matches_published_example():
+def test_manual_json_matches_published_example():
     import re
 
     published_config = json.loads((REPO / "examples/mcp.example.json").read_text())
+    text = (REPO / "docs/04-使用手册.md").read_text()
+    blocks = re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)
+    parsed = [json.loads(block) for block in blocks]
+    assert published_config in parsed
+
+
+def test_readmes_link_to_installation_manual():
     for name in ("README.md", "README_EN.md"):
-        # 快速开始的 NOTE 块里也有 ```json（带 --with 的变体），引用前缀 `> ` 会让
-        # 朴素正则把整段引用连同后文一起吞掉 → 先把引用标记剥掉再收集代码块
-        text = re.sub(r"(?m)^> ?", "", (REPO / name).read_text())
-        blocks = re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)
-        parsed = [json.loads(block) for block in blocks]
-        assert published_config in parsed, name
+        assert "](docs/04-使用手册.md#安装)" in (REPO / name).read_text(), name
 
 
 def test_architecture_diagram_is_mcp_only_without_embedded_assets():
