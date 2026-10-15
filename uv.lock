@@ -4067,7 +4067,7 @@ wheels = [
 
 [[package]]
 name = "videonote"
-version = "0.2.6"
+version = "0.2.7"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -4079,6 +4079,7 @@ dependencies = [
     { name = "inquirerpy" },
     { name = "mcp" },
     { name = "openai" },
+    { name = "packaging" },
     { name = "pillow" },
     { name = "playwright" },
     { name = "pydantic" },
@@ -4130,6 +4131,7 @@ requires-dist = [
     { name = "mlx-whisper", marker = "extra == 'mlx'" },
     { name = "noisereduce", marker = "extra == 'preprocess'" },
     { name = "openai", specifier = ">=1.70.0" },
+    { name = "packaging", specifier = ">=24" },
     { name = "pillow", specifier = ">=11.0.0" },
     { name = "playwright", specifier = ">=1.48.0" },
     { name = "pyannote-audio", marker = "extra == 'diarization'", specifier = ">=3.1" },
