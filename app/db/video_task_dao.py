@@ -80,6 +80,31 @@ def update_task_status(task_id: str, status: str, message: str = ""):
         db.close()
 
 
+def get_task_title(task_id: str) -> Optional[str]:
+    """Read the display name without loading the full task index."""
+    db = next(get_db())
+    try:
+        return db.query(VideoTask.title).filter_by(task_id=task_id).scalar()
+    finally:
+        db.close()
+
+
+def update_task_title(task_id: str, title: str) -> bool:
+    """Rename an existing task only; preserve its identity, source and lifecycle."""
+    db = next(get_db())
+    try:
+        updated = db.query(VideoTask).filter_by(task_id=task_id).update(
+            {VideoTask.title: title}, synchronize_session=False,
+        )
+        db.commit()
+        return bool(updated)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 # 列出全部任务（全局索引），供 list_tasks 工具 / setup 数据管理
 def list_tasks(limit: Optional[int] = None, offset: int = 0) -> list:
     db = next(get_db())

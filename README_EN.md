@@ -42,6 +42,10 @@ Choose your client and transcription setup, then restart the client or reconnect
 
 [Full installation guide (Chinese)](docs/04-使用手册.md#安装) · [Configuration and platform login (Chinese)](docs/04-使用手册.md#配置装完必做)
 
+## Task Management (Development Version, Unreleased)
+
+In `videonote setup`, choose task management → browse tasks, then press Enter on a task to read its notes, source, transcript and artifact paths. After writing notes, the Agent saves a descriptive task name shown in both the list and detail view. These features are not included in the published v0.2.5 package; see the [task management guide (Chinese)](docs/04-使用手册.md#存储结构与清理).
+
 ## Export Formats
 
 - **Subtitles:** SRT, VTT and JSON for preserving timestamps or importing into other tools.
