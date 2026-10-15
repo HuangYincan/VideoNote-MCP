@@ -40,15 +40,7 @@ uvx videonote@latest install
 
 Choose your client and transcription setup, then restart the client or reconnect MCP and send a video link to create notes. The default workflow needs no LLM API key.
 
-Setup includes “⑥ About & updates”: view the current setup version, manually check PyPI for updates, and open the project, releases, or manual. Entering setup does not trigger an update request.
-
-Since v0.2.7, install registers MCP with `@latest` by default so future MCP starts pick up new releases; use `--pin-version` to pin the current version. Registrations created by v0.2.6 or earlier require a one-time update through the newer installer.
-
 [Full installation guide (Chinese)](docs/04-使用手册.md#安装) · [Configuration and platform login (Chinese)](docs/04-使用手册.md#配置装完必做)
-
-## Task Management (v0.2.6+)
-
-In `videonote setup`, choose task management → browse tasks, then press Enter on a task to read its notes, source, transcript and artifact paths. After writing notes, the Agent saves a descriptive task name shown in both the list and detail view. These features require v0.2.6 or later; restart the client or reconnect MCP after upgrading. See the [task management guide (Chinese)](docs/04-使用手册.md#存储结构与清理).
 
 ## Export Formats
 
