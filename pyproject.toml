@@ -1,6 +1,6 @@
 [project]
 name = "videonote"
-version = "0.2.6"
+version = "0.2.7"
 description = "VideoNote 能力 MCP 封装：视频链接 → AI Markdown 笔记（内嵌下载/转写/LLM 流水线，无需启动 FastAPI 后端）"
 readme = "README.md"
 # 上界 3.14：faster-whisper(ctranslate2) 等目前尚未提供 3.14 wheel
@@ -41,6 +41,8 @@ dependencies = [
     "qrcode>=8.0",
     # 保留 Codex MCP 配置中的 TOML 注释和其它设置。
     "tomlkit>=0.13.2",
+    # setup 更新检查采用 PEP 440 版本比较。
+    "packaging>=24",
     # 小红书 / 抖音扫码：需本机 Chrome 跑官网 JS 出码
     # （edith 拒旧 x-s 406；抖音 SSO get_qrcode 被风控成 HTML）
     "playwright>=1.48.0",

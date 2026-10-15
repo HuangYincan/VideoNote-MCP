@@ -1019,7 +1019,7 @@ class TestSetupCookieMenu:
 
         cli._wizard(_MenuInq())
         names = captured[0]
-        assert names == ["① Agent 客户端", "② 语音转写引擎", "③ 平台登录", "④ 其他", "⑤ 任务管理", "✔ 完成 / 退出"]
+        assert names == ["① Agent 客户端", "② 语音转写引擎", "③ 平台登录", "④ 其他", "⑤ 任务管理", "⑥ 关于与更新", "✔ 完成 / 退出"]
         assert all("（" not in name and "）" not in name for name in names)
         assert not any("LLM 供应商" in name for name in names)
 

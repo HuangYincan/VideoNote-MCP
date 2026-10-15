@@ -245,9 +245,10 @@ _KB = BACK_KEYS
 
 def _show_header(section: str = "") -> None:
     """清屏并重绘标题，避免历史信息堆积。"""
+    from videonote_mcp import __version__
     from videonote_mcp.terminal_ui import header
 
-    header("配置向导", section)
+    header(f"配置向导 v{__version__}", section)
 
 
 def _setup_cli() -> None:
@@ -276,6 +277,7 @@ def _wizard(inq) -> None:
                 {"name": "③ 平台登录", "value": "cookies"},
                 {"name": "④ 其他", "value": "other"},
                 {"name": "⑤ 任务管理", "value": "data"},
+                {"name": "⑥ 关于与更新", "value": "about"},
                 {"name": "✔ 完成 / 退出", "value": "exit"},
             ],
             default="agents",
@@ -293,9 +295,65 @@ def _wizard(inq) -> None:
             _wizard_other(inq)
         elif choice == "data":
             _wizard_data(inq)
+        elif choice == "about":
+            _wizard_about(inq)
         else:
             print(f"{_GREEN}✔ 配置完成。验证：`videonote providers list`、`videonote transcriber list`{_RESET}", file=sys.stdout)
             return
+
+
+def _wizard_about(inq=None) -> None:
+    from videonote_mcp import __version__
+    from videonote_mcp.installer import source_root
+    from videonote_mcp.setup_about import (
+        PROJECT_LINKS,
+        UpdateCheckError,
+        check_update,
+        open_project_link,
+    )
+    from videonote_mcp.terminal_ui import field, message
+
+    source = source_root() is not None
+    result = "尚未检查；仅选择“检查更新”时联网。"
+    try:
+        while True:
+            _show_header("⑥ 关于与更新")
+            field("当前 setup 版本", f"v{__version__}")
+            field("运行方式", "源码工作区" if source else "安装包")
+            field("项目网址", PROJECT_LINKS["repository"])
+            message("  此版本属于当前 setup；已运行的 MCP 版本请在 Agent 中查看 get_config。", "muted")
+            message(f"  {result}")
+            if source:
+                message("  更新源码：在仓库中 git pull --ff-only，再运行 uv sync --frozen。", "muted")
+            else:
+                message("  升级 / 更新注册：uvx videonote@latest install", "muted")
+                message("  默认 @latest 注册在 MCP 重启 / 重连后获取新版；旧固定注册需确认更新一次。", "muted")
+            pick = _task_select(inq, "关于与更新（← 返回）", [
+                {"name": "检查更新（PyPI）", "value": "check"},
+                {"name": "打开项目主页", "value": "repository"},
+                {"name": "打开发行说明", "value": "releases"},
+                {"name": "打开使用手册", "value": "manual"},
+                {"name": "← 返回主菜单", "value": "back"},
+            ])
+            if pick == "back":
+                return
+            if pick == "check":
+                message("正在检查 PyPI 最新发布版本…")
+                try:
+                    update = check_update()
+                    if update.comparison > 0:
+                        result = f"发现新版本 v{update.latest}（当前 v{__version__}），可按上方方式升级。"
+                    elif update.comparison == 0:
+                        result = f"当前已是 PyPI 最新发布版本 v{update.latest}。"
+                    else:
+                        result = f"当前版本 v{__version__} 高于 PyPI 最新发布版本 v{update.latest}。"
+                except UpdateCheckError as exc:
+                    result = str(exc)
+            else:
+                opened = open_project_link(pick)
+                result = ("已请求浏览器打开：" if opened else "无法自动打开浏览器，请手动访问：") + PROJECT_LINKS[pick]
+    except (EOFError, KeyboardInterrupt):
+        return
 
 
 _COOKIE_LABELS = {
@@ -1424,7 +1482,9 @@ def _fallback_llm_setup() -> None:
 
 def _setup_cli_fallback() -> None:
     """无 InquirerPy 时的纯文本兜底向导（同功能，输入编号选择）。"""
-    print("=== VideoNote-MCP 配置（纯文本模式） ===", file=sys.stdout)
+    from videonote_mcp import __version__
+
+    print(f"=== VideoNote-MCP v{__version__} 配置（纯文本模式） ===", file=sys.stdout)
 
     print("\n① Agent 客户端：", file=sys.stdout)
     if _ask("   管理安装 / 启用平台？[y/N]", default="N").lower() == "y":
@@ -1583,6 +1643,9 @@ def _setup_cli_fallback() -> None:
         cleanup_all_files()
         print("   ✓ 已全局清理", file=sys.stdout)
 
+    print("\n⑥ 关于与更新：", file=sys.stdout)
+    if _ask("   查看版本 / 检查更新 / 打开项目网址？[y/N]", default="N").lower() == "y":
+        _wizard_about()
     print("\n=== 配置完成 ===", file=sys.stdout)
 
 

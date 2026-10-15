@@ -3,4 +3,4 @@
 入口：videonote_mcp.__main__:main（console script `videonote`）。
 """
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"
