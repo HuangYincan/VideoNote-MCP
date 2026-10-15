@@ -32,87 +32,15 @@ It works **end-to-end (one link → one note)** and is **also decoupled**: pick 
 
 ## Quick Start
 
-**Automatic installation: detect clients, recommend transcription, and register MCP.**
-
-The Python installer works on Windows, Linux, and macOS. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first.
+Windows / Linux / macOS: install [uv](https://docs.astral.sh/uv/getting-started/installation/) and [FFmpeg](docs/04-使用手册.md#前提), then run the installer:
 
 ```bash
-# Windows / Linux / macOS (v0.2.5 and later)
 uvx videonote@latest install
-
-# Current source checkout (clone the repository and enter its directory first)
-uv run --frozen videonote install
 ```
 
-> The `install` subcommand is available from v0.2.5. If an older installation does not recognize it, update to v0.2.5 or later, or use the source command above.
+Choose your client and transcription setup, then restart the client or reconnect MCP and send a video link to create notes. The default workflow needs no LLM API key.
 
-The terminal wizard supports Claude Code, Codex, Claude Desktop, Cursor, OpenCode, Pi, Grok Build, Gemini CLI, Kiro, VS Code, and GitHub Copilot CLI. It lists candidates detected through CLI executables or configuration by default, with a manual selection entry for other targets. Use arrow keys to move, Space to select multiple targets, Enter to confirm, and Left to cancel. Pi needs a version with native MCP support; the installer checks CLI capabilities first. Installation and setup share a colored terminal theme with highlighted choices and distinct fields, statuses, and hints. `NO_COLOR` and redirected output use plain text. Legacy profile paths appear once above a compact selection menu, and MLX devices are labeled as Apple GPU. Transcription and model size also use selection menus. The installer recommends MLX on compatible Apple Silicon systems, CUDA when the NVIDIA GPU and runtime libraries are ready, and CPU otherwise. Before selection, it displays the existing engine, model, device, preprocessing, diarization, configuration sources, and paths. It recognizes previous Agent registrations and legacy configuration directories, asks which profile to use when several are found, and keeps the saved model without prompting for its size again. It preserves existing transcription settings by default and offers dependency preparation and model downloads. Terminal configuration and MCP use the same runtime.
-
-After installation, open `videonote setup` → **① Agent 客户端 → 启用的平台（多选）** to manage enabled targets. For example, uncheck Claude Code and keep Codex checked, then confirm to disable VideoNote in Claude Code. Registrations can be restored with their original settings; other MCP servers and Agent settings are preserved. This menu also installs or updates targets. **卸载 VideoNote 注册（多选）** removes selected user-level registrations and recovery archives, keeping the program, models, and notes. Changes create backups. Status indicates saved configuration; restart existing sessions or reconnect MCP. Manage plugins, project registrations, and compatibility imports inside the Agent.
-
-```bash
-# Source examples; after release, replace the prefix with uvx videonote@latest
-uv run --frozen videonote install --dry-run
-uv run --frozen videonote install --client codex --client cursor
-uv run --frozen videonote install --yes --client codex --asr auto --download
-```
-
-`--dry-run` writes no configuration and downloads no dependencies or models. Unattended installation requires `--yes` and explicit targets. Changing an existing VideoNote registration needs confirmation or `--replace`; existing plugins and unrelated servers with the same name are preserved. Install FFmpeg separately.
-
-**Manual registration (available in published versions):**
-
-```bash
-# 1) Register the standalone MCP server (published PyPI version)
-claude mcp add --scope user videonote -- uvx videonote@latest
-
-# 2) Configure transcription / platform login in your terminal
-#    The default note workflow needs no LLM API key
-uvx videonote@latest setup
-
-# 3) Restart or reconnect MCP, then send a video link
-```
-
-For JSON-based MCP clients:
-
-```json
-{
-  "mcpServers": {
-    "videonote": {
-      "type": "stdio",
-      "command": "uvx",
-      "args": ["videonote@latest"]
-    }
-  }
-}
-```
-
-> [!NOTE]
-> The default `uvx videonote@latest` only ships the base dependencies (fast-whisper + platform subtitles); **optional engines are not included**.
-> To use `mlx-whisper` on the Apple GPU (macOS), pass it in **both** the MCP registration and the terminal setup (`--with` must come **before** the tool name):
->
-> ```bash
-> claude mcp add --scope user videonote -- uvx --with mlx-whisper videonote@latest
-> uvx --with mlx-whisper videonote@latest setup
-> ```
->
-> For JSON clients, prepend `"--with", "mlx-whisper"` to `args`:
->
-> ```json
-> {
->   "mcpServers": {
->     "videonote": {
->       "type": "stdio",
->       "command": "uvx",
->       "args": ["--with", "mlx-whisper", "videonote@latest"]
->     }
->   }
-> }
-> ```
->
-> `funasr` (best for Chinese) works the same way: use `--with funasr --with torch` instead.
-
-> [!TIP]
-> Automatic installation, manual registration, configuration, updates, and security are covered in [docs/04-使用手册.md](docs/04-使用手册.md).
+[Full installation guide (Chinese)](docs/04-使用手册.md#安装) · [Configuration and platform login (Chinese)](docs/04-使用手册.md#配置装完必做)
 
 ## Export Formats
 
