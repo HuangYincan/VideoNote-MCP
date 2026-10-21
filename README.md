@@ -4,6 +4,7 @@
 <p align="center"><strong>中文</strong> | <a href="./README_EN.md">English</a></p>
 <p align="center">
   <a href="#快速开始">快速开始</a> •
+  <a href="#输入数据">输入数据</a> •
   <a href="#文档">文档</a> •
   <a href="#真实案例">真实案例</a> •
   <a href="#流水线地图">流水线地图</a> •
@@ -38,9 +39,16 @@ Windows / Linux / macOS：准备 [uv](https://docs.astral.sh/uv/getting-started/
 uvx videonote@latest install
 ```
 
-按提示选择客户端和转写方案，安装后重启客户端或重连 MCP，即可发送视频链接生成笔记。默认流程无需 LLM API Key。
+按提示选择客户端和转写方案，安装后重启客户端或重连 MCP，即可提供链接、本地音视频文件路径或已有字幕 / 文字稿，让对话助手整理笔记。默认流程无需 LLM API Key。
 
 [完整安装指南](docs/04-使用手册.md#安装) · [配置与平台登录](docs/04-使用手册.md#配置装完必做)
+
+## 输入数据
+
+- **在线链接**：B 站、YouTube、抖音、TikTok、快手、小红书等视频链接，以及小宇宙等播客 / 音频链接。
+- **本地视频**：MP4、MKV、MOV、WebM 等文件，可提取音频转写，并按需提取画面。
+- **音频 / 录音**：MP3、WAV、M4A、FLAC 等文件，适合播客、讲座和会议录音；多段录音可先合并再转写。
+- **字幕 / 文字稿**：SRT、VTT、JSON 转写结果或 TXT 等文本，可提供文件或直接粘贴内容，由对话助手直接整理笔记，无需重新转写。
 
 ## 导出格式
 
@@ -99,13 +107,15 @@ uvx videonote@latest install
 
 ```mermaid
 flowchart TB
-    SOURCE(["视频链接 / 本地文件"])
+    URL(["视频链接"])
+    LOCAL(["本地音视频文件"])
 
     subgraph COLLECT["01 · 素材准备"]
         FETCH["平台识别与下载"]
-        TRANSCRIPT["字幕 / 转写<br/>字幕优先 · 无字幕时 ASR"]
+        TRANSCRIPT["平台字幕 / 语音转写<br/>字幕优先 · 无字幕时 ASR"]
+        LOCAL_ASR["本地语音转写<br/>音频提取 / 转码 · ASR"]
         VISION["画面理解<br/>关键帧 / 多模态"]
-        COMMENTS["弹幕与评论"]
+        COMMENTS["弹幕与评论<br/>B 站 · 按需获取"]
 
         FETCH --> TRANSCRIPT
         FETCH -.-> VISION
@@ -129,19 +139,23 @@ flowchart TB
         NOTE -.-> DOCUMENT
     end
 
-    SOURCE --> FETCH
+    URL --> FETCH
+    LOCAL --> LOCAL_ASR
+    LOCAL -.->|视频文件| VISION
     TRANSCRIPT --> MATERIAL
+    LOCAL_ASR --> MATERIAL
     VISION -.-> MATERIAL
     COMMENTS -.-> MATERIAL
     AGENT --> NOTE
     LLM -.-> NOTE
     TRANSCRIPT -.->|process_media · export| SUBTITLE
+    LOCAL_ASR -.->|process_media · export| SUBTITLE
 
     classDef entry fill:#4f46e5,stroke:#4338ca,color:#fff
     classDef primary fill:#eef2ff,stroke:#818cf8,color:#312e81
     classDef optional fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:5 4
     classDef result fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
-    class SOURCE entry
+    class URL,LOCAL entry
     class MATERIAL,AGENT primary
     class VISION,COMMENTS,LLM,DOCUMENT,SUBTITLE optional
     class NOTE result
@@ -150,7 +164,9 @@ flowchart TB
     style OUTPUT fill:transparent,stroke:#cbd5e1,rx:12,ry:12
 ```
 
-实线为默认流程：`prepare_note_material` 准备素材，由当前对话助手整理笔记。虚线为可选能力或后备路径：对话助手无法看图或用户指定时，使用 `generate_note` 调用配置的 LLM；字幕可独立导出，其他格式由助手按需制作。各阶段细节见 [docs/02-架构设计.md](docs/02-架构设计.md)。
+视频链接走平台识别与下载，优先获取平台字幕，无字幕时使用 ASR，并可按需获取 B 站弹幕与评论；本地音视频直接提取 / 转换音频并使用 ASR，不经过平台下载、字幕获取或弹幕 / 评论抓取。本地视频也可按需提取画面。
+
+实线为默认流程：`prepare_note_material` 准备素材，由当前对话助手整理笔记。虚线为可选能力或后备路径：对话助手无法看图或用户指定时，使用 `generate_note` 调用配置的 LLM；平台字幕与 ASR 转写均可独立导出，其他格式由助手按需制作。各阶段细节见 [docs/02-架构设计.md](docs/02-架构设计.md)。
 
 ## 任务管理
 

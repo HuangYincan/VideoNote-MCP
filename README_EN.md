@@ -4,6 +4,7 @@
 <p align="center"><a href="./README.md">中文</a> | <strong>English</strong></p>
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
+  <a href="#input-data">Input Data</a> •
   <a href="#docs">Docs</a> •
   <a href="#real-world-examples">Real-world Examples</a> •
   <a href="#pipeline-map">Pipeline Map</a> •
@@ -38,9 +39,16 @@ Windows / Linux / macOS: install [uv](https://docs.astral.sh/uv/getting-started/
 uvx videonote@latest install
 ```
 
-Choose your client and transcription setup, then restart the client or reconnect MCP and send a video link to create notes. The default workflow needs no LLM API key.
+Choose your client and transcription setup, then restart the client or reconnect MCP. Provide a link, a local audio/video file path, or existing subtitles / transcripts for the conversation assistant to organize into notes. The default workflow needs no LLM API key.
 
 [Full installation guide (Chinese)](docs/04-使用手册.md#安装) · [Configuration and platform login (Chinese)](docs/04-使用手册.md#配置装完必做)
+
+## Input Data
+
+- **Online links:** video links from Bilibili, YouTube, Douyin, TikTok, Kuaishou, Xiaohongshu and other sites, plus podcast / audio links such as Xiaoyuzhou.
+- **Local video:** MP4, MKV, MOV, WebM and other files, with audio extraction for transcription and optional frame extraction.
+- **Audio / recordings:** MP3, WAV, M4A, FLAC and other files for podcasts, lectures and meetings; multiple recordings can be merged before transcription.
+- **Subtitles / transcripts:** SRT, VTT, JSON transcript results or text such as TXT. Provide a file or paste the content for the conversation assistant to organize directly into notes, without transcribing again.
 
 ## Export Formats
 
@@ -100,13 +108,15 @@ Full run record: [`examples/note-generation-example/README.md`](examples/note-ge
 
 ```mermaid
 flowchart TB
-    SOURCE(["Video link / local file"])
+    URL(["Video link"])
+    LOCAL(["Local audio/video file"])
 
     subgraph COLLECT["01 · Material preparation"]
         FETCH["Platform detection & download"]
-        TRANSCRIPT["Subtitles / transcription<br/>Subtitles first; ASR otherwise"]
+        TRANSCRIPT["Platform subtitles / transcription<br/>Subtitles first; ASR otherwise"]
+        LOCAL_ASR["Local transcription<br/>Audio extraction / conversion · ASR"]
         VISION["Visual understanding<br/>Keyframes / multimodal analysis"]
-        COMMENTS["Danmaku & comments"]
+        COMMENTS["Danmaku & comments<br/>Bilibili · on demand"]
 
         FETCH --> TRANSCRIPT
         FETCH -.-> VISION
@@ -130,19 +140,23 @@ flowchart TB
         NOTE -.-> DOCUMENT
     end
 
-    SOURCE --> FETCH
+    URL --> FETCH
+    LOCAL --> LOCAL_ASR
+    LOCAL -.->|Video files| VISION
     TRANSCRIPT --> MATERIAL
+    LOCAL_ASR --> MATERIAL
     VISION -.-> MATERIAL
     COMMENTS -.-> MATERIAL
     AGENT --> NOTE
     LLM -.-> NOTE
     TRANSCRIPT -.->|process_media · export| SUBTITLE
+    LOCAL_ASR -.->|process_media · export| SUBTITLE
 
     classDef entry fill:#4f46e5,stroke:#4338ca,color:#fff
     classDef primary fill:#eef2ff,stroke:#818cf8,color:#312e81
     classDef optional fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:5 4
     classDef result fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
-    class SOURCE entry
+    class URL,LOCAL entry
     class MATERIAL,AGENT primary
     class VISION,COMMENTS,LLM,DOCUMENT,SUBTITLE optional
     class NOTE result
@@ -151,7 +165,9 @@ flowchart TB
     style OUTPUT fill:transparent,stroke:#cbd5e1,rx:12,ry:12
 ```
 
-Solid lines show the default flow: `prepare_note_material` prepares the pack, and the conversation assistant organizes the note. Dashed lines show optional capabilities or fallback paths: use `generate_note` with the configured LLM when the assistant cannot view images or the user requests it. Subtitles can be exported independently; the assistant creates other formats on demand. Stage details live in [docs/02-架构设计.md](docs/02-架构设计.md).
+Video links go through platform detection and download, using platform subtitles first and ASR otherwise, with optional Bilibili danmaku and comments. Local audio/video files go directly through audio extraction / conversion and ASR, skipping platform download, subtitle fetching, and danmaku / comment collection. Local video files also support optional visual understanding.
+
+Solid lines show the default flow: `prepare_note_material` prepares the pack, and the conversation assistant organizes the note. Dashed lines show optional capabilities or fallback paths: use `generate_note` with the configured LLM when the assistant cannot view images or the user requests it. Both platform subtitles and ASR transcripts can be exported independently; the assistant creates other formats on demand. Stage details live in [docs/02-架构设计.md](docs/02-架构设计.md).
 
 ## Task Management
 
